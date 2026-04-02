@@ -62,6 +62,9 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   if (isUnifiedSuggestion(item.id)) {
     const icon = getIcon(item.id)
     const textColor: keyof Theme | undefined = isSelected
+      ? 'inverseText'
+      : undefined
+    const backgroundColor: keyof Theme | undefined = isSelected
       ? 'suggestion'
       : undefined
     const dimColor = !isSelected
@@ -112,6 +115,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     return (
       <Text
         color={textColor}
+        backgroundColor={backgroundColor}
         dimColor={dimColor}
         bold={isSelected}
         wrap="truncate"
@@ -126,7 +130,10 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     maxColumnWidth ?? stringWidth(item.displayText) + 5,
     maxNameWidth,
   )
-  const textColor = item.color || (isSelected ? 'suggestion' : undefined)
+  const textColor = isSelected ? 'inverseText' : item.color
+  const backgroundColor: keyof Theme | undefined = isSelected
+    ? 'suggestion'
+    : undefined
   const shouldDim = !isSelected
 
   let displayText = item.displayText
@@ -150,11 +157,28 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
 
   return (
     <Text wrap="truncate">
-      <Text color={textColor} dimColor={shouldDim} bold={isSelected}>
+      <Text
+        color={textColor}
+        backgroundColor={backgroundColor}
+        dimColor={shouldDim}
+        bold={isSelected}
+      >
         {paddedDisplayText}
       </Text>
-      {tagText ? <Text dimColor>{tagText}</Text> : null}
-      <Text color={isSelected ? 'suggestion' : undefined} dimColor={!isSelected}>
+      {tagText ? (
+        <Text
+          color={isSelected ? 'inverseText' : undefined}
+          backgroundColor={backgroundColor}
+          dimColor={!isSelected}
+        >
+          {tagText}
+        </Text>
+      ) : null}
+      <Text
+        color={isSelected ? 'inverseText' : undefined}
+        backgroundColor={backgroundColor}
+        dimColor={!isSelected}
+      >
         {truncatedDescription}
       </Text>
     </Text>
