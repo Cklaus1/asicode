@@ -34,26 +34,32 @@ The instinct is "stop asking the human." The actual objective is **"produce veri
 | 1 | **L1 verifier racer** in permission handler — auto-approve when typecheck passes | ✅ shipped (Wave 1A) | `hooks/toolPermission/handlers/`, `services/lsp/LSPDiagnosticRegistry.ts` | ~10 min actual | — |
 | 1.5 | **L2 self-review loop** — reviewer subagent returns severity-tagged findings; fixer subagent addresses them; iterate until no critical/high/medium or `MAX_REVIEW_ITERS=5`. Asymmetric models (Haiku ↔ Sonnet). Convergence guard: abort if findings count doesn't strictly decrease for 2 passes | ✅ shipped (Wave 1.5) — brief-completion seam not yet wired into `AgentTool`/`coordinator` | new `services/selfReview/` (9 files, 43 tests) | ~11 min actual | — |
 | 2 | **Per-task budget caps** ($/tokens/wall-clock/tool-calls; review-iters TBD) with graceful hard-stop | ✅ shipped (Wave 1B) — `reviewIters` cap deferred to Wave 1.5 wire-up | `utils/budget.ts`, `cost-tracker.ts`, `Tool.ts`, `utils/permissions/`, `query.ts`, `main.tsx` | ~15 min actual | — |
-| 3 | **Worktree-per-attempt + auto-checkpoint** — every autonomous run starts in fresh worktree, commits per step | ⏳ next | `tasks/`, `utils/sandbox/`, worktree commands | ~2–3 hr | ~30–45 min |
-| 4 | **Best-of-N race mode in coordinator** — fork k worktrees, same plan, verifier picks winner | ⏳ blocked on #3 | `src/coordinator/`, new `tasks/RaceTask`, scoring head | ~3–5 hr | ~1 hr |
-| 5 | **Outcome log + retrieval prior** — schema, write path, retrieval at plan time | ✅ shipped (Wave 1C) — typecheck/test verifier signals deferred to follow-up wire-up | new `services/outcomes/` (5 files, 3 tests) | ~17 min actual | — |
-| 6 | **Resumable long-horizon tasks** — `--resume <task-id>` from disk checkpoint | ⏳ blocked on #3 | `tasks/`, `remote/RemoteSessionManager.ts`, `utils/sessionStorage.ts` | ~2–3 hr | ~30 min |
-| 7 | **Typed-error retry policy** (retry / replan / escalate / ask / fail_fast) | ✅ shipped (Wave 2 #7) — outcome-log `errorKind` field deferred to follow-up wire-up | new `services/api/errorTaxonomy.ts`, `services/api/retryPolicy.ts`, `services/tools/toolExecution.ts` | ~12 min actual | — |
+| 3 | **Worktree-per-attempt + auto-checkpoint** — auto-isolate write-capable subagents in worktrees with per-step git autocheckpoints | ✅ shipped — recovered from salvage branch + completed | new `services/checkpoint/`, `tools/AgentTool/AgentTool.tsx`, `tools/AgentTool/runAgent.ts`, `utils/forkedAgent.ts`, `Tool.ts`, `services/tools/toolExecution.ts`, `utils/settings/types.ts` | ~25 min actual (recovery) | — |
+| 4 | **Best-of-N race mode in coordinator** — fork k worktrees, same plan, verifier picks winner | ⏳ unblocked by #3 | `src/coordinator/`, new `tasks/RaceTask`, scoring head | ~3–5 hr | ~1 hr |
+| 5 | **Outcome log + retrieval prior** — schema, write path, retrieval at plan time | ✅ shipped (Wave 1C) + wires landed | new `services/outcomes/` (5 files, 3 tests) | ~17 min actual | — |
+| 6 | **Resumable long-horizon tasks** — `--resume <task-id>` from disk checkpoint | ⏳ unblocked by #3 | `tasks/`, `remote/RemoteSessionManager.ts`, `utils/sessionStorage.ts` | ~2–3 hr | ~30 min |
+| 7 | **Typed-error retry policy** (retry / replan / escalate / ask / fail_fast) | ✅ shipped (Wave 2 #7) + outcome-log errorKind wired | new `services/api/errorTaxonomy.ts`, `services/api/retryPolicy.ts`, `services/tools/toolExecution.ts` | ~12 min actual | — |
 
-### Pending integration wire-ups (carry-over follow-ups, ~30–45 min total)
+### Integration wire-ups — status
 
-These don't change behavior but tighten the loops. None block Wave 2:
+5 of 6 follow-ups landed. None blocked Wave 2.
 
-- **1A → 1C:** call `getLatestDiagnosticCountsForFile()` from `outcomeRecorder.finalizeRun` to populate `verifierSignal.typecheck`.
-- **1B → 1C:** when `isBudgetExhausted()` returns true at session end, set `outcome: 'budget_exhausted'` on the outcome record (not `'aborted'`).
-- **#7 → 1C:** add `errorKind?` to `outcomeRecord.toolCalls[]` schema; populate from the OTel/analytics tags `#7` already emits.
-- **1.5 shim replacement:** `selfReview/reviewBudget.ts` and `selfReview/outcomeLogAdapter.ts` should re-export from `utils/budget.ts` and `services/outcomes/outcomeRecorder.ts` instead of being local stand-ins.
-- **1.5 wire-in:** call `runBriefReviewIfEnabled` from `tools/AgentTool/runAgent.ts` brief-completion path.
-- **Analytics event registration:** check whether `tengu_tool_use_granted_by_verifier` (Wave 1A) needs to be added to a central event-name enum.
+- ✅ **1A → 1C** (`284fbfd`): `computeTypecheckSignalForRun` aggregates LSP diagnostics across files touched via Edit/Write/NotebookEdit; QueryEngine populates `verifierSignal.typecheck` before `finalizeRun`.
+- ✅ **1B → 1C** (`284fbfd`): `isBudgetExhausted()` at finalize overrides outcome to `'budget_exhausted'` (with budget reason) when true and the run isn't already a hard failure/abort.
+- ✅ **#7 → 1C** (`284fbfd`): `recordToolCall` accepts `errorKind`; toolExecution catch path reads `RetryAnnotation` and forwards classification.
+- ✅ **1.5 shim replacement** (`b32ab31`): `reviewBudget.ts` now bumps both per-task and session-global counters; `outcomeLogAdapter.ts` adds `OutcomeRecorderLogSink` that delegates to `outcomeRecorder.attachReviewSignal`. `utils/budget.ts` gained `reviewIters` cap.
+- ✅ **Analytics enum check** (`b32ab31`): no central registration needed — `tengu_tool_use_granted_by_verifier` follows the precedent of sibling permission-grant events (logEvent only, not in `DATADOG_ALLOWED_EVENTS`). Inline comment notes the decision.
+- ⏳ **1.5 brief-completion wire-in:** seam exists at `runAgent.ts`, but the production reviewer/fixer invokers are a real build — openclaude lacks a clean `queryWithModel({systemPrompt, userPrompt, model})` primitive easy to call from a service module. Estimate: ~30–60 min when prioritized.
 
 **Stack total: ~16–22 agent-hours single-threaded, ~4–5 hr fanout. Token cost ~$40–100 at current Sonnet/Opus rates; less if L1 racer and #2/#3 run on Haiku.**
 
-**Actuals so far** (Wave 0/1/1.5/2-#7 shipped — 7 of 8 P0 items): ~77 min wall-clock total (sum of agent durations: 9 + 15 + 17 + 12 + 11 + 12 = 76 min), ~$25–40 in tokens, all with parallel fanout. Estimates were 3–5× too conservative; future estimates tightened. Items #3, #4, #6 remain — all blocked-or-related to worktree-per-attempt (#3 is the unblocking item).
+**Actuals so far** (Wave 0/1/1.5/2-#3/#7 shipped + 5 of 6 wire-ups — **8 of 8 P0 items shipped**): ~110 min wall-clock total (parallel fanout for Wave 0/1/1.5/#7, then sequential for #3 + wire-ups after credit-limit and contamination incidents forced inline work). ~$30–50 in tokens. Estimates were 3–5× too conservative on the parallel-fanout phase; sequential inline work tracked closer to estimate. Remaining: #4 (best-of-N) and #6 (resumable tasks) — both unblocked by #3 — plus the 1.5 brief-completion wire-in (production reviewer/fixer invokers).
+
+**Operational lessons captured during the build** (now durable in conversation memory):
+- Use ASI-scale wall-clock estimates, not human-team days/weeks.
+- Stage explicit paths, never `git add -A` — one bad sweep contaminated 22K files including a sibling worktree's residue. Recoverable but expensive.
+- Don't dispatch new background agents after a credit-limit signal. Inline sequential work has lower overhead and zero contamination risk.
+- Salvage > redo when partial work is high-quality. The Wave 2 #3 dead-agent code was production-grade; ~25 min recovery beat the ~2–3 hr redo estimate.
 
 Per-brief overhead from #1.5 self-review: ~2–3 review passes × ~5k tokens ≈ $0.50–1 on Sonnet, ~$0.05–0.15 on Haiku-first/escalate-on-dispute. This is the cheapest insurance against shipping silent bugs at autonomous speed.
 
