@@ -22,6 +22,7 @@ import {
   type OutcomeKind,
   type OutcomeRecord,
   type ToolCallEntry,
+  type ToolCallErrorKind,
   type VerifierSignal,
 } from './outcomeRecord.js'
 import { writeOutcomeRecord } from './outcomeStore.js'
@@ -105,11 +106,18 @@ export function recordToolCall(
   args: unknown,
   success: boolean,
   durationMs: number,
+  errorKind?: ToolCallErrorKind,
 ): void {
   if (!taskId) return
   const run = activeRuns.get(taskId)
   if (!run) return
-  run.toolCalls.push({ name, args, success, durationMs })
+  run.toolCalls.push({
+    name,
+    args,
+    success,
+    durationMs,
+    ...(errorKind !== undefined && { errorKind }),
+  })
 }
 
 /**
@@ -163,6 +171,7 @@ export async function finalizeRun(
       args: redactValue(tc.args),
       success: tc.success,
       durationMs: tc.durationMs,
+      ...(tc.errorKind !== undefined && { errorKind: tc.errorKind }),
     })),
     totalUsd: options.totalUsd ?? 0,
     totalTokens: options.totalTokens ?? 0,
