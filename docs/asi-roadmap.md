@@ -28,18 +28,32 @@ The instinct is "stop asking the human." The actual objective is **"produce veri
 
 ## Build order — ordered by leverage, not calendar
 
-| # | Feature | Touches | ASI (1 agent) | Fanout (4–8) |
-|---|---|---|---|---|
-| 1 | **L1 verifier racer** in permission handler — auto-approve when typecheck+tests pass on the resulting state | `hooks/toolPermission/handlers/interactiveHandler.ts`, `services/lsp/`, `tools/BashTool/` | ~15–30 min | ~5 min |
-| 1.5 | **L2 self-review loop** — reviewer subagent returns severity-tagged findings; fixer subagent addresses them; iterate until no critical/high/medium or `MAX_REVIEW_ITERS=5`. Asymmetric models (Haiku-first, escalate to Opus). Diff-only review with file-hash cache. Convergence guard: abort if findings count doesn't strictly decrease for 2 passes | new `services/selfReview/` (`reviewLoop.ts`, `findingsSchema.ts`, `convergenceGuard.ts`), `coordinator/`, reviewer agent def, `Agent` tool brief-completion path | ~3–4 hr | ~45 min |
-| 2 | **Per-task budget caps** ($/tokens/wall-clock/tool-calls/review-iters) with graceful hard-stop | `cost-tracker.ts`, `Tool.ts`, `utils/permissions/`, `services/selfReview/` | ~45–90 min | ~15 min |
-| 3 | **Worktree-per-attempt + auto-checkpoint** — every autonomous run starts in fresh worktree, commits per step | `tasks/`, `utils/sandbox/`, worktree commands | ~2–3 hr | ~30–45 min |
-| 4 | **Best-of-N race mode in coordinator** — fork k worktrees, same plan, verifier picks winner | `src/coordinator/`, new `tasks/RaceTask`, scoring head | ~3–5 hr | ~1 hr |
-| 5 | **Outcome log + retrieval prior** — schema, write path, retrieval at plan time | `memdir/`, `services/teamMemorySync/`, `planAgent.ts` | ~3–4 hr | ~45 min |
-| 6 | **Resumable long-horizon tasks** — `--resume <task-id>` from disk checkpoint | `tasks/`, `remote/RemoteSessionManager.ts`, `utils/sessionStorage.ts` | ~2–3 hr | ~30 min |
-| 7 | **Typed-error retry policy** (retry / replan / escalate / ask) | `Tool.ts`, `services/api/errors.ts`, `tasks/` | ~1–2 hr | ~20 min |
+| # | Feature | Status | Touches | ASI (1 agent) | Fanout (4–8) |
+|---|---|---|---|---|---|
+| 0 | **Test harness fix** (`bun:bundle` + feature-flags refactor) | ✅ shipped (Wave 0) | `package.json`, `README.md`, `scripts/build.ts`, `scripts/feature-flags.ts` | ~12 min actual | — |
+| 1 | **L1 verifier racer** in permission handler — auto-approve when typecheck passes | ✅ shipped (Wave 1A) | `hooks/toolPermission/handlers/`, `services/lsp/LSPDiagnosticRegistry.ts` | ~10 min actual | — |
+| 1.5 | **L2 self-review loop** — reviewer subagent returns severity-tagged findings; fixer subagent addresses them; iterate until no critical/high/medium or `MAX_REVIEW_ITERS=5`. Asymmetric models (Haiku ↔ Sonnet). Convergence guard: abort if findings count doesn't strictly decrease for 2 passes | ✅ shipped (Wave 1.5) — brief-completion seam not yet wired into `AgentTool`/`coordinator` | new `services/selfReview/` (9 files, 43 tests) | ~11 min actual | — |
+| 2 | **Per-task budget caps** ($/tokens/wall-clock/tool-calls; review-iters TBD) with graceful hard-stop | ✅ shipped (Wave 1B) — `reviewIters` cap deferred to Wave 1.5 wire-up | `utils/budget.ts`, `cost-tracker.ts`, `Tool.ts`, `utils/permissions/`, `query.ts`, `main.tsx` | ~15 min actual | — |
+| 3 | **Worktree-per-attempt + auto-checkpoint** — every autonomous run starts in fresh worktree, commits per step | ⏳ next | `tasks/`, `utils/sandbox/`, worktree commands | ~2–3 hr | ~30–45 min |
+| 4 | **Best-of-N race mode in coordinator** — fork k worktrees, same plan, verifier picks winner | ⏳ blocked on #3 | `src/coordinator/`, new `tasks/RaceTask`, scoring head | ~3–5 hr | ~1 hr |
+| 5 | **Outcome log + retrieval prior** — schema, write path, retrieval at plan time | ✅ shipped (Wave 1C) — typecheck/test verifier signals deferred to follow-up wire-up | new `services/outcomes/` (5 files, 3 tests) | ~17 min actual | — |
+| 6 | **Resumable long-horizon tasks** — `--resume <task-id>` from disk checkpoint | ⏳ blocked on #3 | `tasks/`, `remote/RemoteSessionManager.ts`, `utils/sessionStorage.ts` | ~2–3 hr | ~30 min |
+| 7 | **Typed-error retry policy** (retry / replan / escalate / ask / fail_fast) | ✅ shipped (Wave 2 #7) — outcome-log `errorKind` field deferred to follow-up wire-up | new `services/api/errorTaxonomy.ts`, `services/api/retryPolicy.ts`, `services/tools/toolExecution.ts` | ~12 min actual | — |
+
+### Pending integration wire-ups (carry-over follow-ups, ~30–45 min total)
+
+These don't change behavior but tighten the loops. None block Wave 2:
+
+- **1A → 1C:** call `getLatestDiagnosticCountsForFile()` from `outcomeRecorder.finalizeRun` to populate `verifierSignal.typecheck`.
+- **1B → 1C:** when `isBudgetExhausted()` returns true at session end, set `outcome: 'budget_exhausted'` on the outcome record (not `'aborted'`).
+- **#7 → 1C:** add `errorKind?` to `outcomeRecord.toolCalls[]` schema; populate from the OTel/analytics tags `#7` already emits.
+- **1.5 shim replacement:** `selfReview/reviewBudget.ts` and `selfReview/outcomeLogAdapter.ts` should re-export from `utils/budget.ts` and `services/outcomes/outcomeRecorder.ts` instead of being local stand-ins.
+- **1.5 wire-in:** call `runBriefReviewIfEnabled` from `tools/AgentTool/runAgent.ts` brief-completion path.
+- **Analytics event registration:** check whether `tengu_tool_use_granted_by_verifier` (Wave 1A) needs to be added to a central event-name enum.
 
 **Stack total: ~16–22 agent-hours single-threaded, ~4–5 hr fanout. Token cost ~$40–100 at current Sonnet/Opus rates; less if L1 racer and #2/#3 run on Haiku.**
+
+**Actuals so far** (Wave 0/1/1.5/2-#7 shipped — 7 of 8 P0 items): ~77 min wall-clock total (sum of agent durations: 9 + 15 + 17 + 12 + 11 + 12 = 76 min), ~$25–40 in tokens, all with parallel fanout. Estimates were 3–5× too conservative; future estimates tightened. Items #3, #4, #6 remain — all blocked-or-related to worktree-per-attempt (#3 is the unblocking item).
 
 Per-brief overhead from #1.5 self-review: ~2–3 review passes × ~5k tokens ≈ $0.50–1 on Sonnet, ~$0.05–0.15 on Haiku-first/escalate-on-dispute. This is the cheapest insurance against shipping silent bugs at autonomous speed.
 
