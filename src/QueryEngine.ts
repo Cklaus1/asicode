@@ -35,6 +35,10 @@ import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
+import {
+  beginRun as beginOutcomeRun,
+  finalizeRun as finalizeOutcomeRun,
+} from './services/outcomes/outcomeRecorder.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
@@ -241,6 +245,39 @@ export class QueryEngine {
     const persistSession = !isSessionPersistenceDisabled()
     const startTime = Date.now()
 
+    // Outcome log: open a record for this top-level run so tool calls and
+    // the eventual outcome flow into a single retrievable artifact.
+    // Best-effort — undefined when outcomeLogging is disabled.
+    const initialPromptText =
+      typeof prompt === 'string'
+        ? prompt
+        : prompt
+            .map(b =>
+              b.type === 'text' && typeof b.text === 'string' ? b.text : '',
+            )
+            .filter(Boolean)
+            .join('\n')
+    const outcomeTaskId = beginOutcomeRun(initialPromptText, cwd)
+
+    // Pending outcome state. Each exit branch sets this so the single
+    // finally block can finalize once with the right kind/reason.
+    let pendingOutcome: {
+      kind:
+        | 'success'
+        | 'failure'
+        | 'aborted'
+        | 'budget_exhausted'
+        | 'unknown'
+      reason?: string
+    } = { kind: 'unknown' }
+    const setOutcome = (
+      kind: typeof pendingOutcome.kind,
+      reason?: string,
+    ) => {
+      pendingOutcome = { kind, reason }
+    }
+
+    try {
     // Wrap canUseTool to track permission denials
     const wrappedCanUseTool: CanUseToolFn = async (
       tool,
@@ -393,6 +430,7 @@ export class QueryEngine {
         })
       },
       setSDKStatus,
+      outcomeTaskId,
     }
 
     // Handle orphaned permission (only once per engine lifetime)
@@ -525,6 +563,7 @@ export class QueryEngine {
       updateFileHistoryState: processUserInputContext.updateFileHistoryState,
       updateAttributionState: processUserInputContext.updateAttributionState,
       setSDKStatus,
+      outcomeTaskId,
     }
 
     headlessProfilerCheckpoint('before_skills_plugins')
@@ -636,6 +675,7 @@ export class QueryEngine {
         ),
         uuid: randomUUID(),
       }
+      setOutcome('success', 'no_query_slash_command')
       return
     }
 
@@ -1057,6 +1097,7 @@ export class QueryEngine {
               `Failed to provide valid structured output after ${maxRetries} attempts`,
             ],
           }
+          setOutcome('failure', 'max_structured_output_retries')
           return
         }
       }
@@ -1128,6 +1169,10 @@ export class QueryEngine {
           ]
         })(),
       }
+      setOutcome(
+        this.abortController.signal.aborted ? 'aborted' : 'failure',
+        `error_during_execution stop_reason=${lastStopReason}`,
+      )
       return
     }
 
@@ -1166,6 +1211,38 @@ export class QueryEngine {
         initialAppState.fastMode,
       ),
       uuid: randomUUID(),
+    }
+    setOutcome(
+      isApiError ? 'failure' : 'success',
+      isApiError ? 'api_error' : undefined,
+    )
+    } catch (err) {
+      // Mark aborted vs failure based on the controller state, then rethrow
+      // so existing error handling upstream is unaffected.
+      if (
+        this.abortController.signal.aborted &&
+        pendingOutcome.kind === 'unknown'
+      ) {
+        setOutcome(
+          'aborted',
+          err instanceof Error ? err.message : String(err),
+        )
+      } else if (pendingOutcome.kind === 'unknown') {
+        setOutcome(
+          'failure',
+          err instanceof Error ? err.message : String(err),
+        )
+      }
+      throw err
+    } finally {
+      // Best-effort outcome finalize. Never throws — recorder swallows IO errors.
+      await finalizeOutcomeRun(outcomeTaskId, pendingOutcome.kind, {
+        reason: pendingOutcome.reason,
+        totalUsd: getTotalCost(),
+        totalTokens:
+          (this.totalUsage.input_tokens ?? 0) +
+          (this.totalUsage.output_tokens ?? 0),
+      })
     }
   }
 
