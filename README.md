@@ -264,6 +264,11 @@ npm run dev:grpc:cli
 
 ## Source Build And Local Development
 
+Requires **Bun >= 1.3.9** (CI pins 1.3.11). Earlier Bun versions cannot
+resolve the `bun:bundle` virtual module that gates feature flags, so
+`bun test` and the dev scripts fail with `Cannot find package 'bundle'`.
+Run `bun upgrade` if your local Bun is older.
+
 ```bash
 bun install
 bun run build
