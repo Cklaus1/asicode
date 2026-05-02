@@ -35,10 +35,13 @@ import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
+import { getLatestDiagnosticCountsForFile } from './services/lsp/LSPDiagnosticRegistry.js'
 import {
   beginRun as beginOutcomeRun,
+  computeTypecheckSignalForRun,
   finalizeRun as finalizeOutcomeRun,
 } from './services/outcomes/outcomeRecorder.js'
+import { isBudgetExhausted } from './utils/budget.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
@@ -1235,13 +1238,35 @@ export class QueryEngine {
       }
       throw err
     } finally {
+      // 1B → 1C wire: when the run wound down due to budget exhaustion, mark
+      // the outcome as `budget_exhausted` regardless of the apparent exit
+      // path (a graceful summary turn looks like 'success' otherwise).
+      const budgetState = isBudgetExhausted()
+      const finalKind =
+        budgetState.exhausted &&
+        pendingOutcome.kind !== 'aborted' &&
+        pendingOutcome.kind !== 'failure'
+          ? ('budget_exhausted' as const)
+          : pendingOutcome.kind
+      const finalReason =
+        budgetState.exhausted && finalKind === 'budget_exhausted'
+          ? budgetState.reason
+          : pendingOutcome.reason
+      // 1A → 1C wire: derive typecheck signal from LSP for files touched
+      // by Edit/Write/NotebookEdit during this run. Cheap — just reads the
+      // sticky in-memory diagnostic map populated by passive LSP feedback.
+      const typecheck = computeTypecheckSignalForRun(
+        outcomeTaskId,
+        getLatestDiagnosticCountsForFile,
+      )
       // Best-effort outcome finalize. Never throws — recorder swallows IO errors.
-      await finalizeOutcomeRun(outcomeTaskId, pendingOutcome.kind, {
-        reason: pendingOutcome.reason,
+      await finalizeOutcomeRun(outcomeTaskId, finalKind, {
+        reason: finalReason,
         totalUsd: getTotalCost(),
         totalTokens:
           (this.totalUsage.input_tokens ?? 0) +
           (this.totalUsage.output_tokens ?? 0),
+        verifierSignal: typecheck === undefined ? undefined : { typecheck },
       })
     }
   }

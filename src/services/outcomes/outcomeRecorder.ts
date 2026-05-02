@@ -191,3 +191,61 @@ export async function finalizeRun(
 export function _resetActiveRunsForTest(): void {
   activeRuns.clear()
 }
+
+/**
+ * 1A → 1C wire: derive `verifierSignal.typecheck` from LSP diagnostics for
+ * every file the run touched via Edit/Write/NotebookEdit. Returns:
+ *   - `true`  if every touched file has zero LSP errors at finalize time
+ *   - `false` if at least one touched file has errors
+ *   - `undefined` if no files were touched, or LSP has no signal for any of
+ *                 them. Don't lie: undefined is honest "we don't know."
+ *
+ * The diagnostics lookup is injected so this module stays decoupled from
+ * the LSP service in tests. In production callers pass
+ * `getLatestDiagnosticCountsForFile` from `services/lsp/LSPDiagnosticRegistry`.
+ */
+export function computeTypecheckSignalForRun(
+  taskId: string | undefined,
+  getDiagnostics: (
+    path: string,
+  ) => { error: number; warning: number } | undefined,
+): boolean | undefined {
+  if (!taskId) return undefined
+  const run = activeRuns.get(taskId)
+  if (!run) return undefined
+
+  const writeTools = new Set([
+    'Edit',
+    'FileEditTool',
+    'Write',
+    'FileWriteTool',
+    'NotebookEdit',
+    'NotebookEditTool',
+  ])
+  const touched = new Set<string>()
+  for (const tc of run.toolCalls) {
+    if (!writeTools.has(tc.name)) continue
+    if (!tc.args || typeof tc.args !== 'object') continue
+    const a = tc.args as Record<string, unknown>
+    const candidate =
+      typeof a.file_path === 'string'
+        ? a.file_path
+        : typeof a.path === 'string'
+          ? a.path
+          : typeof a.notebook_path === 'string'
+            ? a.notebook_path
+            : undefined
+    if (candidate) touched.add(candidate)
+  }
+
+  if (touched.size === 0) return undefined
+
+  let sawSignal = false
+  for (const path of touched) {
+    const counts = getDiagnostics(path)
+    if (counts === undefined) continue
+    sawSignal = true
+    if (counts.error > 0) return false
+  }
+  return sawSignal ? true : undefined
+}

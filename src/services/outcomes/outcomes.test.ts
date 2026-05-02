@@ -6,6 +6,7 @@ import {
   _resetActiveRunsForTest,
   attachPlan,
   beginRun,
+  computeTypecheckSignalForRun,
   finalizeRun,
   recordToolCall,
 } from './outcomeRecorder.js'
@@ -119,5 +120,57 @@ describe('outcome log', () => {
     expect(args.command).not.toContain(
       'ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
     )
+  })
+
+  test('errorKind flows through finalize when set', async () => {
+    const taskId = beginRun('flaky network call', '/tmp/proj')!
+    recordToolCall(
+      taskId,
+      'WebFetch',
+      { url: 'https://api.example.com/x' },
+      false,
+      120,
+      'transient',
+    )
+    await finalizeRun(taskId, 'failure', { totalUsd: 0, totalTokens: 0 })
+
+    const records = await listOutcomesForFingerprint(
+      computeFingerprint('flaky network call', '/tmp/proj'),
+    )
+    expect(records).toHaveLength(1)
+    expect(records[0].toolCalls[0].errorKind).toBe('transient')
+  })
+
+  test('computeTypecheckSignalForRun: undefined when no files touched', () => {
+    const taskId = beginRun('explore project', '/tmp/proj')!
+    recordToolCall(taskId, 'Grep', { pattern: 'foo' }, true, 10)
+    expect(computeTypecheckSignalForRun(taskId, () => undefined)).toBeUndefined()
+  })
+
+  test('computeTypecheckSignalForRun: true when all touched files clean', () => {
+    const taskId = beginRun('edit two files', '/tmp/proj')!
+    recordToolCall(taskId, 'Edit', { file_path: '/a.ts' }, true, 5)
+    recordToolCall(taskId, 'Write', { file_path: '/b.ts' }, true, 5)
+    const result = computeTypecheckSignalForRun(taskId, () => ({
+      error: 0,
+      warning: 0,
+    }))
+    expect(result).toBe(true)
+  })
+
+  test('computeTypecheckSignalForRun: false on any errored touched file', () => {
+    const taskId = beginRun('edit two files', '/tmp/proj')!
+    recordToolCall(taskId, 'Edit', { file_path: '/a.ts' }, true, 5)
+    recordToolCall(taskId, 'Edit', { file_path: '/b.ts' }, true, 5)
+    const result = computeTypecheckSignalForRun(taskId, path =>
+      path === '/b.ts' ? { error: 2, warning: 0 } : { error: 0, warning: 0 },
+    )
+    expect(result).toBe(false)
+  })
+
+  test('computeTypecheckSignalForRun: undefined when LSP has no signal', () => {
+    const taskId = beginRun('edit one file', '/tmp/proj')!
+    recordToolCall(taskId, 'Edit', { file_path: '/a.ts' }, true, 5)
+    expect(computeTypecheckSignalForRun(taskId, () => undefined)).toBeUndefined()
   })
 })

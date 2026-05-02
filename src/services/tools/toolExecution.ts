@@ -594,6 +594,7 @@ export async function* runToolUse(
       toolInput,
       false,
       Date.now() - outcomeStartedAt,
+      readRetryAnnotation(error)?.errorKind,
     )
   }
 }
