@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import { budgetExhaustedMessage, isBudgetExhausted } from '../budget.js'
 import {
   getToolNameForPermissionCheck,
   mcpInfoFromString,
@@ -1162,6 +1163,26 @@ async function hasPermissionsToUseToolInner(
 ): Promise<PermissionDecision> {
   if (context.abortController.signal.aborted) {
     throw new AbortError()
+  }
+
+  // 0. Budget caps (ASI roadmap P0 #2). Check before any rule lookup so
+  // exhaustion preempts even allow rules — once a cap is hit, no further
+  // tool work is permitted regardless of how the rule resolves. The
+  // companion graceful-summary path lives in query.ts: it sees the
+  // exhaustion at the top of the next loop iteration and injects a system
+  // reminder asking the model to summarize. Returning a deny here ensures
+  // the current in-flight tool batch is aborted cleanly with a useful
+  // message surfaced as a tool error.
+  const budgetState = isBudgetExhausted()
+  if (budgetState.exhausted) {
+    return {
+      behavior: 'deny',
+      decisionReason: {
+        type: 'other',
+        reason: `budget:${budgetState.reason ?? 'unknown'}`,
+      },
+      message: budgetExhaustedMessage(budgetState.reason ?? 'unknown'),
+    }
   }
 
   let appState = context.getAppState()
