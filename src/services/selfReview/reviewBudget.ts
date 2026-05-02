@@ -1,27 +1,35 @@
 /**
- * Local review-iteration budget counter.
+ * Review-iteration budget tracking.
  *
- * The ASI roadmap calls for a unified budget surface (`src/utils/budget.ts`,
- * Wave 1B item #2) with caps for $/tokens/sec/toolcalls/reviewIters and a
- * single `isBudgetExhausted()` check. That surface does not exist yet on
- * this branch, so we keep the review-iter counter local to this module
- * with a deliberately small API:
+ * Two layers:
  *
- *   - `incrementReviewIter(taskId)` — bump the counter for one run
- *   - `getReviewIterCount(taskId)` — current count
- *   - `isReviewIterBudgetExhausted({ taskId, cap })` — same shape as the
- *     planned `isBudgetExhausted` so the loop call site needs zero changes
- *     when the unified budget lands; just swap the import.
+ *   1. **Per-task counter** (this module). Used by the convergence guard so
+ *      a single brief's loop knows how many iterations it has run on its own
+ *      taskId. Independent across concurrent runs.
  *
- * When the unified budget module ships, replace this file's body with
- * re-exports against `utils/budget.ts` and delete the in-memory map.
+ *   2. **Session-global counter** in `utils/budget.ts`. Bumped here too so
+ *      the unified budget surface (`isBudgetExhausted`) can enforce a hard
+ *      cap on review iterations across the whole session — e.g. when the
+ *      user passes `--budget-reviewiters 20`. Without this delegation, a
+ *      runaway loop in one brief wouldn't show up in the global cap.
+ *
+ * Originally a forwards-compatible local shim while `utils/budget.ts` was
+ * still pre-Wave-1B. With Wave 1B + the reviewIters extension landed, the
+ * delegation is wired and only the per-task semantics live here.
  */
+
+import {
+  getReviewIterCount as getSessionReviewIterCount,
+  incrementReviewIterCount as incrementSessionReviewIters,
+} from '../../utils/budget.js'
 
 const reviewIterCounts = new Map<string, number>()
 
 export function incrementReviewIter(taskId: string): number {
   const next = (reviewIterCounts.get(taskId) ?? 0) + 1
   reviewIterCounts.set(taskId, next)
+  // Mirror to the session-global counter so isBudgetExhausted picks it up.
+  incrementSessionReviewIters()
   return next
 }
 
@@ -34,9 +42,9 @@ export function resetReviewIter(taskId: string): void {
 }
 
 /**
- * True iff the review-iter cap has been reached for this task. Mirrors the
- * planned shape of `isBudgetExhausted({ taskId, caps })` so the loop's
- * callsite is forwards-compatible.
+ * True iff the per-task review-iter cap has been reached for this task.
+ * The session-global cap is checked separately via `isBudgetExhausted`
+ * from utils/budget.ts.
  */
 export function isReviewIterBudgetExhausted(opts: {
   taskId: string
@@ -44,3 +52,9 @@ export function isReviewIterBudgetExhausted(opts: {
 }): boolean {
   return getReviewIterCount(opts.taskId) >= opts.cap
 }
+
+/**
+ * Re-exported for callers that want the global counter without importing
+ * utils/budget directly.
+ */
+export { getSessionReviewIterCount }

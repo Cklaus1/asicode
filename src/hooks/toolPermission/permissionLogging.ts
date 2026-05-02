@@ -146,6 +146,9 @@ function logApprovalEvent(
       })
       break
     case 'verifier_auto_approve':
+      // Internal analytics only — sibling tengu_tool_use_granted_* variants
+      // (in_config, by_classifier, by_permission_hook) are also not in the
+      // datadog allowlist, so this stays consistent with that precedent.
       logEvent(
         'tengu_tool_use_granted_by_verifier',
         baseMetadata(messageId, tool.name, waitMs),

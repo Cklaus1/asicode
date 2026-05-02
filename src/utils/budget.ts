@@ -29,6 +29,12 @@ export type BudgetCaps = {
   tokens?: number
   seconds?: number
   toolCalls?: number
+  /**
+   * Hard cap on self-review loop iterations across the session. Bumped by
+   * services/selfReview/reviewBudget when a review iteration starts. When
+   * hit, isBudgetExhausted reports `reason: 'review-iters cap hit (...)'`.
+   */
+  reviewIters?: number
 }
 
 export type BudgetExhaustion = {
@@ -38,6 +44,7 @@ export type BudgetExhaustion = {
 
 let activeCaps: BudgetCaps = {}
 let toolCallCount = 0
+let reviewIterCount = 0
 // Cached so we don't re-emit the same exhaustion reason on every check after
 // the first crossing — once exhausted, the reason is locked.
 let cachedExhaustion: BudgetExhaustion | null = null
@@ -61,7 +68,8 @@ export function hasAnyBudgetCap(): boolean {
     activeCaps.usd !== undefined ||
     activeCaps.tokens !== undefined ||
     activeCaps.seconds !== undefined ||
-    activeCaps.toolCalls !== undefined
+    activeCaps.toolCalls !== undefined ||
+    activeCaps.reviewIters !== undefined
   )
 }
 
@@ -80,6 +88,19 @@ export function getToolCallCount(): number {
 }
 
 /**
+ * Increment the session-wide review-iteration counter. Called by
+ * services/selfReview/reviewBudget at the top of each review-loop iteration
+ * (in addition to its per-task tracking, which is used for convergence).
+ */
+export function incrementReviewIterCount(): void {
+  reviewIterCount++
+}
+
+export function getReviewIterCount(): number {
+  return reviewIterCount
+}
+
+/**
  * Reset for tests and for explicit session resets (e.g. /clear). The
  * cost-tracker resets its totals separately; if you only reset one of them
  * the comparison still works (caps are absolute, not deltas).
@@ -87,6 +108,7 @@ export function getToolCallCount(): number {
 export function resetBudgetState(): void {
   activeCaps = {}
   toolCallCount = 0
+  reviewIterCount = 0
   cachedExhaustion = null
 }
 
@@ -117,7 +139,7 @@ export function isBudgetExhausted(): BudgetExhaustion {
     return cachedExhaustion
   }
 
-  const { usd, tokens, seconds, toolCalls } = activeCaps
+  const { usd, tokens, seconds, toolCalls, reviewIters } = activeCaps
 
   if (usd !== undefined) {
     const spent = getTotalCostUSD()
@@ -154,6 +176,15 @@ export function isBudgetExhausted(): BudgetExhaustion {
       cachedExhaustion = {
         exhausted: true,
         reason: `tool-call cap hit (${toolCallCount} of ${toolCalls})`,
+      }
+      return cachedExhaustion
+    }
+  }
+  if (reviewIters !== undefined) {
+    if (reviewIterCount >= reviewIters) {
+      cachedExhaustion = {
+        exhausted: true,
+        reason: `review-iters cap hit (${reviewIterCount} of ${reviewIters})`,
       }
       return cachedExhaustion
     }

@@ -177,7 +177,7 @@ export async function finalizeRun(
     totalTokens: options.totalTokens ?? 0,
     outcome,
     outcomeReason: options.reason ? redactSecrets(options.reason) : undefined,
-    verifierSignal: options.verifierSignal,
+    verifierSignal: mergeReviewSignalIfStaged(taskId, options.verifierSignal),
   }
 
   try {
@@ -187,9 +187,56 @@ export async function finalizeRun(
   }
 }
 
+/**
+ * If selfReview staged a signal for this run via attachReviewSignal, merge
+ * it into the verifierSignal under `.review`. Caller-supplied
+ * verifierSignal wins for typecheck/tests; review is owned exclusively by
+ * the staging mechanism.
+ */
+function mergeReviewSignalIfStaged(
+  taskId: string,
+  caller: VerifierSignal | undefined,
+): VerifierSignal | undefined {
+  const staged = _drainReviewSignal(taskId)
+  if (staged === undefined) return caller
+  // Staged payload is unknown-shape; trust the source (selfReview controls
+  // the type). The Zod schema on writeOutcomeRecord validates before disk.
+  const review = staged as VerifierSignal['review']
+  if (!caller) return { review }
+  return { ...caller, review }
+}
+
 /** Test-only: drop in-memory state. */
 export function _resetActiveRunsForTest(): void {
   activeRuns.clear()
+  stagedReviewSignals.clear()
+}
+
+/**
+ * 1.5 → 1C wire: stage the review verifier signal on the active run so
+ * finalizeRun can attach it to the persisted record's `verifierSignal.review`
+ * field. Called by services/selfReview's outcome-log sink at loop completion.
+ *
+ * Stored as a string-keyed property on the run rather than a typed shape so
+ * outcomeRecorder doesn't take a hard dependency on selfReview's types — the
+ * payload is opaque JSON to this module and validated by the Zod schema on
+ * write.
+ */
+const stagedReviewSignals = new Map<string, unknown>()
+
+export function attachReviewSignal(
+  taskId: string | undefined,
+  signal: unknown,
+): void {
+  if (!taskId) return
+  if (!activeRuns.has(taskId)) return
+  stagedReviewSignals.set(taskId, signal)
+}
+
+export function _drainReviewSignal(taskId: string): unknown {
+  const v = stagedReviewSignals.get(taskId)
+  stagedReviewSignals.delete(taskId)
+  return v
 }
 
 /**

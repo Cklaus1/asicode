@@ -57,12 +57,14 @@ export {
   type ReviewVerifierSignal,
   type OutcomeLogSink,
   InMemoryOutcomeLogSink,
+  OutcomeRecorderLogSink,
   buildVerifierSignal,
 } from './outcomeLogAdapter.js'
 
 export {
   incrementReviewIter,
   getReviewIterCount,
+  getSessionReviewIterCount,
   resetReviewIter,
   isReviewIterBudgetExhausted,
 } from './reviewBudget.js'

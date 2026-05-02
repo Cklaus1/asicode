@@ -56,6 +56,40 @@ export type OutcomeLogSink = {
 }
 
 /**
+ * Production sink — stages the review signal onto the active outcome run via
+ * `attachReviewSignal`. The next call to `finalizeRun` (in QueryEngine's
+ * finally block) merges it into `verifierSignal.review`, so review payloads
+ * land on the persisted record alongside typecheck/tests signals.
+ *
+ * Per-iteration appends are debug-logged but not persisted — only the final
+ * signal is kept on disk to avoid growing the record per iteration. Callers
+ * who want full per-iteration history can plug in a different sink.
+ */
+export class OutcomeRecorderLogSink implements OutcomeLogSink {
+  appendReviewIteration(_args: {
+    taskId: string
+    iter: number
+    findings: Finding[]
+    summary: string
+  }): void {
+    // No-op for production: per-iteration findings would bloat the on-disk
+    // record. Keep them in-process for the loop's convergence guard only.
+  }
+
+  async finalizeReview(args: {
+    taskId: string
+    signal: ReviewVerifierSignal
+  }): Promise<void> {
+    // Lazy import keeps services/selfReview a leaf module under the
+    // bun-test runner (selfReview tests don't need outcomes).
+    const { attachReviewSignal } = await import(
+      '../outcomes/outcomeRecorder.js'
+    )
+    attachReviewSignal(args.taskId, args.signal)
+  }
+}
+
+/**
  * Default in-memory sink — useful for tests and as a stub before the real
  * outcome log exists. Stores the most recent finalize per task so callers
  * can read it back for assertions / debugging.
