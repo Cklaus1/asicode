@@ -23,6 +23,7 @@ import {
   getCodeEditToolDecisionCounter,
   getStatsStore,
 } from '../../bootstrap/state.js'
+import { recordToolCall as recordOutcomeToolCall } from '../outcomes/outcomeRecorder.js'
 import {
   buildCodeEditToolAttributes,
   isCodeEditingTool,
@@ -412,6 +413,23 @@ export async function* runToolUse(
   }
 
   const toolInput = toolUse.input as { [key: string]: string }
+  // Outcome log: track timing + success for this tool call so the run's
+  // record reflects actual trajectory (not just analytics counters). We
+  // observe success by inspecting tool_result.is_error on yielded messages.
+  const outcomeStartedAt = Date.now()
+  let outcomeAnyError = false
+  const noteOutcomeError = (msg: Message): void => {
+    if (
+      msg.type === 'user' &&
+      Array.isArray(msg.message.content) &&
+      msg.message.content.some(
+        (c: { type: string; is_error?: boolean }) =>
+          c.type === 'tool_result' && c.is_error === true,
+      )
+    ) {
+      outcomeAnyError = true
+    }
+  }
   try {
     if (toolUseContext.abortController.signal.aborted) {
       logEvent('tengu_tool_use_cancelled', {
@@ -450,6 +468,13 @@ export async function* runToolUse(
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       }
+      recordOutcomeToolCall(
+        toolUseContext.outcomeTaskId,
+        tool.name,
+        toolInput,
+        false,
+        Date.now() - outcomeStartedAt,
+      )
       return
     }
 
@@ -465,8 +490,16 @@ export async function* runToolUse(
       mcpServerType,
       mcpServerBaseUrl,
     )) {
+      if (update.message) noteOutcomeError(update.message)
       yield update
     }
+    recordOutcomeToolCall(
+      toolUseContext.outcomeTaskId,
+      tool.name,
+      toolInput,
+      !outcomeAnyError,
+      Date.now() - outcomeStartedAt,
+    )
   } catch (error) {
     logError(error)
     const errorMessage = error instanceof Error ? error.message : String(error)
@@ -487,6 +520,13 @@ export async function* runToolUse(
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     }
+    recordOutcomeToolCall(
+      toolUseContext.outcomeTaskId,
+      tool.name,
+      toolInput,
+      false,
+      Date.now() - outcomeStartedAt,
+    )
   }
 }
 

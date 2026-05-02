@@ -762,6 +762,13 @@ export const SettingsSchema = lazySchema(() =>
           'When false, prompt suggestions are disabled. When absent or true, ' +
             'prompt suggestions are enabled.',
         ),
+      outcomeLogging: z
+        .boolean()
+        .optional()
+        .describe(
+          'When false, the outcome log is disabled — past run plans/' +
+            'trajectories/outcomes are not recorded for retrieval. Defaults to true.',
+        ),
       showClearContextOnPlanAccept: z
         .boolean()
         .optional()

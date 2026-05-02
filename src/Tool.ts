@@ -312,6 +312,14 @@ export type ToolUseContext = {
    * and bust the cache. See forkSubagent.ts.
    */
   renderedSystemPrompt?: SystemPrompt
+  /**
+   * Outcome-log task id for the active top-level run. Set on the main thread
+   * by QueryEngine.submitMessage when outcomeLogging is enabled. Tools (and
+   * the streaming executor) record per-call entries against this id; the
+   * QueryEngine finalizes the record when the run terminates. Subagents
+   * inherit the parent id so their tool calls roll up into the same record.
+   */
+  outcomeTaskId?: string
 }
 
 // Re-export ToolProgressData from centralized location
