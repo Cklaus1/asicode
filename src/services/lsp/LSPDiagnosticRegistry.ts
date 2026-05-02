@@ -56,6 +56,25 @@ const deliveredDiagnostics = new LRUCache<string, Set<string>>({
 })
 
 /**
+ * Latest known diagnostic severity counts per file. Updated on every
+ * publishDiagnostics. Unlike `pendingDiagnostics` (consumed at attachment
+ * delivery), this is a sticky snapshot of the LSP server's current view
+ * of a file, suitable for "is this file currently in a clean state?"
+ * queries from the verifier-gated auto-approve racer.
+ *
+ * NOTE: a publishDiagnostics with an empty array overwrites with
+ * { error: 0, warning: 0 } — that's the LSP-spec way servers signal
+ * "diagnostics resolved", not "no info". Bounded LRU keeps long sessions
+ * from accumulating entries.
+ */
+const latestDiagnosticsByFile = new LRUCache<
+  string,
+  { error: number; warning: number }
+>({
+  max: MAX_DELIVERED_FILES,
+})
+
+/**
  * Register LSP diagnostics received from a server.
  * These will be delivered as attachments in the next query.
  *
@@ -82,6 +101,41 @@ export function registerPendingLSPDiagnostic({
     timestamp: Date.now(),
     attachmentSent: false,
   })
+
+  // Sticky per-file snapshot for the verifier-gated auto-approve racer.
+  // passiveFeedback skips empty diagnostic arrays before calling us, so a
+  // server that resolves all errors won't push an empty here — but we still
+  // want to clear stale state when a file goes from errors → clean. The
+  // verifier treats "no entry" as "no known errors", which matches the
+  // server's silence on resolved files.
+  for (const file of files) {
+    let errorCount = 0
+    let warningCount = 0
+    for (const diag of file.diagnostics) {
+      if (diag.severity === 'Error') errorCount++
+      else if (diag.severity === 'Warning') warningCount++
+    }
+    latestDiagnosticsByFile.set(file.uri, {
+      error: errorCount,
+      warning: warningCount,
+    })
+  }
+}
+
+/**
+ * Returns the latest known error/warning counts for a file, or undefined
+ * if no diagnostics have ever been published for this URI.
+ *
+ * Path matching: passiveFeedback.formatDiagnosticsForAttachment converts
+ * file:// URIs to filesystem paths via fileURLToPath, so callers should
+ * pass an absolute filesystem path.
+ *
+ * Used by the verifier-gated auto-approve racer in interactiveHandler.
+ */
+export function getLatestDiagnosticCountsForFile(
+  filePath: string,
+): { error: number; warning: number } | undefined {
+  return latestDiagnosticsByFile.get(filePath)
 }
 
 /**
@@ -360,6 +414,7 @@ export function resetAllLSPDiagnosticState(): void {
   )
   pendingDiagnostics.clear()
   deliveredDiagnostics.clear()
+  latestDiagnosticsByFile.clear()
 }
 
 /**

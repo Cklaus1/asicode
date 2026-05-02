@@ -28,8 +28,10 @@ import { errorMessage } from '../../../utils/errors.js'
 import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js'
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
 import { hasPermissionsToUseTool } from '../../../utils/permissions/permissions.js'
+import { getSettings_DEPRECATED } from '../../../utils/settings/settings.js'
 import type { PermissionContext } from '../PermissionContext.js'
 import { createResolveOnce } from '../PermissionContext.js'
+import { isVerifierEnabled, runVerifierCheck } from './verifier.js'
 
 type InteractivePermissionParams = {
   ctx: PermissionContext
@@ -527,6 +529,78 @@ function handleInteractivePermission(
         level: 'error',
       })
     })
+  }
+
+  // Verifier-gated auto-approve racer (P0 #1).
+  //
+  // When `verifierAutoApprove` is enabled in settings, run a fast automated
+  // verifier in parallel with the human prompt. If the verifier returns
+  // "safe" before the user reacts, claim the race and resolve as allow.
+  //
+  // Same 200ms grace as `onUserInteraction`: don't let the verifier win in
+  // the first 200ms — that window catches reflex keypresses landing on a
+  // dialog the user didn't ask for. After 200ms, if the user starts typing
+  // we set `userInteracted` and bail.
+  //
+  // BashTool has its own classifier path (see racer above) and is filtered
+  // out inside `isVerifierEnabled`, so it never reaches here.
+  const settings = getSettings_DEPRECATED()
+  if (
+    isVerifierEnabled({
+      verifierAutoApprove: settings.verifierAutoApprove,
+      toolName: ctx.tool.name,
+    }) &&
+    !awaitAutomatedChecksBeforeDialog
+  ) {
+    const VERIFIER_GRACE_MS = 200
+    void (async () => {
+      try {
+        // Kick the verifier off immediately — the 200ms gate is on
+        // *winning the race*, not on starting the work. For the v1
+        // synchronous lookup this is academic; for a future speculative
+        // typecheck it'll matter.
+        const verdict = await runVerifierCheck(ctx.tool, ctx.input)
+
+        if (verdict.decision !== 'safe') {
+          if (verdict.decision === 'unsafe') {
+            logForDebugging(
+              `verifier: classified ${ctx.tool.name} as unsafe — ${verdict.reason}`,
+            )
+          }
+          return
+        }
+
+        // Wait out the grace period before attempting to claim. If the
+        // user has started interacting in the meantime, bail.
+        const elapsed = Date.now() - permissionPromptStartTimeMs
+        const remaining = VERIFIER_GRACE_MS - elapsed
+        if (remaining > 0) {
+          await new Promise<void>(r => setTimeout(r, remaining))
+        }
+
+        if (isResolved() || userInteracted) return
+        if (!claim()) return
+
+        if (bridgeCallbacks && bridgeRequestId) {
+          bridgeCallbacks.cancelRequest(bridgeRequestId)
+        }
+        channelUnsubscribe?.()
+        ctx.removeFromQueue()
+
+        ctx.logDecision(
+          { decision: 'accept', source: { type: 'verifier_auto_approve' } },
+          { permissionPromptStartTimeMs },
+        )
+        resolveOnce(ctx.buildAllow(displayInput))
+      } catch (error) {
+        // Verifier failures must not block the human prompt — log and let
+        // other racers proceed.
+        logForDebugging(
+          `Verifier auto-approve check failed: ${errorMessage(error)}`,
+          { level: 'error' },
+        )
+      }
+    })()
   }
 }
 
