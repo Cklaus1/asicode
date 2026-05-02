@@ -320,6 +320,15 @@ export type ToolUseContext = {
    * inherit the parent id so their tool calls roll up into the same record.
    */
   outcomeTaskId?: string
+  /**
+   * Worktree path eligible for per-step autocheckpoint commits. Set by
+   * AgentTool when the auto-worktree gate fires AND autonomy.autoCheckpoint
+   * is on; threaded through to subagent tool execution via createSubagentContext.
+   * When set, the streaming tool executor commits a `[autocheckpoint] step-<N>`
+   * after each successful write-tool call (Edit/Write/NotebookEdit/Bash, by
+   * default — configurable via autonomy.checkpointWriteTools). Backs P0 #3.
+   */
+  checkpointWorktreePath?: string
 }
 
 // Re-export ToolProgressData from centralized location

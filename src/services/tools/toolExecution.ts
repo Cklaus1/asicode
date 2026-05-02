@@ -24,6 +24,7 @@ import {
   getStatsStore,
 } from '../../bootstrap/state.js'
 import { incrementToolCallCount } from '../../utils/budget.js'
+import { recordCheckpoint } from '../checkpoint/checkpointStore.js'
 import { recordToolCall as recordOutcomeToolCall } from '../outcomes/outcomeRecorder.js'
 import {
   buildCodeEditToolAttributes,
@@ -144,6 +145,47 @@ export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500
 /** Log a debug warning when hooks/permission-decision block for this long. Matches
  * BashTool's PROGRESS_THRESHOLD_MS — the collapsed view feels stuck past this. */
 const SLOW_PHASE_LOG_THRESHOLD_MS = 2000
+
+/**
+ * Default tool names that trigger an autocheckpoint after a successful call
+ * (matches `autonomy.checkpointWriteTools` default in settings/types.ts).
+ * Cached as a module-level constant so the hot path doesn't re-allocate.
+ */
+const DEFAULT_CHECKPOINT_WRITE_TOOLS: readonly string[] = [
+  FILE_EDIT_TOOL_NAME,
+  FILE_WRITE_TOOL_NAME,
+  NOTEBOOK_EDIT_TOOL_NAME,
+  BASH_TOOL_NAME,
+]
+
+/**
+ * P0 #3 — true if this tool name should trigger an autocheckpoint commit
+ * after a successful call. Reads `autonomy.checkpointWriteTools` lazily;
+ * falls back to the defaults when settings are unavailable (e.g. tests).
+ */
+function isCheckpointWriteTool(toolName: string): boolean {
+  // Lazy require: settings.ts pulls bun:bundle which the bare test runner
+  // can't resolve without the build harness. Most call sites that test this
+  // module do so without setting `checkpointWorktreePath` so this code path
+  // is dead in tests anyway — but the require here keeps it that way.
+  let configured: string[] | undefined
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const settings = require('../../utils/settings/settings.js') as {
+      getInitialSettings?: () => {
+        autonomy?: { checkpointWriteTools?: string[] }
+      } | undefined
+    }
+    configured = settings.getInitialSettings?.()?.autonomy?.checkpointWriteTools
+  } catch {
+    // settings unavailable — use defaults
+  }
+  const list =
+    configured && configured.length > 0
+      ? configured
+      : DEFAULT_CHECKPOINT_WRITE_TOOLS
+  return list.includes(toolName)
+}
 
 /**
  * Read the retry policy block from `settings.retry`. Defensive: settings is
@@ -568,6 +610,28 @@ export async function* runToolUse(
       !outcomeAnyError,
       Date.now() - outcomeStartedAt,
     )
+
+    // P0 #3 — autocheckpoint trigger. After a successful write-tool call
+    // inside a worktree-isolated agent, commit a per-step checkpoint so the
+    // run is rollback-able. Fires only when:
+    //   - the parent set checkpointWorktreePath (autonomy.autoCheckpoint on
+    //     AND the agent runs in a worktree)
+    //   - the tool name is in the configured write-tool allowlist
+    //   - the call did not produce a tool_result with is_error=true
+    // Failures from the checkpoint store are swallowed by recordCheckpoint
+    // itself — checkpointing is a best-effort safety net, never a critical
+    // path.
+    if (
+      toolUseContext.checkpointWorktreePath &&
+      !outcomeAnyError &&
+      isCheckpointWriteTool(tool.name)
+    ) {
+      void recordCheckpoint(
+        toolUseContext.checkpointWorktreePath,
+        tool.name,
+        toolUseContext.outcomeTaskId,
+      )
+    }
   } catch (error) {
     logError(error)
     const errorMessage = error instanceof Error ? error.message : String(error)

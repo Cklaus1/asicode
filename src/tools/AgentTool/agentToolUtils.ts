@@ -528,7 +528,15 @@ export async function runAsyncAgentLifecycle({
   rootSetAppState: SetAppState
   agentIdForCleanup: string
   enableSummarization: boolean
-  getWorktreeResult: () => Promise<{
+  /**
+   * Cleanup the agent's worktree (if any).
+   *
+   * `failureMode` (P0 #3): pass true on the failure/abort paths so the
+   * cleanup helper preserves the worktree (and its autocheckpoints) for
+   * post-mortem inspection when autonomy.autoCheckpoint is on. Default
+   * false (success path) deletes the worktree if no diff vs base SHA.
+   */
+  getWorktreeResult: (failureMode?: boolean) => Promise<{
     worktreePath?: string
     worktreeBranch?: string
   }>

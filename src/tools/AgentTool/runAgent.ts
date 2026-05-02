@@ -266,6 +266,7 @@ export async function* runAgent({
   contentReplacementState,
   useExactTools,
   worktreePath,
+  checkpointWorktreePath,
   description,
   transcriptSubdir,
   onQueryProgress,
@@ -318,6 +319,11 @@ export async function* runAgent({
   /** Worktree path if the agent was spawned with isolation: "worktree".
    * Persisted to metadata so resume can restore the correct cwd. */
   worktreePath?: string
+  /** When set, the streaming tool executor will commit a per-step
+   * autocheckpoint inside this path after each successful write tool call.
+   * Always points at a worktree (never the main repo). Set by AgentTool when
+   * autonomy.autoCheckpoint is on and a worktree was created for the agent. */
+  checkpointWorktreePath?: string
   /** Original task description from AgentTool input. Persisted to metadata
    * so a resumed agent's notification can show the original description. */
   description?: string
@@ -730,6 +736,19 @@ export async function* runAgent({
   // Preserve tool use results for subagents with viewable transcripts (in-process teammates)
   if (preserveToolUseResults) {
     agentToolUseContext.preserveToolUseResults = true
+  }
+
+  // P0 #3 — autocheckpoint hand-off. When AgentTool's auto-worktree gate
+  // fired AND autonomy.autoCheckpoint is on, the parent passes the worktree
+  // path here so the streaming tool executor (toolExecution.ts) commits a
+  // per-step autocheckpoint inside it after each successful write tool call.
+  // Setting it AFTER createSubagentContext (which propagates the parent's
+  // value) lets AgentTool override the inherited path with the agent's own
+  // worktree — necessary because nested AgentTool spawns spawn their own
+  // worktrees and each one's tool calls should checkpoint inside that path,
+  // not the parent's.
+  if (checkpointWorktreePath !== undefined) {
+    agentToolUseContext.checkpointWorktreePath = checkpointWorktreePath
   }
 
   // Expose cache-safe params for background summarization (prompt cache sharing)

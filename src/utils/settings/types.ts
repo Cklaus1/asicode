@@ -546,6 +546,46 @@ export const SettingsSchema = lazySchema(() =>
         })
         .optional()
         .describe('Git worktree configuration for --worktree flag.'),
+      // ASI roadmap P0 #3 — autonomy primitives.
+      // autoWorktree: when true, AgentTool dispatch upgrades isolation to
+      //   'worktree' for write-capable subagents (read-only agents like
+      //   Explore/Plan are skipped). Explicit isolation in caller args wins.
+      // autoCheckpoint: when true and a worktree is in use, every successful
+      //   write tool call (Edit/Write/NotebookEdit/Bash etc.) is committed
+      //   inside the worktree as an autocheckpoint, so individual steps can
+      //   be rolled back. Default: true when autoWorktree is true.
+      // checkpointWriteTools: which tool names trigger a checkpoint after a
+      //   successful call. Default ['Edit', 'Write', 'NotebookEdit', 'Bash'].
+      autonomy: z
+        .object({
+          autoWorktree: z
+            .boolean()
+            .optional()
+            .describe(
+              'Auto-isolate write-capable subagent dispatches in a git worktree. ' +
+                'Default: false (opt-in until best-of-N race lands).',
+            ),
+          autoCheckpoint: z
+            .boolean()
+            .optional()
+            .describe(
+              'When in a worktree, commit a per-step autocheckpoint after each ' +
+                'successful write tool call so individual steps can be rolled back. ' +
+                'Default: true when autoWorktree is true; false otherwise.',
+            ),
+          checkpointWriteTools: z
+            .array(z.string())
+            .optional()
+            .describe(
+              'Tool names that trigger an autocheckpoint after a successful call. ' +
+                "Default: ['Edit', 'Write', 'NotebookEdit', 'Bash'].",
+            ),
+        })
+        .optional()
+        .describe(
+          'Autonomy primitives: auto-worktree per attempt and per-step git ' +
+            'autocheckpoint. Backs ASI roadmap P0 #3 (rollback floor for #4 / #6).',
+        ),
       // Whether to disable all hooks and statusLine
       disableAllHooks: z
         .boolean()
