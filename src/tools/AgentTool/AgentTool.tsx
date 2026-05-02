@@ -40,9 +40,14 @@ import { teleportToRemote } from '../../utils/teleport.js';
 import { getAssistantMessageContentLength } from '../../utils/tokens.js';
 import { createAgentId } from '../../utils/uuid.js';
 import { createAgentWorktree, hasWorktreeChanges, removeAgentWorktree } from '../../utils/worktree.js';
+import { getInitialSettings } from '../../utils/settings/settings.js';
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
+import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js';
+import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js';
+import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js';
+import { listCheckpoints } from '../../services/checkpoint/checkpointStore.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
@@ -77,6 +82,70 @@ function getAutoBackgroundMs(): number {
 }
 
 // Multi-agent type constants are defined inline inside gated blocks to enable dead code elimination
+
+/**
+ * P0 #3 — auto-worktree gate heuristic.
+ *
+ * An agent is treated as "read-only" (and therefore skipped by the auto-worktree
+ * upgrade) when its tool-restriction profile rules out every state-changing
+ * tool: Edit, Write, NotebookEdit must all be disallowed, AND its `tools`
+ * allowlist (when present) must not whitelist any of those three. We don't try
+ * to introspect Bash commands — agents that allow Bash but disallow Edit/Write/
+ * NotebookEdit are conservatively treated as "could write" so the worktree
+ * fires. False positives here just mean an unnecessary worktree, never lost
+ * isolation; the inverse would be the actual safety hazard.
+ */
+function isReadOnlyAgentDefinition(agent: AgentDefinition): boolean {
+  const writeNames = [
+    FILE_EDIT_TOOL_NAME,
+    FILE_WRITE_TOOL_NAME,
+    NOTEBOOK_EDIT_TOOL_NAME,
+  ];
+  const disallowed = new Set(agent.disallowedTools ?? []);
+  // If any write tool is NOT disallowed, the agent could write -> not read-only.
+  if (!writeNames.every(t => disallowed.has(t))) return false;
+  // If the allowlist (when present) explicitly grants a write tool, override.
+  // '*' means "all tools allowed", combined with disallowedTools the disallowed
+  // ones are still removed — so '*' alone with the disallow above is read-only.
+  const allowed = agent.tools;
+  if (allowed && allowed.length > 0) {
+    if (writeNames.some(t => allowed.includes(t))) return false;
+  }
+  return true;
+}
+
+type AutonomySettings = {
+  autoWorktree: boolean;
+  autoCheckpoint: boolean;
+  checkpointWriteTools: string[];
+};
+
+const DEFAULT_CHECKPOINT_WRITE_TOOLS: readonly string[] = [
+  FILE_EDIT_TOOL_NAME,
+  FILE_WRITE_TOOL_NAME,
+  NOTEBOOK_EDIT_TOOL_NAME,
+  BASH_TOOL_NAME,
+];
+
+/**
+ * Resolve effective autonomy settings. Defaults match the P0 #3 spec:
+ * - autoWorktree off (opt-in until best-of-N race in #4)
+ * - autoCheckpoint defaults to autoWorktree (true when worktrees fire)
+ * - checkpointWriteTools defaults to Edit/Write/NotebookEdit/Bash
+ */
+function readAutonomySettings(): AutonomySettings {
+  const raw = getInitialSettings().autonomy;
+  const autoWorktree = raw?.autoWorktree === true;
+  // autoCheckpoint defaults to autoWorktree — disabling worktree disables
+  // checkpoints, but explicit autoCheckpoint:false keeps worktrees without
+  // commit overhead.
+  const autoCheckpoint = raw?.autoCheckpoint ?? autoWorktree;
+  const checkpointWriteTools =
+    raw?.checkpointWriteTools && raw.checkpointWriteTools.length > 0
+      ? raw.checkpointWriteTools
+      : [...DEFAULT_CHECKPOINT_WRITE_TOOLS];
+  return { autoWorktree, autoCheckpoint, checkpointWriteTools };
+}
 
 // Base input schema without multi-agent parameters
 const baseInputSchema = lazySchema(() => z.object({
@@ -428,7 +497,25 @@ export const AgentTool = buildTool({
     });
 
     // Resolve effective isolation mode (explicit param overrides agent def)
-    const effectiveIsolation = isolation ?? selectedAgent.isolation;
+    let effectiveIsolation = isolation ?? selectedAgent.isolation;
+
+    // P0 #3 — auto-worktree gate.
+    // Honor explicit caller/definition isolation. Otherwise, if
+    // autonomy.autoWorktree is enabled and the agent could write files,
+    // upgrade to 'worktree' so the run is isolated. Read-only agents
+    // (Explore/Plan etc.) are skipped — they don't need a worktree and
+    // creating one wastes ~hundreds of ms.
+    const autonomy = readAutonomySettings();
+    if (
+      effectiveIsolation === undefined &&
+      autonomy.autoWorktree &&
+      !isReadOnlyAgentDefinition(selectedAgent)
+    ) {
+      effectiveIsolation = 'worktree';
+      logForDebugging(
+        `[autonomy] auto-upgraded agent '${selectedAgent.agentType}' to worktree isolation (autoWorktree=true)`,
+      );
+    }
 
     // Remote isolation: delegate to CCR. Gated internal-only — the guard enables
     // dead code elimination of the entire block for external builds.
@@ -644,6 +731,16 @@ export const AgentTool = buildTool({
         useExactTools: true
       }),
       worktreePath: worktreeInfo?.worktreePath,
+      // P0 #3 — wire autocheckpoint into the subagent. Only set when a
+      // worktree actually exists (the gate elsewhere may upgrade isolation
+      // but createAgentWorktree can fail outside a git repo) and when
+      // autonomy.autoCheckpoint is on. Sub-agent context will inherit this
+      // and the tool executor will commit per-step checkpoints inside the
+      // worktree path.
+      checkpointWorktreePath:
+        worktreeInfo && autonomy.autoCheckpoint && !worktreeInfo.hookBased
+          ? worktreeInfo.worktreePath
+          : undefined,
       description,
       agentName: name,
     };
@@ -653,8 +750,13 @@ export const AgentTool = buildTool({
     const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath;
     const wrapWithCwd = <T,>(fn: () => T): T => cwdOverridePath ? runWithCwdOverride(cwdOverridePath, fn) : fn();
 
-    // Helper to clean up worktree after agent completes
-    const cleanupWorktreeIfNeeded = async (): Promise<{
+    // Helper to clean up worktree after agent completes.
+    // `failureMode` (P0 #3): when the agent failed/aborted AND autocheckpoint
+    // is on, preserve the worktree unconditionally so the user can inspect
+    // checkpoints. Without this branch, hasWorktreeChanges → false (rare but
+    // possible if all work was reverted) would silently delete the
+    // checkpoints the user might want to review.
+    const cleanupWorktreeIfNeeded = async (failureMode: boolean = false): Promise<{
       worktreePath?: string;
       worktreeBranch?: string;
     }> => {
@@ -674,6 +776,20 @@ export const AgentTool = buildTool({
         logForDebugging(`Hook-based agent worktree kept at: ${worktreePath}`);
         return {
           worktreePath
+        };
+      }
+      // P0 #3 — preserve on failure when autocheckpoint is in play. The user
+      // may want to inspect partial work even when no files differ from
+      // headCommit (e.g. agent rolled back via rollbackTo).
+      if (failureMode && autonomy.autoCheckpoint) {
+        const checkpoints = await listCheckpoints(worktreePath).catch(() => []);
+        const inspectHint =
+          `Worktree preserved at ${worktreePath} with ${checkpoints.length} autocheckpoint${checkpoints.length === 1 ? '' : 's'}. ` +
+          `Run \`git -C ${worktreePath} log --oneline\` to inspect; \`git worktree remove ${worktreePath}\` to delete.`;
+        logForDebugging(inspectHint);
+        return {
+          worktreePath,
+          worktreeBranch
         };
       }
       if (headCommit) {

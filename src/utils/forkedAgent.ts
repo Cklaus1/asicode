@@ -458,6 +458,15 @@ export function createSubagentContext(
     criticalSystemReminder_EXPERIMENTAL:
       overrides?.criticalSystemReminder_EXPERIMENTAL,
     requireCanUseTool: overrides?.requireCanUseTool,
+    // Subagent tool calls roll up into the parent's outcome record (see
+    // Tool.ts:outcomeTaskId). Without explicit propagation, the spread above
+    // builds a fresh object and the field is dropped — leaving subagent tool
+    // calls invisible to outcome logging and the autocheckpoint store.
+    outcomeTaskId: parentContext.outcomeTaskId,
+    // Autocheckpoint hand-off (P0 #3): when AgentTool's auto-worktree gate
+    // fires, the parent sets this to the worktree path so each successful
+    // write tool call inside the subagent triggers a per-step commit there.
+    checkpointWorktreePath: parentContext.checkpointWorktreePath,
   }
 }
 
