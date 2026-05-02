@@ -494,6 +494,38 @@ export const SettingsSchema = lazySchema(() =>
             'fixer subagent that addresses critical/high/medium ones. Iterates until ' +
             'no blocking findings remain or maxIters hits, then escalates.',
         ),
+      // P0 #7 from docs/asi-roadmap.md — typed-error retry policy.
+      // The classifier in src/services/api/errorTaxonomy.ts maps tool failures
+      // into kinds; src/services/api/retryPolicy.ts decides retry / replan /
+      // escalate / ask / fail_fast. `enabled:false` reverts to pre-feature
+      // behavior (raw error bubbles up unchanged).
+      retry: z
+        .object({
+          enabled: z
+            .boolean()
+            .optional()
+            .describe(
+              'Enable typed-error retry policy for tool execution. ' +
+                'When false, tool errors propagate to the model unchanged (legacy behavior). ' +
+                'Default: true.',
+            ),
+          maxTransientAttempts: z
+            .number()
+            .int()
+            .min(1)
+            .max(10)
+            .optional()
+            .describe(
+              'Total attempts (including the original call) for transient errors ' +
+                '(network/rate_limit/timeout/5xx). Default: 3.',
+            ),
+        })
+        .optional()
+        .describe(
+          'Typed-error retry policy. Classifies tool failures into kinds ' +
+            '(transient, auth, budget, permission, invalid_input, permanent, unknown) ' +
+            'and applies a strategy per kind.',
+        ),
       worktree: z
         .object({
           symlinkDirectories: z
