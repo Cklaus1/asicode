@@ -128,6 +128,7 @@ import { getPluginSeedDirs } from './utils/plugins/pluginDirectories.js';
 import { countFilesRoundedRg } from './utils/ripgrep.js';
 import { processSessionStartHooks, processSetupHooks } from './utils/sessionStart.js';
 import { cacheSessionTitle, getSessionIdFromLog, loadTranscriptFromFile, saveAgentSetting, saveMode, searchSessionsByCustomTitle, sessionIdExists } from './utils/sessionStorage.js';
+import { setBudgetCaps } from './utils/budget.js';
 import { ensureMdmSettingsLoaded } from './utils/settings/mdm/settings.js';
 import { getInitialSettings, getManagedSettingsKeysForLogging, getSettingsForSource, getSettingsWithErrors } from './utils/settings/settings.js';
 import { resetSettingsCache } from './utils/settings/settingsCache.js';
@@ -979,7 +980,31 @@ async function run(): Promise<CommanderCommand> {
       throw new Error('--task-budget must be a positive integer');
     }
     return tokens;
-  }).hideHelp()).option('--replay-user-messages', 'Re-emit user messages from stdin back on stdout for acknowledgment (only works with --input-format=stream-json and --output-format=stream-json)', () => true).addOption(new Option('--enable-auth-status', 'Enable auth status messages in SDK mode').default(false).hideHelp()).option('--allowedTools, --allowed-tools <tools...>', 'Comma or space-separated list of tool names to allow (e.g. "Bash(git:*) Edit")').option('--tools <tools...>', 'Specify the list of available tools from the built-in set. Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read").').option('--disallowedTools, --disallowed-tools <tools...>', 'Comma or space-separated list of tool names to deny (e.g. "Bash(git:*) Edit")').option('--mcp-config <configs...>', 'Load MCP servers from JSON files or strings (space-separated)').addOption(new Option('--permission-prompt-tool <tool>', 'MCP tool to use for permission prompts (only works with --print)').argParser(String).hideHelp()).addOption(new Option('--system-prompt <prompt>', 'System prompt to use for the session').argParser(String)).addOption(new Option('--system-prompt-file <file>', 'Read system prompt from a file').argParser(String).hideHelp()).addOption(new Option('--append-system-prompt <prompt>', 'Append a system prompt to the default system prompt').argParser(String)).addOption(new Option('--append-system-prompt-file <file>', 'Read system prompt from a file and append to the default system prompt').argParser(String).hideHelp()).addOption(new Option('--permission-mode <mode>', 'Permission mode to use for the session').argParser(String).choices(PERMISSION_MODES)).option('-c, --continue', 'Continue the most recent conversation in the current directory', () => true).option('-r, --resume [value]', 'Resume a conversation by session ID, or open interactive picker with optional search term', value => value || true).option('--fork-session', 'When resuming, create a new session ID instead of reusing the original (use with --resume or --continue)', () => true).addOption(new Option('--prefill <text>', 'Pre-fill the prompt input with text without submitting it').hideHelp()).addOption(new Option('--deep-link-origin', 'Signal that this session was launched from a deep link').hideHelp()).addOption(new Option('--deep-link-repo <slug>', 'Repo slug the deep link ?repo= parameter resolved to the current cwd').hideHelp()).addOption(new Option('--deep-link-last-fetch <ms>', 'FETCH_HEAD mtime in epoch ms, precomputed by the deep link trampoline').argParser(v => {
+  }).hideHelp()).addOption(new Option('--budget-usd <amount>', 'Per-task budget cap in USD. When hit, openclaude stops gracefully and asks the model for a final summary.').argParser(value => {
+    const amount = Number(value);
+    if (isNaN(amount) || amount < 0) {
+      throw new Error('--budget-usd must be a non-negative number');
+    }
+    return amount;
+  })).addOption(new Option('--budget-tokens <count>', 'Per-task budget cap in total tokens (input + output + cache). When hit, openclaude stops gracefully.').argParser(value => {
+    const tokens = Number(value);
+    if (isNaN(tokens) || tokens < 0 || !Number.isInteger(tokens)) {
+      throw new Error('--budget-tokens must be a non-negative integer');
+    }
+    return tokens;
+  })).addOption(new Option('--budget-seconds <count>', 'Per-task budget cap in wall-clock seconds. When hit, openclaude stops gracefully.').argParser(value => {
+    const seconds = Number(value);
+    if (isNaN(seconds) || seconds < 0) {
+      throw new Error('--budget-seconds must be a non-negative number');
+    }
+    return seconds;
+  })).addOption(new Option('--budget-toolcalls <count>', 'Per-task budget cap on tool invocations. When hit, openclaude stops gracefully.').argParser(value => {
+    const calls = Number(value);
+    if (isNaN(calls) || calls < 0 || !Number.isInteger(calls)) {
+      throw new Error('--budget-toolcalls must be a non-negative integer');
+    }
+    return calls;
+  })).option('--replay-user-messages', 'Re-emit user messages from stdin back on stdout for acknowledgment (only works with --input-format=stream-json and --output-format=stream-json)', () => true).addOption(new Option('--enable-auth-status', 'Enable auth status messages in SDK mode').default(false).hideHelp()).option('--allowedTools, --allowed-tools <tools...>', 'Comma or space-separated list of tool names to allow (e.g. "Bash(git:*) Edit")').option('--tools <tools...>', 'Specify the list of available tools from the built-in set. Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read").').option('--disallowedTools, --disallowed-tools <tools...>', 'Comma or space-separated list of tool names to deny (e.g. "Bash(git:*) Edit")').option('--mcp-config <configs...>', 'Load MCP servers from JSON files or strings (space-separated)').addOption(new Option('--permission-prompt-tool <tool>', 'MCP tool to use for permission prompts (only works with --print)').argParser(String).hideHelp()).addOption(new Option('--system-prompt <prompt>', 'System prompt to use for the session').argParser(String)).addOption(new Option('--system-prompt-file <file>', 'Read system prompt from a file').argParser(String).hideHelp()).addOption(new Option('--append-system-prompt <prompt>', 'Append a system prompt to the default system prompt').argParser(String)).addOption(new Option('--append-system-prompt-file <file>', 'Read system prompt from a file and append to the default system prompt').argParser(String).hideHelp()).addOption(new Option('--permission-mode <mode>', 'Permission mode to use for the session').argParser(String).choices(PERMISSION_MODES)).option('-c, --continue', 'Continue the most recent conversation in the current directory', () => true).option('-r, --resume [value]', 'Resume a conversation by session ID, or open interactive picker with optional search term', value => value || true).option('--fork-session', 'When resuming, create a new session ID instead of reusing the original (use with --resume or --continue)', () => true).addOption(new Option('--prefill <text>', 'Pre-fill the prompt input with text without submitting it').hideHelp()).addOption(new Option('--deep-link-origin', 'Signal that this session was launched from a deep link').hideHelp()).addOption(new Option('--deep-link-repo <slug>', 'Repo slug the deep link ?repo= parameter resolved to the current cwd').hideHelp()).addOption(new Option('--deep-link-last-fetch <ms>', 'FETCH_HEAD mtime in epoch ms, precomputed by the deep link trampoline').argParser(v => {
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   }).hideHelp()).option('--from-pr [value]', 'Resume a session linked to a PR by PR number/URL, or open interactive picker with optional search term', value => value || true).option('--no-session-persistence', 'Disable session persistence - sessions will not be saved to disk and cannot be resumed (only works with --print)').addOption(new Option('--resume-session-at <message id>', 'When resuming, only messages up to and including the assistant message with <message.id> (use with --resume in print mode)').argParser(String).hideHelp()).addOption(new Option('--rewind-files <user-message-id>', 'Restore files to state at the specified user message and exit (requires --resume)').hideHelp())
@@ -2071,6 +2096,26 @@ async function run(): Promise<CommanderCommand> {
     // Persist agent setting to session transcript for resume view display and restoration
     if (mainThreadAgentDefinition?.agentType) {
       saveAgentSetting(mainThreadAgentDefinition.agentType);
+    }
+
+    // Per-task budget caps (ASI roadmap P0 #2). CLI flags override settings.
+    // Apply once here (after settings load, before any tool execution can
+    // happen). Sub-agents do not propagate budgets in v1 — caps are
+    // process-wide and read from session-level totals (cost-tracker.ts).
+    {
+      const budgetSetting = getInitialSettings().budget ?? {};
+      const cliOpts = options as {
+        budgetUsd?: number;
+        budgetTokens?: number;
+        budgetSeconds?: number;
+        budgetToolcalls?: number;
+      };
+      setBudgetCaps({
+        usd: cliOpts.budgetUsd ?? budgetSetting.usd,
+        tokens: cliOpts.budgetTokens ?? budgetSetting.tokens,
+        seconds: cliOpts.budgetSeconds ?? budgetSetting.seconds,
+        toolCalls: cliOpts.budgetToolcalls ?? budgetSetting.toolCalls,
+      });
     }
 
     // Apply the agent's system prompt for non-interactive sessions

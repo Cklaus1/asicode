@@ -672,6 +672,48 @@ export const SettingsSchema = lazySchema(() =>
           'When true, automatically approve a tool-call permission prompt if a fast verifier (currently an LSP-based typecheck on the target file) classifies the proposed action as safe. Bash is always excluded — its existing classifier path is used instead. Defaults to false.',
         ),
       sandbox: SandboxSettingsSchema().optional(),
+      // Per-task budget caps with graceful hard-stop (ASI roadmap P0 #2).
+      // All optional — absent caps mean unlimited. CLI flags
+      // (--budget-usd / --budget-tokens / --budget-seconds / --budget-toolcalls)
+      // override these. When any cap is hit, the next tool call is denied and
+      // the model is asked to produce a final summary.
+      budget: z
+        .object({
+          usd: z
+            .number()
+            .nonnegative()
+            .optional()
+            .describe('Maximum USD spend before the session stops gracefully.'),
+          tokens: z
+            .number()
+            .nonnegative()
+            .int()
+            .optional()
+            .describe(
+              'Maximum total tokens (input + output + cache read + cache write) before the session stops gracefully.',
+            ),
+          seconds: z
+            .number()
+            .nonnegative()
+            .optional()
+            .describe(
+              'Maximum wall-clock seconds before the session stops gracefully.',
+            ),
+          toolCalls: z
+            .number()
+            .nonnegative()
+            .int()
+            .optional()
+            .describe(
+              'Maximum number of tool invocations before the session stops gracefully.',
+            ),
+        })
+        .optional()
+        .describe(
+          'Per-task budget caps. When any cap is hit, openclaude stops gracefully ' +
+            'and asks the model for a final summary. Top-level only in v1 ' +
+            '(sub-agents do not propagate budgets).',
+        ),
       feedbackSurveyRate: z
         .number()
         .min(0)

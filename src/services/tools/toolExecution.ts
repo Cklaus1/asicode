@@ -23,6 +23,7 @@ import {
   getCodeEditToolDecisionCounter,
   getStatsStore,
 } from '../../bootstrap/state.js'
+import { incrementToolCallCount } from '../../utils/budget.js'
 import {
   buildCodeEditToolAttributes,
   isCodeEditingTool,
@@ -1255,6 +1256,10 @@ async function checkPermissionsAndCallTool(
     )
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
+    // Per-task budget tool-call counter (ASI roadmap P0 #2). We count
+    // executed tools — permission denials don't count toward the cap, but
+    // an executed-then-failed call does (mirrors addToToolDuration).
+    incrementToolCallCount()
 
     // Log tool content/output as span event if enabled
     if (result.data && typeof result.data === 'object') {
@@ -1622,6 +1627,7 @@ async function checkPermissionsAndCallTool(
   } catch (error) {
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
+    incrementToolCallCount()
 
     endToolExecutionSpan({
       success: false,

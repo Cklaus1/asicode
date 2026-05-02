@@ -111,6 +111,8 @@ import {
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
+import { budgetExhaustedMessage, isBudgetExhausted } from './utils/budget.js'
+import { wrapInSystemReminder } from './utils/messages.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const snipModule = feature('HISTORY_SNIP')
   ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
@@ -725,6 +727,38 @@ async function* queryLoop(
     }
 
     let attemptWithFallback = true
+
+    // Per-task budget caps — graceful summary path (ASI roadmap P0 #2).
+    // canUseTool already denies any further tool calls once exhausted; this
+    // injects a one-shot system reminder so the next assistant turn produces
+    // a final summary instead of attempting more (futile) tool calls.
+    // Idempotent across iterations: if the last message in the queue is
+    // already our reminder we skip — this avoids doubling up if the model
+    // somehow ignores the reminder and we loop again.
+    {
+      const budgetState = isBudgetExhausted()
+      if (budgetState.exhausted) {
+        const reminderText = wrapInSystemReminder(
+          `${budgetExhaustedMessage(budgetState.reason ?? 'unknown')} ` +
+            `Produce a final summary of what was done and what remains, then stop. ` +
+            `Do not make any further tool calls.`,
+        )
+        const lastMsg = messagesForQuery[messagesForQuery.length - 1]
+        const alreadyReminded =
+          lastMsg?.type === 'user' &&
+          typeof lastMsg.message.content === 'string' &&
+          lastMsg.message.content === reminderText
+        if (!alreadyReminded) {
+          messagesForQuery = [
+            ...messagesForQuery,
+            createUserMessage({
+              content: reminderText,
+              isMeta: true,
+            }),
+          ]
+        }
+      }
+    }
 
     queryCheckpoint('query_api_loop_start')
     try {
