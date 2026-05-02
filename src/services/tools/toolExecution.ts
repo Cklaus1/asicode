@@ -113,6 +113,12 @@ import {
   isToolSearchToolAvailable,
 } from '../../utils/toolSearch.js'
 import {
+  classifyError,
+  type TypedToolError,
+  type TypedToolErrorKind,
+} from '../api/errorTaxonomy.js'
+import { applyJitter, strategyFor } from '../api/retryPolicy.js'
+import {
   McpAuthError,
   McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../mcp/client.js'
@@ -136,6 +142,67 @@ export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500
 /** Log a debug warning when hooks/permission-decision block for this long. Matches
  * BashTool's PROGRESS_THRESHOLD_MS — the collapsed view feels stuck past this. */
 const SLOW_PHASE_LOG_THRESHOLD_MS = 2000
+
+/**
+ * Read the retry policy block from `settings.retry`. Defensive: settings is
+ * `Record<string, unknown>|null` on AppState so the schema isn't enforced
+ * here. Mirrors the autoFix pattern in toolHooks.ts.
+ *
+ * Defaults: enabled=true, maxTransientAttempts=3 (matches roadmap P0 #7).
+ */
+function readRetrySettings(
+  settings: unknown,
+): { enabled: boolean; maxTransientAttempts: number } {
+  const fallback = { enabled: true, maxTransientAttempts: 3 }
+  if (!settings || typeof settings !== 'object') return fallback
+  const retryRaw = (settings as Record<string, unknown>).retry
+  if (!retryRaw || typeof retryRaw !== 'object') return fallback
+  const r = retryRaw as { enabled?: unknown; maxTransientAttempts?: unknown }
+  return {
+    enabled: r.enabled === false ? false : true,
+    maxTransientAttempts:
+      typeof r.maxTransientAttempts === 'number' &&
+      Number.isFinite(r.maxTransientAttempts) &&
+      r.maxTransientAttempts >= 1
+        ? Math.floor(r.maxTransientAttempts)
+        : 3,
+  }
+}
+
+/**
+ * Annotation attached to errors that have run through the typed-error
+ * retry policy. The catch block uses `errorKind` and `attempts` to enrich
+ * the `tool_result` OTel event and the outcome log.
+ */
+type RetryAnnotation = {
+  errorKind: TypedToolErrorKind
+  attempts: number
+  strategy: 'retry' | 'replan' | 'escalate' | 'ask' | 'fail_fast'
+}
+
+const RETRY_ANNOTATION = Symbol.for('openclaude.toolRetryAnnotation')
+
+function attachRetryAnnotation(err: unknown, ann: RetryAnnotation): void {
+  if (err && typeof err === 'object') {
+    try {
+      Object.defineProperty(err, RETRY_ANNOTATION, {
+        value: ann,
+        enumerable: false,
+        configurable: true,
+      })
+    } catch {
+      // ignore — defineProperty fails on frozen errors; we just lose telemetry
+    }
+  }
+}
+
+function readRetryAnnotation(err: unknown): RetryAnnotation | undefined {
+  if (err && typeof err === 'object' && RETRY_ANNOTATION in err) {
+    const ann = (err as Record<symbol, unknown>)[RETRY_ANNOTATION]
+    if (ann && typeof ann === 'object') return ann as RetryAnnotation
+  }
+  return undefined
+}
 
 /**
  * Classify a tool execution error into a telemetry-safe string.
@@ -1235,24 +1302,109 @@ async function checkPermissionsAndCallTool(
   } else if (processedInput !== backfilledClone) {
     callInput = processedInput
   }
+  // Typed-error retry policy (P0 #7 from docs/asi-roadmap.md). On a tool-call
+  // error we classify the failure into a TypedToolError, then ask
+  // strategyFor() for a disposition. `retry` sleeps with exponential backoff
+  // + ±20% jitter (honoring `retryAfterMs` for rate-limits) and re-invokes
+  // tool.call(). Other dispositions annotate the error and rethrow so the
+  // existing catch block handles them — the model still sees the original
+  // error message but the framework records the strategy used.
+  const retrySettings = readRetrySettings(toolUseContext.getAppState().settings)
+  let retryAttempts = 1
   try {
-    const result = await tool.call(
-      callInput,
-      {
-        ...toolUseContext,
-        toolUseId: toolUseID,
-        hookChainsCanUseTool: canUseTool,
-        userModified: permissionDecision.userModified ?? false,
-      },
-      canUseTool,
-      assistantMessage,
-      progress => {
-        onToolProgress({
-          toolUseID: progress.toolUseID,
-          data: progress.data,
+    let result: Awaited<ReturnType<typeof tool.call>>
+    // Retry loop: re-runs tool.call() up to maxAttempts. On success or a
+    // non-retryable strategy we exit the loop. AbortError short-circuits.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        result = await tool.call(
+          callInput,
+          {
+            ...toolUseContext,
+            toolUseId: toolUseID,
+            hookChainsCanUseTool: canUseTool,
+            userModified: permissionDecision.userModified ?? false,
+          },
+          canUseTool,
+          assistantMessage,
+          progress => {
+            onToolProgress({
+              toolUseID: progress.toolUseID,
+              data: progress.data,
+            })
+          },
+        )
+        break
+      } catch (callError) {
+        // Don't retry user-initiated aborts.
+        if (callError instanceof AbortError) throw callError
+        if (toolUseContext.abortController.signal.aborted) throw callError
+
+        const typed: TypedToolError = classifyError(callError, {
+          toolName: tool.name,
         })
-      },
-    )
+        const strategy = strategyFor(typed, {
+          enabled: retrySettings.enabled,
+          maxTransientAttempts: retrySettings.maxTransientAttempts,
+        })
+
+        if (strategy.action === 'retry') {
+          if (retryAttempts >= strategy.maxAttempts) {
+            attachRetryAnnotation(callError, {
+              errorKind: typed.kind,
+              attempts: retryAttempts,
+              strategy: 'retry',
+            })
+            throw callError
+          }
+          // Honor server-supplied retry-after for rate limits; otherwise
+          // use the strategy's exponential schedule.
+          const idx = Math.min(retryAttempts - 1, strategy.backoffMs.length - 1)
+          const baseSleep =
+            typed.kind === 'transient' &&
+            typed.cause === 'rate_limit' &&
+            typeof typed.retryAfterMs === 'number'
+              ? typed.retryAfterMs
+              : (strategy.backoffMs[idx] ?? 0)
+          const sleepMs = strategy.jitter ? applyJitter(baseSleep) : baseSleep
+          logForDebugging(
+            `${tool.name} typed-retry: kind=${typed.kind} attempt=${retryAttempts}/${strategy.maxAttempts} sleep=${sleepMs}ms`,
+          )
+          if (sleepMs > 0) {
+            await new Promise<void>(resolve => {
+              const t = setTimeout(resolve, sleepMs)
+              const onAbort = () => {
+                clearTimeout(t)
+                resolve()
+              }
+              if (toolUseContext.abortController.signal.aborted) {
+                onAbort()
+                return
+              }
+              toolUseContext.abortController.signal.addEventListener(
+                'abort',
+                onAbort,
+                { once: true },
+              )
+            })
+            if (toolUseContext.abortController.signal.aborted) throw callError
+          }
+          retryAttempts++
+          continue
+        }
+
+        // Non-retry strategies: annotate and rethrow so the existing catch
+        // path handles user-visible reporting. The annotation lets
+        // tool_result OTel + outcome logging tag the disposition.
+        attachRetryAnnotation(callError, {
+          errorKind: typed.kind,
+          attempts: retryAttempts,
+          strategy: strategy.action,
+        })
+        throw callError
+      }
+    }
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
 
@@ -1669,6 +1821,7 @@ async function checkPermissionsAndCallTool(
       if (!(error instanceof ShellError)) {
         logError(error)
       }
+      const tenguRetryAnnotation = readRetryAnnotation(error)
       logEvent('tengu_tool_use_error', {
         messageID:
           messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -1677,6 +1830,13 @@ async function checkPermissionsAndCallTool(
           error,
         ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         isMcp: tool.isMcp ?? false,
+        ...(tenguRetryAnnotation && {
+          errorKind:
+            tenguRetryAnnotation.errorKind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          retryStrategy:
+            tenguRetryAnnotation.strategy as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          retryAttempts: tenguRetryAnnotation.attempts,
+        }),
 
         queryChainId: toolUseContext.queryTracking
           ?.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -1704,12 +1864,21 @@ async function checkPermissionsAndCallTool(
         ? getMcpServerScopeFromToolName(tool.name)
         : null
 
+      // Pull the typed-error retry annotation onto the OTel event when
+      // present so dashboards can group failures by `error_kind` and
+      // strategy (P0 #7 — typed-error retry policy).
+      const retryAnnotation = readRetryAnnotation(error)
       void logOTelEvent('tool_result', {
         tool_name: sanitizeToolNameForAnalytics(tool.name),
         use_id: toolUseID,
         success: 'false',
         duration_ms: String(durationMs),
         error: errorMessage(error),
+        ...(retryAnnotation && {
+          error_kind: retryAnnotation.errorKind,
+          retry_strategy: retryAnnotation.strategy,
+          retry_attempts: String(retryAnnotation.attempts),
+        }),
         ...(Object.keys(toolParameters).length > 0 && {
           tool_parameters: jsonStringify(toolParameters),
         }),
