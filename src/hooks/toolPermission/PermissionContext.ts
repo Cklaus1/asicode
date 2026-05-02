@@ -46,6 +46,7 @@ type PermissionApprovalSource =
   | { type: 'hook'; permanent?: boolean }
   | { type: 'user'; permanent: boolean }
   | { type: 'classifier' }
+  | { type: 'verifier_auto_approve' }
 
 type PermissionRejectionSource =
   | { type: 'hook' }

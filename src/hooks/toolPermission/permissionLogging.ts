@@ -83,6 +83,8 @@ function sourceToString(
       return 'user_abort'
     case 'user_reject':
       return 'user_reject'
+    case 'verifier_auto_approve':
+      return 'verifier_auto_approve'
     default:
       return 'unknown'
   }
@@ -142,6 +144,12 @@ function logApprovalEvent(
         ...baseMetadata(messageId, tool.name, waitMs),
         permanent: source.permanent ?? false,
       })
+      break
+    case 'verifier_auto_approve':
+      logEvent(
+        'tengu_tool_use_granted_by_verifier',
+        baseMetadata(messageId, tool.name, waitMs),
+      )
       break
     default:
       break

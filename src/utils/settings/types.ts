@@ -665,6 +665,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Skip the WebFetch blocklist check for enterprise environments with restrictive security policies',
         ),
+      verifierAutoApprove: z
+        .boolean()
+        .optional()
+        .describe(
+          'When true, automatically approve a tool-call permission prompt if a fast verifier (currently an LSP-based typecheck on the target file) classifies the proposed action as safe. Bash is always excluded — its existing classifier path is used instead. Defaults to false.',
+        ),
       sandbox: SandboxSettingsSchema().optional(),
       feedbackSurveyRate: z
         .number()
