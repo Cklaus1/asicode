@@ -448,6 +448,52 @@ export const SettingsSchema = lazySchema(() =>
           'Auto-fix configuration: automatically run lint/test after AI file edits ' +
           'and feed errors back for self-repair.',
         ),
+      // Self-review (L2 verifier) — see src/services/selfReview/ and
+      // docs/asi-roadmap.md §1.5. When enabled, after a brief completes the
+      // agent automatically runs a reviewer→fixer loop until no
+      // critical/high/medium findings remain or `maxIters` hits.
+      selfReview: z
+        .object({
+          enabled: z
+            .boolean()
+            .optional()
+            .describe(
+              'Enable the self-review loop after brief completion. Default: false.',
+            ),
+          severityBar: z
+            .enum(['critical', 'high', 'medium', 'low'])
+            .optional()
+            .describe(
+              'Findings at-or-above this severity block convergence. Default: "medium".',
+            ),
+          maxIters: z
+            .number()
+            .int()
+            .min(1)
+            .max(20)
+            .optional()
+            .describe('Hard cap on review-fix iterations. Default: 5.'),
+          reviewerModel: z
+            .string()
+            .optional()
+            .describe(
+              'Override the reviewer subagent model. By default, the loop picks ' +
+                'a model different from the implementer (Haiku ↔ Sonnet) for asymmetric review.',
+            ),
+          fixerModel: z
+            .string()
+            .optional()
+            .describe(
+              'Override the fixer subagent model. Defaults to the implementer model.',
+            ),
+        })
+        .optional()
+        .describe(
+          'Self-review (L2 verifier) configuration. After a brief completes, ' +
+            'spawn a reviewer subagent that returns severity-tagged findings and a ' +
+            'fixer subagent that addresses critical/high/medium ones. Iterates until ' +
+            'no blocking findings remain or maxIters hits, then escalates.',
+        ),
       worktree: z
         .object({
           symlinkDirectories: z
