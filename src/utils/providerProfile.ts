@@ -30,6 +30,7 @@ export {
   sanitizeApiKey,
   sanitizeProviderConfigValue,
 } from './providerSecrets.js'
+import { asicodeEnv } from './envCompat.ts'
 import { isEnvTruthy } from './envUtils.ts'
 
 import { PROVIDERS } from './configConstants.js'
@@ -1056,7 +1057,7 @@ export async function buildStartupEnvFromProfile(options?: {
     persisted,
     goal:
       options?.goal ??
-      normalizeRecommendationGoal(processEnv.OPENCLAUDE_PROFILE_GOAL),
+      normalizeRecommendationGoal(asicodeEnv('PROFILE_GOAL', { env: processEnv })),
     processEnv,
     getOllamaChatBaseUrl:
       options?.getOllamaChatBaseUrl ?? getOllamaChatBaseUrl,
@@ -1097,7 +1098,7 @@ export async function applySavedProfileToCurrentSession(options: {
   const nextEnv = await buildLaunchEnv({
     profile: options.profileFile.profile,
     persisted: options.profileFile,
-    goal: normalizeRecommendationGoal(processEnv.OPENCLAUDE_PROFILE_GOAL),
+    goal: normalizeRecommendationGoal(asicodeEnv('PROFILE_GOAL', { env: processEnv })),
     processEnv: baseEnv,
     getOllamaChatBaseUrl,
     readGeminiAccessToken,

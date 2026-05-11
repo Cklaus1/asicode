@@ -42,6 +42,7 @@ import {
   logEvent,
 } from './services/analytics/index.js'
 import { getAdvisorUsage } from './utils/advisor.js'
+import { asicodeEnv } from './utils/envCompat.js'
 import {
   getCurrentProjectConfig,
   saveCurrentProjectConfig,
@@ -275,7 +276,7 @@ function round(number: number, precision: number): number {
 // documented keyword but we accept `1`/`true` for ergonomic parity with
 // other OPENCLAUDE_* flags.
 function shouldLogTokenUsageVerbose(): boolean {
-  const v = (process.env.OPENCLAUDE_LOG_TOKEN_USAGE ?? '').trim().toLowerCase()
+  const v = (asicodeEnv('LOG_TOKEN_USAGE') ?? '').trim().toLowerCase()
   if (!v) return false
   return v !== '0' && v !== 'false' && v !== 'off'
 }

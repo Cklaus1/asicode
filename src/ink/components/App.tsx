@@ -1,6 +1,7 @@
 import React, { PureComponent, type ReactNode } from 'react';
 import { updateLastInteractionTime } from '../../bootstrap/state.js';
 import { stopCapturingEarlyInput } from '../../utils/earlyInput.js';
+import { asicodeEnv } from '../../utils/envCompat.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import { isMouseClicksDisabled } from '../../utils/fullscreen.js';
 import { logError } from '../../utils/log.js';
@@ -118,7 +119,7 @@ export default class App extends PureComponent<Props, State> {
   // Default to readable-mode stdin (legacy Ink behavior). The data-mode path
   // is kept as an explicit opt-in because some terminals can enter a state
   // where startup input appears frozen when data mode is the default.
-  stdinMode: 'readable' | 'data' = process.env.OPENCLAUDE_USE_DATA_STDIN === '1' || process.env.OPENCLAUDE_USE_READABLE_STDIN === '0' ? 'data' : 'readable';
+  stdinMode: 'readable' | 'data' = asicodeEnv('USE_DATA_STDIN') === '1' || asicodeEnv('USE_READABLE_STDIN') === '0' ? 'data' : 'readable';
   // Timeout durations for incomplete sequences (ms)
   readonly NORMAL_TIMEOUT = 50; // Short timeout for regular esc sequences
   readonly PASTE_TIMEOUT = 500; // Longer timeout for paste operations

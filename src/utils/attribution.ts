@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import { stat } from 'fs/promises'
 import { getClientType } from '../bootstrap/state.js'
 import { getRemoteSessionUrl, isRemoteSessionLocal } from '../constants/product.js'
+import { asicodeEnv } from './envCompat.js'
 import { isEnvTruthy } from './envUtils.js'
 import { TERMINAL_OUTPUT_TAGS } from '../constants/xml.js'
 import type { AppState } from '../state/AppState.js'
@@ -78,9 +79,7 @@ export function getAttributionTexts(): AttributionTexts {
     '🤖 Generated with [OpenClaude](https://github.com/Gitlawb/openclaude)'
   const coAuthorDomain =
     getAPIProvider() === 'firstParty' ? 'anthropic.com' : 'openclaude.dev'
-  const defaultCommit = isEnvTruthy(
-    process.env.OPENCLAUDE_DISABLE_CO_AUTHORED_BY,
-  )
+  const defaultCommit = isEnvTruthy(asicodeEnv('DISABLE_CO_AUTHORED_BY'))
     ? ''
     : `Co-Authored-By: ${modelName} <noreply@${coAuthorDomain}>`
 

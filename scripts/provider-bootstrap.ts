@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { asicodeEnv } from '../src/utils/envCompat.js'
 import {
   resolveCodexApiCredentials,
 } from '../src/services/api/providerConfig.js'
@@ -60,7 +61,7 @@ async function main(): Promise<void> {
   const argBaseUrl = parseArg('--base-url')
   const argApiKey = parseArg('--api-key')
   const goal = normalizeRecommendationGoal(
-    parseArg('--goal') || process.env.OPENCLAUDE_PROFILE_GOAL,
+    parseArg('--goal') || asicodeEnv('PROFILE_GOAL'),
   )
 
   let selected: ProviderProfile

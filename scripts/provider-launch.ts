@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { spawn } from 'node:child_process'
+import { asicodeEnv } from '../src/utils/envCompat.js'
 import {
   resolveCodexApiCredentials,
 } from '../src/services/api/providerConfig.js'
@@ -34,7 +35,7 @@ function parseLaunchOptions(argv: string[]): LaunchOptions {
   let requestedProfile: ProviderProfile | 'auto' | null = 'auto'
   const passthroughArgs: string[] = []
   let fast = false
-  let goal = normalizeRecommendationGoal(process.env.OPENCLAUDE_PROFILE_GOAL)
+  let goal = normalizeRecommendationGoal(asicodeEnv('PROFILE_GOAL'))
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!

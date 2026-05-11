@@ -75,6 +75,7 @@ import type {
 import { isAdvisorBlock } from './advisor.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { count } from './array.js'
+import { asicodeEnv } from './envCompat.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
   type Attachment,
@@ -3667,7 +3668,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       ])
     }
     case 'todo_reminder': {
-      if (isEnvTruthy(process.env.OPENCLAUDE_DISABLE_TOOL_REMINDERS)) {
+      if (isEnvTruthy(asicodeEnv('DISABLE_TOOL_REMINDERS'))) {
         return []
       }
       const todoItems = attachment.content
@@ -3690,7 +3691,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       if (!isTodoV2Enabled()) {
         return []
       }
-      if (isEnvTruthy(process.env.OPENCLAUDE_DISABLE_TOOL_REMINDERS)) {
+      if (isEnvTruthy(asicodeEnv('DISABLE_TOOL_REMINDERS'))) {
         return []
       }
       const taskItems = attachment.content

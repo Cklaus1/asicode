@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle';
+import { asicodeEnv } from '../utils/envCompat.js'
 import {
   applyProfileEnvToProcessEnv,
   buildStartupEnvFromProfile,
@@ -386,7 +387,7 @@ async function main(): Promise<void> {
   }
 
   // No special flags detected, load and run the full CLI
-  if (process.env.OPENCLAUDE_DISABLE_EARLY_INPUT !== '1') {
+  if (asicodeEnv('DISABLE_EARLY_INPUT') !== '1') {
     const {
       startCapturingEarlyInput
     } = await import('../utils/earlyInput.js');

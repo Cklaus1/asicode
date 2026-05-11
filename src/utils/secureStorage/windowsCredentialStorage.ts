@@ -1,5 +1,6 @@
 import { execaSync } from 'execa'
 import { join } from 'path'
+import { asicodeEnv } from '../envCompat.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import {
@@ -31,7 +32,7 @@ function getWindowsSecureStorageFilePath(): string {
 }
 
 function shouldUseLegacyPasswordVault(): boolean {
-  return process.env.OPENCLAUDE_ENABLE_LEGACY_WINDOWS_PASSWORDVAULT === '1'
+  return asicodeEnv('ENABLE_LEGACY_WINDOWS_PASSWORDVAULT') === '1'
 }
 
 function runPowerShell(
