@@ -16,9 +16,11 @@ import { join } from 'node:path'
 import {
   closeInstrumentationDb,
   newBriefId,
+  newJudgmentId,
   newRunId,
   newToolCallId,
   recordBrief,
+  recordJudgment,
   recordRun,
   recordToolCall,
   updateBrief,
@@ -314,6 +316,196 @@ describe('tool_call writer', () => {
       .get(tcId) as { l1_auto_approved: number; status: string }
     expect(row.l1_auto_approved).toBe(1)
     expect(row.status).toBe('auto_approved')
+  })
+})
+
+describe('judgment writer', () => {
+  test('happy path: insert + read back', () => {
+    const briefId = newBriefId()
+    recordBrief({
+      brief_id: briefId,
+      ts_submitted: Date.now(),
+      project_path: '/p',
+      project_fingerprint: 'fp',
+      user_text: 'x',
+      a16_decision: 'accept',
+    })
+    const jId = newJudgmentId()
+    recordJudgment({
+      judgment_id: jId,
+      brief_id: briefId,
+      pr_sha: 'sha-abc',
+      ts: Date.now(),
+      panel_mode: 'balanced',
+      judge_role: 'correctness',
+      model: 'claude-opus-4-7',
+      model_snapshot: 'claude-opus-4-7@2026-05-01',
+      score_correctness: 4,
+      score_code_review: 4,
+      score_qa_risk: 3,
+      primary_dimension: 'correctness',
+      primary_reasoning: 'handles edge cases at lines 12-18',
+      confidence: 0.85,
+      duration_ms: 24500,
+    })
+    const db = openInstrumentationDb()
+    const row = db
+      .query('SELECT judge_role, model, score_correctness, confidence FROM judgments WHERE judgment_id = ?')
+      .get(jId) as Record<string, unknown>
+    expect(row.judge_role).toBe('correctness')
+    expect(row.model).toBe('claude-opus-4-7')
+    expect(row.score_correctness).toBe(4)
+    expect(row.confidence).toBe(0.85)
+  })
+
+  test('calibration sample requires tier', () => {
+    expect(() =>
+      recordJudgment({
+        judgment_id: newJudgmentId(),
+        pr_sha: 'sha',
+        ts: Date.now(),
+        panel_mode: 'balanced',
+        judge_role: 'correctness',
+        model: 'm',
+        model_snapshot: 'snap',
+        score_correctness: 4,
+        score_code_review: 4,
+        score_qa_risk: 4,
+        primary_dimension: 'correctness',
+        duration_ms: 1000,
+        is_calibration_sample: true,
+        // missing calibration_tier
+      }),
+    ).toThrow(/calibration/)
+  })
+
+  test('non-calibration row cannot carry a tier', () => {
+    expect(() =>
+      recordJudgment({
+        judgment_id: newJudgmentId(),
+        pr_sha: 'sha',
+        ts: Date.now(),
+        panel_mode: 'balanced',
+        judge_role: 'correctness',
+        model: 'm',
+        model_snapshot: 'snap',
+        score_correctness: 4,
+        score_code_review: 4,
+        score_qa_risk: 4,
+        primary_dimension: 'correctness',
+        duration_ms: 1000,
+        is_calibration_sample: false,
+        calibration_tier: 'strong',
+      }),
+    ).toThrow(/calibration/)
+  })
+
+  test('rejects out-of-range score at zod layer', () => {
+    expect(() =>
+      recordJudgment({
+        judgment_id: newJudgmentId(),
+        pr_sha: 'sha',
+        ts: Date.now(),
+        panel_mode: 'balanced',
+        judge_role: 'correctness',
+        model: 'm',
+        model_snapshot: 'snap',
+        score_correctness: 6, // invalid
+        score_code_review: 4,
+        score_qa_risk: 4,
+        primary_dimension: 'correctness',
+        duration_ms: 1000,
+      }),
+    ).toThrow()
+  })
+
+  test('shadow panel_mode accepted for shadow-judge dispatch', () => {
+    const briefId = newBriefId()
+    recordBrief({
+      brief_id: briefId,
+      ts_submitted: Date.now(),
+      project_path: '/p',
+      project_fingerprint: 'fp',
+      user_text: 'x',
+      a16_decision: 'accept',
+    })
+    recordJudgment({
+      judgment_id: newJudgmentId(),
+      brief_id: briefId,
+      pr_sha: 'sha-shadow',
+      ts: Date.now(),
+      panel_mode: 'shadow',
+      judge_role: 'correctness',
+      model: 'claude-opus-4-7',
+      model_snapshot: 'snap',
+      score_correctness: 5,
+      score_code_review: 4,
+      score_qa_risk: 4,
+      primary_dimension: 'correctness',
+      duration_ms: 20000,
+    })
+    const db = openInstrumentationDb()
+    const n = db.query("SELECT COUNT(*) AS n FROM judgments WHERE panel_mode = 'shadow'").get() as { n: number }
+    expect(n.n).toBe(1)
+  })
+
+  test('three judges per PR — composite query works against view', () => {
+    const briefId = newBriefId()
+    recordBrief({
+      brief_id: briefId,
+      ts_submitted: Date.now(),
+      project_path: '/p',
+      project_fingerprint: 'fp',
+      user_text: 'x',
+      a16_decision: 'accept',
+    })
+    const pr = 'sha-three-judge'
+    const baseTs = Date.now()
+    const baseRec = {
+      brief_id: briefId,
+      pr_sha: pr,
+      ts: baseTs,
+      panel_mode: 'balanced' as const,
+      model_snapshot: 'snap',
+      duration_ms: 10000,
+    }
+    recordJudgment({
+      ...baseRec,
+      judgment_id: newJudgmentId(),
+      judge_role: 'correctness',
+      model: 'claude-opus-4-7',
+      score_correctness: 5,
+      score_code_review: 4,
+      score_qa_risk: 3,
+      primary_dimension: 'correctness',
+    })
+    recordJudgment({
+      ...baseRec,
+      judgment_id: newJudgmentId(),
+      judge_role: 'code_review',
+      model: 'claude-sonnet-4-6',
+      score_correctness: 4,
+      score_code_review: 4,
+      score_qa_risk: 4,
+      primary_dimension: 'code_review',
+    })
+    recordJudgment({
+      ...baseRec,
+      judgment_id: newJudgmentId(),
+      judge_role: 'qa_risk',
+      model: 'ollama:qwen2.5-coder:32b',
+      score_correctness: 3,
+      score_code_review: 4,
+      score_qa_risk: 5,
+      primary_dimension: 'qa_risk',
+    })
+    const db = openInstrumentationDb()
+    const row = db
+      .query('SELECT pr_sha, composite_score, judges_present FROM v_judge_quality WHERE pr_sha = ?')
+      .get(pr) as { pr_sha: string; composite_score: number; judges_present: number }
+    expect(row.judges_present).toBe(3)
+    // mean of 9 scores: (5+4+3 + 4+4+4 + 3+4+5) / 9 = 36/9 = 4.0
+    expect(row.composite_score).toBeCloseTo(4.0, 5)
   })
 })
 

@@ -153,6 +153,40 @@ export const ToolCallRecordSchema = z.object({
 
 export type ToolCallRecord = z.infer<typeof ToolCallRecordSchema>
 
+export const JudgmentRecordSchema = z
+  .object({
+    judgment_id: z.string().min(1),
+    /** null for calibration samples (no asicode brief). */
+    brief_id: z.string().min(1).optional(),
+    pr_sha: z.string().min(1),
+    ts: z.number().int().nonnegative(),
+    panel_mode: PanelModeSchema,
+    judge_role: JudgeRoleSchema,
+    model: z.string().min(1),
+    /** Pinned model version used for this judgment — drift detection key. */
+    model_snapshot: z.string().min(1),
+
+    score_correctness: ScoreSchema,
+    score_code_review: ScoreSchema,
+    score_qa_risk: ScoreSchema,
+    primary_dimension: JudgeRoleSchema,
+    primary_reasoning: z.string().optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    concerns_json: z.string().optional(),
+
+    duration_ms: z.number().int().nonnegative(),
+    timed_out: z.boolean().default(false),
+
+    is_calibration_sample: z.boolean().default(false),
+    calibration_tier: CalibrationTierSchema.optional(),
+  })
+  .refine(r => r.is_calibration_sample === (r.calibration_tier !== undefined), {
+    message:
+      'is_calibration_sample = true requires calibration_tier; calibration_tier requires is_calibration_sample = true',
+  })
+
+export type JudgmentRecord = z.infer<typeof JudgmentRecordSchema>
+
 export const ReviewRecordSchema = z
   .object({
     review_id: z.string().min(1),

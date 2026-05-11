@@ -22,12 +22,14 @@ import { randomBytes } from 'crypto'
 import {
   BriefRecordSchema,
   BriefUpdateSchema,
+  JudgmentRecordSchema,
   ReviewRecordSchema,
   RunRecordSchema,
   RunUpdateSchema,
   ToolCallRecordSchema,
   type BriefRecord,
   type BriefUpdate,
+  type JudgmentRecord,
   type ReviewRecord,
   type RunRecord,
   type RunUpdate,
@@ -148,6 +150,7 @@ export const newBriefId = () => generateId('brf')
 export const newRunId = () => generateId('run')
 export const newToolCallId = () => generateId('tc')
 export const newReviewId = () => generateId('rev')
+export const newJudgmentId = () => generateId('jud')
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -302,6 +305,49 @@ export function recordToolCall(rec: ToolCallRecord): void {
       $error_kind: parsed.error_kind ?? null,
       $l1_auto_approved: bool(parsed.l1_auto_approved),
       $l1_signals: parsed.l1_signals ?? null,
+    },
+  )
+}
+
+export function recordJudgment(rec: JudgmentRecord): void {
+  const parsed = JudgmentRecordSchema.parse(rec)
+  const db = openInstrumentationDb()
+  db.run(
+    `INSERT INTO judgments (
+       judgment_id, brief_id, pr_sha, ts, panel_mode, judge_role,
+       model, model_snapshot,
+       score_correctness, score_code_review, score_qa_risk,
+       primary_dimension, primary_reasoning, confidence, concerns_json,
+       duration_ms, timed_out,
+       is_calibration_sample, calibration_tier
+     ) VALUES (
+       $judgment_id, $brief_id, $pr_sha, $ts, $panel_mode, $judge_role,
+       $model, $model_snapshot,
+       $score_correctness, $score_code_review, $score_qa_risk,
+       $primary_dimension, $primary_reasoning, $confidence, $concerns_json,
+       $duration_ms, $timed_out,
+       $is_calibration_sample, $calibration_tier
+     )`,
+    {
+      $judgment_id: parsed.judgment_id,
+      $brief_id: parsed.brief_id ?? null,
+      $pr_sha: parsed.pr_sha,
+      $ts: parsed.ts,
+      $panel_mode: parsed.panel_mode,
+      $judge_role: parsed.judge_role,
+      $model: parsed.model,
+      $model_snapshot: parsed.model_snapshot,
+      $score_correctness: parsed.score_correctness,
+      $score_code_review: parsed.score_code_review,
+      $score_qa_risk: parsed.score_qa_risk,
+      $primary_dimension: parsed.primary_dimension,
+      $primary_reasoning: parsed.primary_reasoning ?? null,
+      $confidence: parsed.confidence ?? null,
+      $concerns_json: parsed.concerns_json ?? null,
+      $duration_ms: parsed.duration_ms,
+      $timed_out: bool(parsed.timed_out),
+      $is_calibration_sample: bool(parsed.is_calibration_sample),
+      $calibration_tier: parsed.calibration_tier ?? null,
     },
   )
 }

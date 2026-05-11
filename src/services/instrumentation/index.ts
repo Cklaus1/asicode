@@ -11,12 +11,14 @@ export {
   newRunId,
   newToolCallId,
   newReviewId,
+  newJudgmentId,
   recordBrief,
   updateBrief,
   recordRun,
   updateRun,
   recordToolCall,
   recordReview,
+  recordJudgment,
 } from './client'
 
 export type {
@@ -26,6 +28,7 @@ export type {
   RunUpdate,
   ToolCallRecord,
   ReviewRecord,
+  JudgmentRecord,
   RiskClass,
   A16Decision,
   PrOutcome,
