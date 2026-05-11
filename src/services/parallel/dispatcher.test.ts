@@ -286,6 +286,71 @@ describe('raceAgents — verifier-gated winner (REQ-18)', () => {
     } finally { delete process.env.ASICODE_VERIFY_CMD }
   }, 60_000)
 
+  test('verifier auto-detected from project files when env unset (REQ-24)', async () => {
+    // The race repo has bun.lock+package.json from setupRepo? No — let
+    // me seed them on the racer's commits via the dispatch cmd. Actually
+    // setupRepo only commits README. Seed in this repo before the race.
+    writeFileSync(join(repoDir, 'bun.lock'), '')
+    writeFileSync(join(repoDir, 'package.json'), '{}')
+    spawnSync('git', ['-C', repoDir, 'add', '.'])
+    spawnSync('git', ['-C', repoDir, 'commit', '-q', '--no-gpg-sign', '-m', 'seed'])
+    // Make sure env is unset
+    delete process.env.ASICODE_VERIFY_CMD
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "y" > out.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add out.txt
+      git commit -q --no-gpg-sign -m "y"
+    `
+    const r = await raceAgents({
+      briefId: 'bvauto', briefText: 't',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-auto',
+      settleMs: 500, maxRaceMs: 15_000,
+      // verifyCmd omitted; ASICODE_VERIFY_CMD unset → detect bun, but the
+      // worktree won't have a real bun project, so verifier runs `bun
+      // test` and exits non-zero. Verifies that auto-detect FIRED.
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      // Some racer's verifier should have run (outcome won't be null).
+      // Whether it passed/failed depends on bun's behavior in an empty
+      // dir, but we should NOT have null verify.
+      const winnerRacer = r.racers.find(rr => rr.runId === r.winnerRunId)
+      expect(winnerRacer?.verify).not.toBeNull()
+    }
+  }, 60_000)
+
+  test('ASICODE_VERIFY_AUTODETECT=0 disables auto-detection', async () => {
+    writeFileSync(join(repoDir, 'bun.lock'), '')
+    writeFileSync(join(repoDir, 'package.json'), '{}')
+    spawnSync('git', ['-C', repoDir, 'add', '.'])
+    spawnSync('git', ['-C', repoDir, 'commit', '-q', '--no-gpg-sign', '-m', 'seed'])
+    delete process.env.ASICODE_VERIFY_CMD
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "z" > z.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add z.txt
+      git commit -q --no-gpg-sign -m "z"
+    `
+    try {
+      const r = await raceAgents({
+        briefId: 'bvautooff', briefText: 't',
+        repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-auto-off',
+        settleMs: 500, maxRaceMs: 15_000,
+      })
+      expect(r.ok).toBe(true)
+      if (r.ok) {
+        // No verifier ran → verify stays null
+        expect(r.racers.every(rr => rr.verify === null)).toBe(true)
+      }
+    } finally { delete process.env.ASICODE_VERIFY_AUTODETECT }
+  }, 60_000)
+
   test('explicit verifyCmd: "" disables verifier even when env set', async () => {
     process.env.ASICODE_DISPATCH_CMD = `
       cat > /dev/null

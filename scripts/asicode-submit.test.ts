@@ -554,6 +554,14 @@ describe('--race best-of-N (REQ-14)', () => {
     expect(r.stdout).toContain('ASICODE_AUTO_PR_FORCE')
   })
 
+  test('--help mentions verifier auto-detect (REQ-24)', () => {
+    const r = run(['--help'], { env: { ASICODE_INSTRUMENTATION_DB: '' } })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('ASICODE_VERIFY_CMD')
+    expect(r.stdout).toContain('auto-detected')
+    expect(r.stdout).toContain('ASICODE_VERIFY_AUTODETECT')
+  })
+
   test('ASICODE_AUTO_PR_FORCE=1 sets force-pr default', () => {
     gitInit(projDir)
     const briefPath = join(tempDir, 'b.md')

@@ -14,6 +14,7 @@ import type { JudgeProvider } from '../judges/dispatcher.js'
 import { provisionWorktrees, type ProvisionedWorktree } from './worktreeProvisioner.js'
 import { pickWinner, type RaceCandidate, type TiebreakResult } from './tiebreaker.js'
 import { runVerifier, verifyCmdFromEnv, verifyRank, type VerifyOutcome } from './verifier.js'
+import { detectVerifyCmd } from './verifyDetect.js'
 
 export interface RaceInput {
   briefId: string
@@ -201,9 +202,20 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
   }
   const finishers = racers.filter(r => r.outcome === 'completed' && r.diff !== null && r.diff.trim() !== '')
 
-  // REQ-18: run the verifier inside each finished worktree. verifyCmd
-  // explicitly empty string disables; undefined falls back to env.
-  const verifyCmd = input.verifyCmd !== undefined ? input.verifyCmd : verifyCmdFromEnv() ?? ''
+  // REQ-18 + REQ-24: resolve verifier. Priority:
+  //   1. input.verifyCmd (CLI override; '' explicitly disables)
+  //   2. ASICODE_VERIFY_CMD env var
+  //   3. auto-detection from project files (REQ-24)
+  // ASICODE_VERIFY_AUTODETECT=0 disables step 3 (e.g. for racing in
+  // repos where the test suite is too slow or interactive).
+  let verifyCmd: string
+  if (input.verifyCmd !== undefined) verifyCmd = input.verifyCmd
+  else {
+    const envCmd = verifyCmdFromEnv()
+    if (envCmd !== null) verifyCmd = envCmd
+    else if (process.env.ASICODE_VERIFY_AUTODETECT === '0') verifyCmd = ''
+    else verifyCmd = detectVerifyCmd(input.repoPath)?.cmd ?? ''
+  }
   if (verifyCmd && finishers.length > 0) {
     // Run verifiers in parallel — the racers are isolated worktrees,
     // so the verifier processes shouldn't contend.
