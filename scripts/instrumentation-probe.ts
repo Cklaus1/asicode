@@ -57,9 +57,20 @@ function renderTable(report: Awaited<ReturnType<typeof probeRuntime>>): string {
         ? 'Partial — northstar workflow runs but some enrichment is off'
         : 'Not configured — northstar workflow cannot run as-is'
   lines.push(`${glyph} Northstar: ${label}`)
-  if (r.blockers.length > 0) lines.push(`   Blockers: ${r.blockers.join(', ')}`)
+  if (r.blockers.length > 0) {
+    lines.push('')
+    lines.push('   Blockers — fix these to make the workflow run:')
+    for (const b of r.blockers) {
+      lines.push(`     ${b.capability} (${b.reason})`)
+      lines.push(`       $ ${b.fix}`)
+    }
+  }
   if (r.enrichmentMissing.length > 0 && r.level !== 'not_configured') {
-    lines.push(`   Enrichment off: ${r.enrichmentMissing.join(', ')}`)
+    lines.push('')
+    lines.push('   Enrichment off — optional capabilities you can enable:')
+    for (const b of r.enrichmentMissing) {
+      lines.push(`     ${b.capability}: ${b.fix}`)
+    }
   }
   lines.push('')
 

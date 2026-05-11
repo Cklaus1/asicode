@@ -50,14 +50,22 @@ export interface ProbeReport {
 
 export type ReadinessLevel = 'ready' | 'partial' | 'not_configured'
 
+export interface ReadinessBlocker {
+  capability: string
+  /** Human description of what's wrong. */
+  reason: string
+  /** Copy-pasteable command(s) to resolve it. */
+  fix: string
+}
+
 export interface ReadinessVerdict {
   level: ReadinessLevel
   /** Minimum capabilities present? (db + provider + judges + watch-merges) */
   minimumViable: boolean
-  /** Optional capabilities still unconfigured. */
-  enrichmentMissing: string[]
+  /** Optional capabilities still unconfigured, with fix commands. */
+  enrichmentMissing: ReadinessBlocker[]
   /** What blocks `ready` — empty when level='ready'. */
-  blockers: string[]
+  blockers: ReadinessBlocker[]
 }
 
 /**
@@ -84,6 +92,82 @@ const NORTHSTAR_ENRICHMENT: readonly string[] = [
   'pr-comment',
 ]
 
+/**
+ * Fix-command lookup. Per capability, returns a default reason +
+ * copy-pasteable command. When the probe surfaces a more specific
+ * reason (e.g. "no provider configured"), that one wins in the
+ * blocker output but the fix command stays — it's still the right
+ * next step.
+ */
+function fixFor(capability: string, observedReason?: string): ReadinessBlocker {
+  switch (capability) {
+    case 'instrumentation':
+      return {
+        capability,
+        reason: observedReason ?? 'instrumentation db not set up',
+        fix:
+          'export ASICODE_INSTRUMENTATION_DB=~/.asicode/instrumentation.db && bun run instrumentation:migrate',
+      }
+    case 'judges':
+      return {
+        capability,
+        reason: observedReason ?? 'judges opt-in not set',
+        fix:
+          'export ANTHROPIC_API_KEY=sk-... && export ASICODE_JUDGES_ENABLED=1',
+      }
+    case 'watch-merges':
+      return {
+        capability,
+        reason: observedReason ?? 'daemon not running',
+        fix:
+          'nohup bun run instrumentation:watch-merges >> ~/asicode-watch.log 2>&1 &',
+      }
+    case 'brief-gate':
+      return {
+        capability,
+        reason: observedReason ?? 'A16 brief evaluation off',
+        fix: 'export ASICODE_BRIEF_GATE_ENABLED=1',
+      }
+    case 'brief-mode':
+      return {
+        capability,
+        reason: observedReason ?? 'A12 brief expansion off',
+        fix: 'export ASICODE_BRIEF_MODE_ENABLED=1',
+      }
+    case 'density':
+      return {
+        capability,
+        reason: observedReason ?? 'density A/B harness off',
+        fix: 'export ASICODE_DENSITY_ENABLED=1',
+      }
+    case 'adversarial':
+      return {
+        capability,
+        reason: observedReason ?? 'A15 adversarial verifier off',
+        fix: 'export ASICODE_ADVERSARIAL_ENABLED=1',
+      }
+    case 'plan-retrieval':
+      return {
+        capability,
+        reason: observedReason ?? 'A8 plan retrieval off',
+        fix:
+          'export OLLAMA_HOST=http://localhost:11434 && export ASICODE_PLAN_RETRIEVAL_ENABLED=1',
+      }
+    case 'pr-comment':
+      return {
+        capability,
+        reason: observedReason ?? 'PR-thread visibility off',
+        fix: 'export ASICODE_PR_COMMENT_ENABLED=1',
+      }
+    default:
+      return {
+        capability,
+        reason: observedReason ?? 'capability missing',
+        fix: '(no fix available)',
+      }
+  }
+}
+
 function computeReadiness(
   enabled: string[],
   blocked: Array<{ capability: string; reason: string }>,
@@ -91,21 +175,22 @@ function computeReadiness(
   const enabledSet = new Set(enabled)
   const blockedMap = new Map(blocked.map(b => [b.capability, b.reason]))
 
-  const missing: string[] = []
-  const blockers: string[] = []
+  const blockers: ReadinessBlocker[] = []
+  let missingCount = 0
   for (const cap of NORTHSTAR_REQUIRED) {
     if (enabledSet.has(cap)) continue
-    missing.push(cap)
-    const reason = blockedMap.get(cap)
-    blockers.push(reason ? `${cap} (${reason})` : cap)
+    missingCount++
+    blockers.push(fixFor(cap, blockedMap.get(cap)))
   }
 
-  const enrichmentMissing = NORTHSTAR_ENRICHMENT.filter(c => !enabledSet.has(c))
+  const enrichmentMissing = NORTHSTAR_ENRICHMENT.filter(c => !enabledSet.has(c)).map(c =>
+    fixFor(c, blockedMap.get(c)),
+  )
 
   let level: ReadinessLevel
-  if (missing.length === 0) {
+  if (missingCount === 0) {
     level = enrichmentMissing.length === 0 ? 'ready' : 'partial'
-  } else if (missing.length < NORTHSTAR_REQUIRED.length) {
+  } else if (missingCount < NORTHSTAR_REQUIRED.length) {
     level = 'partial'
   } else {
     level = 'not_configured'
@@ -113,7 +198,7 @@ function computeReadiness(
 
   return {
     level,
-    minimumViable: missing.length === 0,
+    minimumViable: missingCount === 0,
     enrichmentMissing,
     blockers,
   }
@@ -397,11 +482,20 @@ export function renderProbeMarkdown(report: ProbeReport): string {
   lines.push(`${glyph} ${label}`)
   if (r.blockers.length > 0) {
     lines.push('')
-    lines.push(`Blockers: ${r.blockers.join(', ')}`)
+    lines.push('**Blockers** — fix these to make the workflow run:')
+    for (const b of r.blockers) {
+      lines.push(`- \`${b.capability}\` (${b.reason})`)
+      lines.push(`  \`\`\`sh`)
+      lines.push(`  ${b.fix}`)
+      lines.push(`  \`\`\``)
+    }
   }
   if (r.enrichmentMissing.length > 0 && r.level !== 'not_configured') {
     lines.push('')
-    lines.push(`Enrichment off: ${r.enrichmentMissing.join(', ')}`)
+    lines.push('**Enrichment off** — optional capabilities you can enable:')
+    for (const b of r.enrichmentMissing) {
+      lines.push(`- \`${b.capability}\`: \`${b.fix}\``)
+    }
   }
   lines.push('')
 

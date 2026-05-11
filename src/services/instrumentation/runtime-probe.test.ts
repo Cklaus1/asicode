@@ -222,9 +222,10 @@ describe('readiness rollup', () => {
     const r = await probeRuntime()
     expect(r.readiness.level).toBe('not_configured')
     expect(r.readiness.minimumViable).toBe(false)
-    expect(r.readiness.blockers).toContain('instrumentation')
-    expect(r.readiness.blockers).toContain('judges')
-    expect(r.readiness.blockers).toContain('watch-merges')
+    const caps = r.readiness.blockers.map(b => b.capability)
+    expect(caps).toContain('instrumentation')
+    expect(caps).toContain('judges')
+    expect(caps).toContain('watch-merges')
   })
 
   test('just instrumentation → partial (judges + watch-merges still missing)', async () => {
@@ -232,9 +233,10 @@ describe('readiness rollup', () => {
     const r = await probeRuntime()
     expect(r.readiness.level).toBe('partial')
     expect(r.readiness.minimumViable).toBe(false)
-    expect(r.readiness.blockers).not.toContain('instrumentation')
-    expect(r.readiness.blockers).toContain('judges')
-    expect(r.readiness.blockers).toContain('watch-merges')
+    const caps = r.readiness.blockers.map(b => b.capability)
+    expect(caps).not.toContain('instrumentation')
+    expect(caps).toContain('judges')
+    expect(caps).toContain('watch-merges')
   })
 
   test('all 3 required + no enrichment → partial (enrichment listed)', async () => {
@@ -294,7 +296,47 @@ describe('readiness rollup', () => {
     process.env.ASICODE_JUDGES_ENABLED = '1'
     const r = await probeRuntime()
     expect(r.readiness.level).toBe('partial')
-    expect(r.readiness.blockers.find(b => b.startsWith('judges'))).toMatch(/no provider configured/)
+    const j = r.readiness.blockers.find(b => b.capability === 'judges')
+    expect(j).toBeDefined()
+    expect(j!.reason).toMatch(/no provider configured/)
+  })
+
+  test('every blocker carries a copy-pasteable fix command', async () => {
+    const r = await probeRuntime()
+    expect(r.readiness.blockers.length).toBeGreaterThan(0)
+    for (const b of r.readiness.blockers) {
+      expect(b.fix).toBeTruthy()
+      expect(b.fix).not.toBe('(no fix available)')
+      // Real fix commands either set env vars or run bun scripts
+      expect(b.fix).toMatch(/^(export|bun run|nohup)/)
+    }
+  })
+
+  test('every enrichment item carries a fix command too', async () => {
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    const r = await probeRuntime()
+    expect(r.readiness.enrichmentMissing.length).toBeGreaterThan(0)
+    for (const b of r.readiness.enrichmentMissing) {
+      expect(b.fix).toBeTruthy()
+      expect(b.fix).toMatch(/^export/)
+    }
+  })
+
+  test('judges blocker on missing provider names ANTHROPIC_API_KEY in the fix', async () => {
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    process.env.ASICODE_JUDGES_ENABLED = '1'
+    const r = await probeRuntime()
+    const j = r.readiness.blockers.find(b => b.capability === 'judges')
+    expect(j!.fix).toContain('ANTHROPIC_API_KEY')
+    expect(j!.fix).toContain('ASICODE_JUDGES_ENABLED')
+  })
+
+  test('watch-merges blocker fix is the nohup daemon command', async () => {
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    const r = await probeRuntime()
+    const w = r.readiness.blockers.find(b => b.capability === 'watch-merges')
+    expect(w!.fix).toContain('instrumentation:watch-merges')
+    expect(w!.fix).toContain('nohup')
   })
 })
 
