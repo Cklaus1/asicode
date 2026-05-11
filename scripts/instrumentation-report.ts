@@ -161,6 +161,51 @@ interface Metrics {
   raceStrategyLlmTiebreak: number
   raceStrategyFcfs: number
   raceStrategyUnset: number  // older races before REQ-30 wired writes
+  // REQ-49: top abandonment reasons.
+  abandonedTotal: number
+  abandonedUnattributed: number  // pr_outcome=abandoned + intervention_reason IS NULL
+  abandonReasons: Array<{ prefix: string; n: number }>
+}
+
+// REQ-49: group reasons by stable prefix so numeric details (token
+// counts, sha fragments, line numbers) don't fragment the histogram.
+//   "race:budget_exhausted: projected 200000…" → "race:budget_exhausted"
+//   "race:all_racers_failed: ..."             → "race:all_racers_failed"
+//   "a16_reject: 2.1 < 2.5"                   → "a16_reject"
+//   "stale_no_recorder_update"                → "stale_no_recorder_update"
+//   "reviewer caught typo"                    → "<freeform>"  (no colon)
+function reasonPrefix(reason: string): string {
+  const trimmed = reason.trim()
+  if (!trimmed) return '<empty>'
+  // Three-tier grouping based on colon positions:
+  //   race:budget_exhausted: projected …  → "race:budget_exhausted"  (head:subhead)
+  //   race:opt_out                        → "race:opt_out"           (head:subhead, no detail)
+  //   a16_reject: 2.1 < 2.5               → "a16_reject"             (head:detail)
+  //   reviewer caught typo                → "<freeform>"             (no colon)
+  // Rule: subhead is alnum/underscore only (looks like an identifier).
+  // Free-form 'detail' after a single colon is dropped.
+  const firstColon = trimmed.indexOf(':')
+  if (firstColon < 0) return '<freeform>'
+  const head = trimmed.slice(0, firstColon)
+  const rest = trimmed.slice(firstColon + 1).trimStart()
+  // Match leading identifier: word chars and dashes only.
+  const ident = rest.match(/^[A-Za-z0-9_-]+/)?.[0] ?? ''
+  if (!ident) return head
+  // ident followed by EOL, colon, or whitespace → treat as subhead.
+  const after = rest.slice(ident.length)
+  if (after === '' || after.startsWith(':') || /^\s/.test(after)) {
+    // race:opt_out → 'race:opt_out'; race:budget_exhausted: detail → 'race:budget_exhausted'
+    // a16_reject: 2.1 < 2.5 → after starts with ' ' but next char is '2' (digit) — ambiguous.
+    // Distinguish: if after starts with ':' OR after is empty → real subhead.
+    // If after starts with whitespace AND next non-ws is not alnum → it's detail.
+    if (after === '' || after.startsWith(':')) return `${head}:${ident}`
+    // whitespace case: only treat as subhead if the value looks like
+    // a continuation identifier (e.g. budget_exhausted is a subhead;
+    // "2.1 < 2.5" is detail). The match above already captured the
+    // first identifier; if it's the WHOLE rest, it's a subhead.
+    return rest.trim() === ident ? `${head}:${ident}` : head
+  }
+  return head
 }
 
 function compute(db: Database, sinceMs: number): Metrics {
@@ -611,10 +656,31 @@ function compute(db: Database, sinceMs: number): Metrics {
       else if (row.race_strategy === 'fcfs') raceStrategyFcfs += row.n
       else raceStrategyUnset += row.n
     }
-  } catch {
-    // race_strategy column exists since schema v2, but the older v1
-    // didn't even have runs.race_strategy. Leave at 0 on read errors.
-  }
+  } catch { /* fallthrough */ }
+  // REQ-49: abandonment reasons. Filters: pr_outcome='abandoned',
+  // ts_submitted >= sinceMs (the window the user asked for).
+  let abandonedTotal = 0, abandonedUnattributed = 0
+  const reasonCounts = new Map<string, number>()
+  try {
+    const rows = db.query<{ intervention_reason: string | null; n: number }, [number]>(
+      `SELECT intervention_reason, COUNT(*) AS n
+       FROM briefs
+       WHERE pr_outcome = 'abandoned' AND ts_submitted >= ?
+       GROUP BY intervention_reason`,
+    ).all(sinceMs)
+    for (const r of rows) {
+      abandonedTotal += r.n
+      if (r.intervention_reason === null) abandonedUnattributed += r.n
+      else {
+        const key = reasonPrefix(r.intervention_reason)
+        reasonCounts.set(key, (reasonCounts.get(key) ?? 0) + r.n)
+      }
+    }
+  } catch { /* skip on read failure */ }
+  const abandonReasons = [...reasonCounts.entries()]
+    .map(([prefix, n]) => ({ prefix, n }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 5)
   const raceVerifyMeasured = raceWinnerPassed + raceWinnerFailed + raceWinnerVerifyError
   const raceWinnerPassRate = raceVerifyMeasured > 0 ? raceWinnerPassed / raceVerifyMeasured : null
   const raceRacerPassRate = raceTotalRacers > 0 ? raceTotalRacersPassed / raceTotalRacers : null
@@ -696,6 +762,9 @@ function compute(db: Database, sinceMs: number): Metrics {
     raceStrategyLlmTiebreak,
     raceStrategyFcfs,
     raceStrategyUnset,
+    abandonedTotal,
+    abandonedUnattributed,
+    abandonReasons,
   }
 }
 
@@ -898,6 +967,21 @@ function render(m: Metrics, sinceDays: number): string {
       if (m.raceStrategyLlmTiebreak > 0) parts.push(`llm ${m.raceStrategyLlmTiebreak}`)
       if (m.raceStrategyFcfs > 0) parts.push(`fcfs ${m.raceStrategyFcfs}`)
       lines.push(`  Strategy                ${parts.join(', ')}`)
+    }
+    lines.push('')
+  }
+
+  // REQ-49: abandonment reasons. Renders when ≥1 abandoned brief in
+  // window. Top 5 by prefix; "<freeform>" / "<empty>" surface freely
+  // typed reasons; unattributed counts pre-REQ-46/48 rows.
+  if (m.abandonedTotal > 0) {
+    lines.push('Abandonment reasons')
+    lines.push(`  Total                   ${String(m.abandonedTotal).padStart(4)}    (briefs with pr_outcome=abandoned)`)
+    for (const { prefix, n } of m.abandonReasons) {
+      lines.push(`    ${prefix.padEnd(36)}${String(n).padStart(4)}`)
+    }
+    if (m.abandonedUnattributed > 0) {
+      lines.push(`    <unattributed>                          ${String(m.abandonedUnattributed).padStart(4)}    (no intervention_reason — likely pre-REQ-46)`)
     }
     lines.push('')
   }

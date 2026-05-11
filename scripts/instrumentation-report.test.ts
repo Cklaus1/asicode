@@ -1028,3 +1028,85 @@ describe('Race + verifier section (REQ-23)', () => {
     expect(stdout).not.toContain('Strategy ')
   })
 })
+
+// REQ-49: abandonment-reasons section.
+describe('Abandonment reasons section (REQ-49)', () => {
+  function seedAbandoned(db: Database, briefId: string, reason: string | null) {
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision, pr_outcome, intervention_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [briefId, Date.now(), '/p', 'fp', 't', 'accept', 'abandoned', reason],
+    )
+  }
+
+  test('section omitted when no abandoned briefs', () => {
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('Abandonment reasons')
+  })
+
+  test('groups reasons by prefix (race:budget_exhausted: …, race:all_racers_failed: …)', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    seedAbandoned(db, 'b1', 'race:budget_exhausted: projected 200000 tokens > 1000')
+    seedAbandoned(db, 'b2', 'race:budget_exhausted: projected 800000 tokens > 5000')
+    seedAbandoned(db, 'b3', 'race:all_racers_failed: cat > /dev/null; exit 1')
+    seedAbandoned(db, 'b4', 'a16_reject: 2.1 < 2.5')
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Abandonment reasons')
+    expect(stdout).toMatch(/Total\s+4/)
+    expect(stdout).toMatch(/race:budget_exhausted\s+2/)
+    expect(stdout).toMatch(/race:all_racers_failed\s+1/)
+    expect(stdout).toMatch(/a16_reject\s+1/)
+  })
+
+  test('freeform reasons (no colon) bucket as <freeform>', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    seedAbandoned(db, 'b1', 'reviewer caught typo')
+    seedAbandoned(db, 'b2', 'duplicate of #42')
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/<freeform>\s+2/)
+  })
+
+  test('null reasons surface as <unattributed>', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    seedAbandoned(db, 'b1', null)
+    seedAbandoned(db, 'b2', null)
+    seedAbandoned(db, 'b3', 'race:opt_out')
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/Total\s+3/)
+    expect(stdout).toMatch(/<unattributed>\s+.*2/)
+    expect(stdout).toMatch(/race:opt_out\s+1/)
+  })
+
+  test('top-5 cap: collapses to top 5 prefixes', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    // 6 distinct prefixes; only top 5 by count should render.
+    for (let i = 1; i <= 6; i++) seedAbandoned(db, `b${i}`, `prefix_${i}: detail`)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    // The smallest-count one is alphabetically last — but they're all
+    // count=1 here. Just assert we don't render all 6.
+    const matches = stdout.match(/prefix_\d:/g) ?? []
+    expect(matches.length).toBeLessThanOrEqual(5)
+  })
+
+  test('non-abandoned briefs excluded', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision, pr_outcome, intervention_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['b_merged', Date.now(), '/p', 'fp', 't', 'accept', 'merged_no_intervention', 'reviewer caught typo'],
+    )
+    db.close()
+    const { stdout } = runReport(dbPath)
+    // Merged brief had intervention_reason but isn't abandoned → no section.
+    expect(stdout).not.toContain('Abandonment reasons')
+  })
+})
