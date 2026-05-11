@@ -8,10 +8,10 @@ import { Database } from 'bun:sqlite'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 
-interface Args { briefId: string | null; json: boolean; watch: boolean; watchIntervalMs: number; list: boolean; limit: number; project: string | null }
+interface Args { briefId: string | null; json: boolean; watch: boolean; watchIntervalMs: number; list: boolean; limit: number; project: string | null; outcome: string | null }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { briefId: null, json: false, watch: false, watchIntervalMs: 5000, list: false, limit: 10, project: null }
+  const args: Args = { briefId: null, json: false, watch: false, watchIntervalMs: 5000, list: false, limit: 10, project: null, outcome: null }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--json') args.json = true
@@ -23,6 +23,12 @@ function parseArgs(argv: string[]): Args {
       args.limit = n
     }
     else if (a === '--project') args.project = argv[++i]
+    else if (a === '--outcome') {
+      const v = argv[++i]
+      const valid = ['merged', 'merged_no_intervention', 'merged_with_intervention', 'abandoned', 'in_flight', 'reverted']
+      if (!valid.includes(v)) { console.error(`--outcome expects one of: ${valid.join(', ')}; got '${v}'`); process.exit(2) }
+      args.outcome = v
+    }
     else if (a === '--watch-interval') {
       const n = parseInt(argv[++i], 10) * 1000
       if (!Number.isFinite(n) || n < 1000) { console.error(`--watch-interval expects seconds ≥1, got '${argv[i]}'`); process.exit(2) }
@@ -36,6 +42,7 @@ function parseArgs(argv: string[]): Args {
       console.log('  --list          REQ-51: list recent briefs (default: 10 most-recent in cwd)')
       console.log('  --limit N       cap --list output (1-100, default 10)')
       console.log('  --project PATH  filter --list by project_path (default: cwd)')
+      console.log('  --outcome VAL   filter --list by pr_outcome: merged|merged_no_intervention|merged_with_intervention|abandoned|in_flight|reverted')
       process.exit(0)
     }
     else if (a.startsWith('-')) { console.error(`unknown arg: ${a}`); process.exit(2) }
@@ -268,18 +275,34 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
   return { done: isBriefDone(brief, runs) }
 }
 
-// REQ-51: render the most-recent N briefs in a project.
+// REQ-51/52: render the most-recent N briefs in a project, optionally
+// filtered by pr_outcome.
 function renderList(args: Args): void {
   const db = new Database(process.env.ASICODE_INSTRUMENTATION_DB!, { readonly: true })
   db.exec('PRAGMA query_only = ON')
   const project = args.project ?? process.cwd()
+  // REQ-52: outcome filter — translate user-friendly shorthands into
+  // SQL predicates. Defaults to no filter (all outcomes).
+  let outcomeWhere = ''
+  const params: unknown[] = [project]
+  if (args.outcome === 'merged') {
+    outcomeWhere = ` AND pr_outcome IN ('merged_no_intervention', 'merged_with_intervention')`
+  } else if (args.outcome === 'reverted') {
+    outcomeWhere = ` AND reverted_within_7d = 1`
+  } else if (args.outcome === 'in_flight') {
+    outcomeWhere = ` AND pr_outcome IS NULL`
+  } else if (args.outcome) {
+    outcomeWhere = ` AND pr_outcome = ?`
+    params.push(args.outcome)
+  }
+  params.push(args.limit)
   const rows = db.query<{
     brief_id: string; ts_submitted: number; ts_completed: number | null;
     pr_outcome: string | null; pr_number: number | null; user_text: string;
-  }, [string, number]>(
+  }, unknown[]>(
     `SELECT brief_id, ts_submitted, ts_completed, pr_outcome, pr_number, user_text
-     FROM briefs WHERE project_path = ? ORDER BY ts_submitted DESC LIMIT ?`,
-  ).all(project, args.limit)
+     FROM briefs WHERE project_path = ?${outcomeWhere} ORDER BY ts_submitted DESC LIMIT ?`,
+  ).all(...params)
   db.close()
   if (args.json) {
     console.log(JSON.stringify({ project, count: rows.length, briefs: rows.map(r => ({

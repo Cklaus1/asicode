@@ -737,4 +737,59 @@ describe('REQ-51 --list', () => {
     expect(r.stdout).toContain('--list')
     expect(r.stdout).toContain('--limit')
   })
+
+  // REQ-52: --outcome filter
+  test('--outcome=abandoned excludes merged briefs', () => {
+    const db = new Database(dbPath)
+    seedAt(db, 'b_done', Date.now(), process.cwd(), 'merged_no_intervention')
+    seedAt(db, 'b_dead', Date.now(), process.cwd(), 'abandoned')
+    db.close()
+    const r = run(['--list', '--outcome', 'abandoned'])
+    expect(r.stdout).toContain('b_dead')
+    expect(r.stdout).not.toContain('b_done')
+  })
+
+  test('--outcome=merged matches BOTH merged_no_intervention and merged_with_intervention', () => {
+    const db = new Database(dbPath)
+    seedAt(db, 'b_clean', Date.now(), process.cwd(), 'merged_no_intervention')
+    seedAt(db, 'b_inter', Date.now(), process.cwd(), 'merged_with_intervention')
+    seedAt(db, 'b_dead', Date.now(), process.cwd(), 'abandoned')
+    db.close()
+    const r = run(['--list', '--outcome', 'merged'])
+    expect(r.stdout).toContain('b_clean')
+    expect(r.stdout).toContain('b_inter')
+    expect(r.stdout).not.toContain('b_dead')
+  })
+
+  test('--outcome=in_flight matches pr_outcome IS NULL', () => {
+    const db = new Database(dbPath)
+    seedAt(db, 'b_pending', Date.now(), process.cwd(), null)
+    seedAt(db, 'b_done', Date.now(), process.cwd(), 'merged_no_intervention')
+    db.close()
+    const r = run(['--list', '--outcome', 'in_flight'])
+    expect(r.stdout).toContain('b_pending')
+    expect(r.stdout).not.toContain('b_done')
+  })
+
+  test('--outcome=reverted matches reverted_within_7d=1', () => {
+    const db = new Database(dbPath)
+    seedAt(db, 'b_clean', Date.now(), process.cwd(), 'merged_no_intervention')
+    seedAt(db, 'b_rev', Date.now(), process.cwd(), 'merged_no_intervention')
+    db.run(`UPDATE briefs SET reverted_within_7d = 1 WHERE brief_id = ?`, ['b_rev'])
+    db.close()
+    const r = run(['--list', '--outcome', 'reverted'])
+    expect(r.stdout).toContain('b_rev')
+    expect(r.stdout).not.toContain('b_clean')
+  })
+
+  test('--outcome with invalid value exits 2', () => {
+    const r = run(['--list', '--outcome', 'bogus'])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('--outcome')
+  })
+
+  test('--outcome surfaces in --help', () => {
+    const r = run(['--help'], { ASICODE_INSTRUMENTATION_DB: '' })
+    expect(r.stdout).toContain('--outcome')
+  })
 })
