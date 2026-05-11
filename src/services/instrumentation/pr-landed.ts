@@ -197,6 +197,8 @@ export async function recordPrLanded(input: PrLandedInput): Promise<PrLandedResu
           briefText: string
           diff: string
           riskClass?: 'production' | 'experimental' | 'throwaway' | 'security'
+          prSha?: string
+          repoPath?: string
         }) => void
         lookupRiskClass: (briefId: string) => string | undefined
       }
@@ -212,6 +214,8 @@ export async function recordPrLanded(input: PrLandedInput): Promise<PrLandedResu
         briefText: ctx.userText,
         diff,
         riskClass,
+        prSha: input.prSha,
+        repoPath: ctx.projectPath,
       })
       result.fired.push('adversarial')
     })

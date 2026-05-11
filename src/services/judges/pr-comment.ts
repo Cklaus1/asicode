@@ -17,7 +17,7 @@
  * once that pattern proves out.
  */
 
-import { spawn } from 'node:child_process'
+import { findPrNumberForSha, postPrComment } from '../pr-comment-shared/gh.js'
 import type { DispatchResult, JudgeResult } from './dispatcher.js'
 
 export interface PostCommentInput {
@@ -119,66 +119,8 @@ export function buildVerdictMarkdown(result: DispatchResult): string {
 }
 
 /**
- * Find the PR number for a given merge sha by asking gh. Returns null
- * when gh isn't available or the sha doesn't map to a PR (e.g. the
- * commit was pushed directly to main without a PR).
- */
-async function findPrNumberForSha(prSha: string, repoPath: string): Promise<number | null> {
-  return new Promise(resolve => {
-    let out = ''
-    let settled = false
-    const child = spawn(
-      'gh',
-      [
-        'pr',
-        'list',
-        '--state',
-        'merged',
-        '--search',
-        prSha,
-        '--json',
-        'number,mergeCommit',
-        '--limit',
-        '5',
-      ],
-      { cwd: repoPath, stdio: ['ignore', 'pipe', 'ignore'] },
-    )
-    const timer = setTimeout(() => {
-      child.kill()
-      if (!settled) {
-        settled = true
-        resolve(null)
-      }
-    }, 10_000)
-    child.stdout.on('data', (chunk: Buffer) => {
-      out += chunk.toString('utf-8')
-    })
-    child.on('error', () => {
-      clearTimeout(timer)
-      if (!settled) {
-        settled = true
-        resolve(null)
-      }
-    })
-    child.on('close', code => {
-      clearTimeout(timer)
-      if (settled) return
-      settled = true
-      if (code !== 0) return resolve(null)
-      try {
-        const parsed = JSON.parse(out) as Array<{ number: number; mergeCommit: { oid: string } | null }>
-        const match = parsed.find(p => p.mergeCommit && p.mergeCommit.oid === prSha)
-        resolve(match ? match.number : null)
-      } catch {
-        resolve(null)
-      }
-    })
-  })
-}
-
-/**
- * Post the verdict comment via `gh pr comment N --body-file -`. Returns
- * a structured result describing what happened (so callers can log).
+ * Post the verdict comment via the shared gh plumbing. Returns a
+ * structured result describing what happened (so callers can log).
  */
 export async function postJudgeVerdict(input: PostCommentInput): Promise<PostCommentResult> {
   if (!isPrCommentEnabled()) return { posted: false, reason: 'opt_out' }
@@ -188,39 +130,7 @@ export async function postJudgeVerdict(input: PostCommentInput): Promise<PostCom
   if (prNumber === null) return { posted: false, reason: 'no_pr' }
 
   const body = buildVerdictMarkdown(input.result)
-
-  // gh pr comment <N> --body-file - reads body from stdin so we don't
-  // have to argv-escape a multi-line markdown blob. Cleaner than --body
-  // with quoting tricks.
-  const posted = await new Promise<boolean>(resolve => {
-    let settled = false
-    const child = spawn(
-      'gh',
-      ['pr', 'comment', String(prNumber), '--body-file', '-'],
-      { cwd: input.repoPath, stdio: ['pipe', 'ignore', 'pipe'] },
-    )
-    const timer = setTimeout(() => {
-      child.kill()
-      if (!settled) {
-        settled = true
-        resolve(false)
-      }
-    }, 15_000)
-    child.on('error', () => {
-      clearTimeout(timer)
-      if (!settled) {
-        settled = true
-        resolve(false)
-      }
-    })
-    child.on('close', code => {
-      clearTimeout(timer)
-      if (settled) return
-      settled = true
-      resolve(code === 0)
-    })
-    child.stdin.end(body)
-  })
+  const posted = await postPrComment({ prNumber, repoPath: input.repoPath, body })
 
   if (!posted) {
     return { posted: false, reason: 'gh_failed', prNumber, bodyPreview: body.slice(0, 200) }

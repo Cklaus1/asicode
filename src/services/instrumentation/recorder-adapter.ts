@@ -341,6 +341,8 @@ export function adaptFinalizeRun(
           briefText: string
           diff: string
           riskClass?: 'production' | 'experimental' | 'throwaway' | 'security'
+          prSha?: string
+          repoPath?: string
         }) => void
         lookupRiskClass: (briefId: string) => string | undefined
       }
@@ -352,6 +354,8 @@ export function adaptFinalizeRun(
         briefText: entry.briefText,
         diff: opts.diff,
         riskClass,
+        prSha: opts.prSha,
+        repoPath: entry.projectPath,
       })
     }
   }

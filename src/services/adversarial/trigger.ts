@@ -26,6 +26,7 @@ import {
 import type { RiskClass } from '../instrumentation/types'
 import { createCachedProvider } from '../trigger-shared/cachedProvider'
 import { adversarialVerify, shouldRunOn, type Severity } from './verifier'
+import { isPrCommentEnabled, postAdversarialFindings } from './pr-comment.js'
 
 // ─── Opt-in ──────────────────────────────────────────────────────────
 
@@ -53,6 +54,13 @@ export interface AdversarialInput {
   briefText: string
   diff: string
   riskClass?: RiskClass
+  /**
+   * PR sha + repo path. Optional because the trigger persists findings
+   * to the reviews table regardless; these only enable iter-55's
+   * post-to-PR comment when ASICODE_PR_COMMENT_ENABLED=1.
+   */
+  prSha?: string
+  repoPath?: string
 }
 
 // ─── Look up risk class when caller doesn't have it ───────────────────
@@ -132,6 +140,27 @@ async function runAdversarial(
       converged: result.response.findings.length === 0,
       abandoned: false,
     })
+    // Iter 55: post non-low findings to the PR thread if opted in.
+    // Soft-fail; never block. Only fire when we have a prSha + repoPath
+    // (the recorder-adapter doesn't always carry them).
+    if (isPrCommentEnabled() && input.prSha && input.repoPath) {
+      try {
+        const posted = await postAdversarialFindings({
+          prSha: input.prSha,
+          response: result.response,
+          repoPath: input.repoPath,
+        })
+        if (!posted.posted && posted.reason !== 'opt_out' && posted.reason !== 'no_actionable_findings') {
+          // eslint-disable-next-line no-console
+          console.warn(`[asicode adversarial] pr-comment skipped: ${posted.reason}`)
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[asicode adversarial] pr-comment threw: ${e instanceof Error ? e.message : String(e)}`,
+        )
+      }
+    }
     return { persisted: true }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
