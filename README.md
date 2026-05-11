@@ -207,6 +207,7 @@ bun run instrumentation:calibrate   # judge panel calibration corpus
 bun run instrumentation:retro       # Practice 9 introspection cycle
 bun run instrumentation:brief       # manual A12 expand + A16 grade
 bun run instrumentation:replay      # A11 cross-cycle regression check
+bun run instrumentation:pr-landed   # notify a brief's PR has merged
 ```
 
 Recommended cron-shaped operational loop:
