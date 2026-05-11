@@ -71,6 +71,15 @@ interface Metrics {
   densityPositive: number
   densityPositiveRate: number | null
   autonomyIndex: number | null
+  // A16 brief-gate stats (observe-mode)
+  a16TotalGraded: number
+  a16Accept: number
+  a16Reject: number
+  a16Clarify: number
+  a16AcceptedAndMerged: number
+  a16AcceptedAndAbandoned: number
+  a16RejectedButForced: number  // 'reject' verdict that still produced a PR (gate not enforced in v1)
+  a16AcceptancePrecision: number | null
 }
 
 function compute(db: Database, sinceMs: number): Metrics {
@@ -150,6 +159,51 @@ function compute(db: Database, sinceMs: number): Metrics {
   const densityPositive = densRow.pos ?? 0
   const densityPositiveRate = refactorPrs > 0 ? densityPositive / refactorPrs : null
 
+  // A16 brief-gate metrics. Two cuts:
+  //   1. Decision distribution: of all graded briefs, what fraction were
+  //      accept/reject/clarify?
+  //   2. Acceptance precision: of accepts that have a final pr_outcome,
+  //      what fraction were merged_no_intervention? Target ≥ 90%.
+  const a16Row = db
+    .query<
+      {
+        graded: number
+        accept: number
+        reject: number
+        clarify: number
+        accepted_merged: number
+        accepted_abandoned: number
+        rejected_forced: number
+      },
+      [number]
+    >(
+      `SELECT
+         SUM(CASE WHEN a16_asi_readiness IS NOT NULL THEN 1 ELSE 0 END) AS graded,
+         SUM(CASE WHEN a16_decision = 'accept'   THEN 1 ELSE 0 END) AS accept,
+         SUM(CASE WHEN a16_decision = 'reject'   THEN 1 ELSE 0 END) AS reject,
+         SUM(CASE WHEN a16_decision = 'clarify'  THEN 1 ELSE 0 END) AS clarify,
+         SUM(CASE WHEN a16_decision = 'accept'  AND pr_outcome = 'merged_no_intervention' THEN 1 ELSE 0 END) AS accepted_merged,
+         SUM(CASE WHEN a16_decision = 'accept'  AND pr_outcome = 'abandoned'              THEN 1 ELSE 0 END) AS accepted_abandoned,
+         SUM(CASE WHEN a16_decision = 'reject'  AND pr_outcome IN ('merged_no_intervention', 'merged_with_intervention') THEN 1 ELSE 0 END) AS rejected_forced
+       FROM briefs
+       WHERE ts_submitted >= ?`,
+    )
+    .get(sinceMs) ?? { graded: 0, accept: 0, reject: 0, clarify: 0, accepted_merged: 0, accepted_abandoned: 0, rejected_forced: 0 }
+
+  const a16TotalGraded = a16Row.graded ?? 0
+  const a16Accept = a16Row.accept ?? 0
+  const a16Reject = a16Row.reject ?? 0
+  const a16Clarify = a16Row.clarify ?? 0
+  const a16AcceptedAndMerged = a16Row.accepted_merged ?? 0
+  const a16AcceptedAndAbandoned = a16Row.accepted_abandoned ?? 0
+  const a16RejectedButForced = a16Row.rejected_forced ?? 0
+  // Precision: accepts that landed cleanly vs. accepts with a known final outcome.
+  // Briefs still in_flight don't count toward the denominator (their precision
+  // isn't yet decidable).
+  const a16AcceptedWithOutcome = a16AcceptedAndMerged + a16AcceptedAndAbandoned
+  const a16AcceptancePrecision =
+    a16AcceptedWithOutcome > 0 ? a16AcceptedAndMerged / a16AcceptedWithOutcome : null
+
   // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 5)
   // Components that are null become 0 in the composite (be honest about gaps).
   const aiComponents =
@@ -173,6 +227,14 @@ function compute(db: Database, sinceMs: number): Metrics {
     densityPositive,
     densityPositiveRate,
     autonomyIndex: aiComponents,
+    a16TotalGraded,
+    a16Accept,
+    a16Reject,
+    a16Clarify,
+    a16AcceptedAndMerged,
+    a16AcceptedAndAbandoned,
+    a16RejectedButForced,
+    a16AcceptancePrecision,
   }
 }
 
@@ -218,9 +280,23 @@ function render(m: Metrics, sinceDays: number): string {
   lines.push(`  L1 auto-approve rate    ${fmtPct(m.l1AutoApproveRate)}    of code-touching tool calls (${m.l1AutoApproved}/${m.l1ToolCalls})`)
   lines.push('')
 
+  // A16 brief-gate section — only render when there's data to show.
+  // Suppressing the section on empty keeps the report clean for users
+  // who haven't opted into ASICODE_BRIEF_GATE_ENABLED.
+  if (m.a16TotalGraded > 0) {
+    lines.push('A16 brief gate (observe-only)')
+    const total = m.a16TotalGraded
+    lines.push(`  Briefs graded           ${String(total).padStart(4)}`)
+    lines.push(`  Decision distribution   accept ${m.a16Accept}  reject ${m.a16Reject}  clarify ${m.a16Clarify}`)
+    lines.push(`  Acceptance precision    ${fmtPct(m.a16AcceptancePrecision)}    (${m.a16AcceptedAndMerged}/${m.a16AcceptedAndMerged + m.a16AcceptedAndAbandoned} accepted briefs with outcome)`)
+    if (m.a16RejectedButForced > 0) {
+      lines.push(`  Reject-then-merged      ${m.a16RejectedButForced}    (v1 is observe-only; gate not enforced)`)
+    }
+    lines.push('')
+  }
+
   // Future sections (judges per-role panel agreement, A8 hit rate, A10 race
-  // speedup, A12 brief acceptance) appear when those features land and start
-  // writing rows. Until then they'd just print n/a — better to omit cleanly.
+  // speedup) appear when those features land and start writing rows.
 
   return lines.join('\n')
 }

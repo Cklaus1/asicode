@@ -149,3 +149,85 @@ describe('report computation', () => {
     expect(exitCode).toBe(1)
   })
 })
+
+describe('A16 brief-gate section', () => {
+  function seedGradedBrief(
+    db: Database,
+    briefId: string,
+    decision: 'accept' | 'reject' | 'clarify',
+    asiReadiness: number,
+    prOutcome: 'merged_no_intervention' | 'abandoned' | 'in_flight' | null,
+    tsCompleted: number,
+  ) {
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, ts_completed, project_path,
+         project_fingerprint, user_text, a16_asi_readiness, a16_well_formedness,
+         a16_verifier_shaped, a16_density_clarity, a16_decision, pr_sha, pr_outcome)
+       VALUES (?, ?, ?, '/p', 'fp', 'x', ?, 4, 4, 4, ?, ?, ?)`,
+      [
+        briefId,
+        tsCompleted - 1000,
+        tsCompleted,
+        asiReadiness,
+        decision,
+        prOutcome ? `sha-${briefId}` : null,
+        prOutcome,
+      ],
+    )
+  }
+
+  test('section is omitted when no graded briefs exist', () => {
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('A16 brief gate')
+  })
+
+  test('section renders decision distribution and precision', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 4 accept→merged, 1 accept→abandoned, 1 reject→abandoned, 1 clarify→in_flight
+    seedGradedBrief(db, 'a1', 'accept', 4, 'merged_no_intervention', now)
+    seedGradedBrief(db, 'a2', 'accept', 4, 'merged_no_intervention', now)
+    seedGradedBrief(db, 'a3', 'accept', 4, 'merged_no_intervention', now)
+    seedGradedBrief(db, 'a4', 'accept', 4, 'merged_no_intervention', now)
+    seedGradedBrief(db, 'a5', 'accept', 4, 'abandoned', now)
+    seedGradedBrief(db, 'r1', 'reject', 2, 'abandoned', now)
+    seedGradedBrief(db, 'c1', 'clarify', 3, 'in_flight', now)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('A16 brief gate (observe-only)')
+    expect(stdout).toContain('Briefs graded')
+    expect(stdout).toContain('accept 5  reject 1  clarify 1')
+    // Precision: 4 merged / (4 merged + 1 abandoned with outcome) = 80%
+    expect(stdout).toContain('Acceptance precision     80%')
+    expect(stdout).toContain('(4/5 accepted briefs with outcome)')
+  })
+
+  test('reject-then-merged surfaces only when present', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 1 reject that still produced a merge (v1 observe-mode lets this through)
+    seedGradedBrief(db, 'r1', 'reject', 2, 'merged_no_intervention', now)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('A16 brief gate')
+    expect(stdout).toContain('Reject-then-merged      1')
+  })
+
+  test('precision is n/a when no accepted brief has a final outcome', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // All accepts still in_flight
+    seedGradedBrief(db, 'a1', 'accept', 4, 'in_flight', now)
+    seedGradedBrief(db, 'a2', 'accept', 4, 'in_flight', now)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('A16 brief gate')
+    expect(stdout).toMatch(/Acceptance precision\s+n\/a/)
+  })
+})
