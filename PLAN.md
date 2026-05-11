@@ -1,6 +1,8 @@
 @asicode v2 plan|2026-05-10|status=design
 northstar: see [GOALS.md](./GOALS.md) — every phase below is in service of "hand a brief, get a correct PR"
 practices: see [PRACTICES.md](./PRACTICES.md) — the engineering loop we bake into the build and the run
+parallelism: see [docs/PARALLELISM.md](./docs/PARALLELISM.md) — per-seam rules for where to parallelize and where not
+judges: see [docs/judges/v1-prompts.md](./docs/judges/v1-prompts.md) + [docs/judges/config.toml](./docs/judges/config.toml) — locked v1 balanced panel
 
 # Legend
 - v1 = current asicode (forked openclaude @ 0.7.0; 585k LOC TypeScript)

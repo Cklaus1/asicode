@@ -1,0 +1,65 @@
+# asicode 3-panel judge configuration — v1 default (balanced)
+#
+# This is the locked v1 panel composition. See GOALS.md Metric 3 for the
+# reasoning, docs/judges/v1-prompts.md for the role prompts. Modes:
+#
+#   quality  — Opus everywhere it runs, 30–60s judgments, high-stakes work
+#   balanced — Opus + Sonnet + local, ~10s median (v1 default — locked)
+#   fast     — Sonnet × 3 or Sonnet × 2 + local, ~5s median, high-volume low-risk
+#
+# Override at the project level by writing the file you want to
+# .asicode/judges.toml in the project root.
+
+[panel]
+mode = "balanced"
+
+# Role-to-model assignment for balanced mode.
+# Roles rotate monthly to surface model-specific biases — see "Role
+# rotation cadence" in docs/judges/v1-prompts.md.
+
+[panel.balanced]
+correctness = "claude-opus-4-7"
+code_review = "claude-sonnet-4-6"
+qa_risk     = "ollama:qwen2.5-coder:32b"   # fallback: "claude-sonnet-4-6"
+
+[panel.quality]
+correctness = "claude-opus-4-7"
+code_review = "claude-opus-4-7"
+qa_risk     = "claude-opus-4-7"
+
+[panel.fast]
+correctness = "claude-sonnet-4-6"
+code_review = "claude-sonnet-4-6"
+qa_risk     = "ollama:qwen2.5-coder:32b"   # fallback: "claude-sonnet-4-6"
+
+[timeouts]
+# Per-judge timeout. A judge that exceeds this contributes nothing to
+# the composite; the other two carry on. Composite records "incomplete
+# panel" in the outcome log.
+per_judge_seconds = 30
+
+[parallelism]
+# All three judges fire in parallel for a single PR. Total latency
+# is max(per-judge), not sum. The local-model slot runs in its own
+# queue and does not compete with Anthropic rate limits.
+dispatch = "parallel"
+
+[caching]
+# Identical (model, role, diff_sha) triples return cached judgments.
+# Big win for replay (A11). TTL is generous because diffs are
+# immutable; the only invalidation is a model-version change.
+enabled = true
+ttl_days = 30
+
+[drift_detection]
+# When any model in the panel silently upgrades, re-run the
+# calibration corpus. If any tier's mean score moves by more than
+# this threshold, log a recalibration event and require human review.
+score_delta_threshold = 0.3
+
+[role_rotation]
+# Monthly rotation of role-to-model assignments to surface
+# model-specific biases (a model that consistently outscores in
+# *every* role it rotates through is flattering; a model that
+# outscores in *one* role means that role's prompt is too easy).
+cadence_days = 30
