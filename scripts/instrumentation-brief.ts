@@ -35,10 +35,17 @@ interface Args {
   doGrade: boolean
   doExpand: boolean
   timeoutSec: number
+  force: boolean
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { paragraph: null, doGrade: true, doExpand: true, timeoutSec: 60 }
+  const args: Args = {
+    paragraph: null,
+    doGrade: true,
+    doExpand: true,
+    timeoutSec: 60,
+    force: false,
+  }
   try {
     for (let i = 2; i < argv.length; i++) {
       const a = argv[i]
@@ -46,9 +53,13 @@ function parseArgs(argv: string[]): Args {
       else if (a === '--no-grade') args.doGrade = false
       else if (a === '--no-expand') args.doExpand = false
       else if (a === '--timeout') args.timeoutSec = parseInt(argv[++i], 10)
+      else if (a === '--force') args.force = true
       else if (a === '-h' || a === '--help') {
-        console.log('usage: instrumentation-brief.ts -p "paragraph" [--no-grade] [--no-expand] [--timeout 60]')
+        console.log(
+          'usage: instrumentation-brief.ts -p "paragraph" [--no-grade] [--no-expand] [--timeout 60] [--force]',
+        )
         console.log('       echo "paragraph" | instrumentation-brief.ts')
+        console.log('  --force: proceed even if A16 vetoes the brief (recorded as override)')
         process.exit(0)
       } else {
         console.error(`unknown arg: ${a}`)
@@ -141,7 +152,28 @@ async function main() {
         process.stdout.write(`  Clarification     ${r.clarification_question}\n`)
       }
       if (r.veto_fired) {
-        if (exitCode === 0) exitCode = 4
+        if (args.force) {
+          // Iter 64 REQ-1.2: --force is a stronger statement than
+          // exit code 4 — the user has read the verdict and chosen
+          // to proceed anyway. We surface the exact env-var the
+          // recorder-adapter veto gate honors so the user can
+          // `export` it in their shell before submitting via
+          // asicode-the-CLI. Tracking whether the override was
+          // justified happens via the calibration corpus once the
+          // resulting PR lands.
+          process.stdout.write(
+            `\n  [override] --force given; A16 veto acknowledged.\n` +
+              `  To suppress the veto on the actual run, set:\n` +
+              `    export ASICODE_BRIEF_VETO_OVERRIDE=1\n` +
+              `  (then submit via asicode as usual)\n`,
+          )
+        } else if (exitCode === 0) {
+          process.stdout.write(
+            `\n  [veto] re-run with --force if you believe A16 is wrong, ` +
+              `or refine the brief and try again.\n`,
+          )
+          exitCode = 4
+        }
       }
     }
   }
