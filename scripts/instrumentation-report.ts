@@ -80,6 +80,14 @@ interface Metrics {
   a16AcceptedAndAbandoned: number
   a16RejectedButForced: number  // 'reject' verdict that still produced a PR (gate not enforced in v1)
   a16AcceptancePrecision: number | null
+  // A8 plan-retrieval stats
+  a8TotalRetrievals: number
+  a8RetrievalsFired: number      // retrievals whose hits the planner actually used
+  a8FireRate: number | null
+  a8AvgResultsCount: number | null
+  a8P50LatencyMs: number | null
+  a8P99LatencyMs: number | null
+  a8AvgPlannerRelevance: number | null
 }
 
 function compute(db: Database, sinceMs: number): Metrics {
@@ -204,6 +212,51 @@ function compute(db: Database, sinceMs: number): Metrics {
   const a16AcceptancePrecision =
     a16AcceptedWithOutcome > 0 ? a16AcceptedAndMerged / a16AcceptedWithOutcome : null
 
+  // A8 plan-retrieval. Cheap aggregations + fire rate + planner relevance.
+  // Latency percentiles via the application layer — pull durations sorted
+  // and pick indices. Sqlite has no native percentile_cont; the alternative
+  // is a window-function query that's harder to read and identical-cost
+  // at the corpus sizes we expect.
+  const a8AggRow = db
+    .query<
+      {
+        total: number
+        fired: number
+        avg_results: number | null
+        avg_relevance: number | null
+      },
+      [number]
+    >(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(retrieval_fired_in_plan) AS fired,
+         AVG(CAST(results_count AS REAL)) AS avg_results,
+         AVG(CAST(planner_relevance_rating AS REAL)) AS avg_relevance
+       FROM retrievals
+       WHERE ts >= ?`,
+    )
+    .get(sinceMs) ?? { total: 0, fired: 0, avg_results: null, avg_relevance: null }
+
+  const a8TotalRetrievals = a8AggRow.total ?? 0
+  const a8RetrievalsFired = a8AggRow.fired ?? 0
+  const a8FireRate = a8TotalRetrievals > 0 ? a8RetrievalsFired / a8TotalRetrievals : null
+  const a8AvgResultsCount = a8AggRow.avg_results
+  const a8AvgPlannerRelevance = a8AggRow.avg_relevance
+
+  let a8P50LatencyMs: number | null = null
+  let a8P99LatencyMs: number | null = null
+  if (a8TotalRetrievals > 0) {
+    const durations = (db
+      .query<{ duration_ms: number }, [number]>(
+        `SELECT duration_ms FROM retrievals WHERE ts >= ? ORDER BY duration_ms ASC`,
+      )
+      .all(sinceMs) as { duration_ms: number }[]).map(r => r.duration_ms)
+    if (durations.length > 0) {
+      a8P50LatencyMs = durations[Math.floor(durations.length * 0.5)]
+      a8P99LatencyMs = durations[Math.min(durations.length - 1, Math.floor(durations.length * 0.99))]
+    }
+  }
+
   // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 5)
   // Components that are null become 0 in the composite (be honest about gaps).
   const aiComponents =
@@ -235,6 +288,13 @@ function compute(db: Database, sinceMs: number): Metrics {
     a16AcceptedAndAbandoned,
     a16RejectedButForced,
     a16AcceptancePrecision,
+    a8TotalRetrievals,
+    a8RetrievalsFired,
+    a8FireRate,
+    a8AvgResultsCount,
+    a8P50LatencyMs,
+    a8P99LatencyMs,
+    a8AvgPlannerRelevance,
   }
 }
 
@@ -295,8 +355,26 @@ function render(m: Metrics, sinceDays: number): string {
     lines.push('')
   }
 
-  // Future sections (judges per-role panel agreement, A8 hit rate, A10 race
-  // speedup) appear when those features land and start writing rows.
+  // A8 plan-retrieval section — same conditional-render pattern.
+  // Target from GOALS.md A8 success criteria: p99 < 200ms, hit rate ≥ 30%.
+  if (m.a8TotalRetrievals > 0) {
+    lines.push('A8 plan-retrieval prior')
+    lines.push(`  Retrievals              ${String(m.a8TotalRetrievals).padStart(4)}`)
+    lines.push(`  Fire rate               ${fmtPct(m.a8FireRate)}    of retrievals whose hits the planner used (${m.a8RetrievalsFired}/${m.a8TotalRetrievals})`)
+    if (m.a8AvgResultsCount !== null) {
+      lines.push(`  Avg hits per query      ${m.a8AvgResultsCount.toFixed(1)}`)
+    }
+    if (m.a8P50LatencyMs !== null && m.a8P99LatencyMs !== null) {
+      lines.push(`  Latency p50 / p99       ${m.a8P50LatencyMs} ms / ${m.a8P99LatencyMs} ms    (target p99 < 200ms)`)
+    }
+    if (m.a8AvgPlannerRelevance !== null) {
+      lines.push(`  Avg planner relevance   ${m.a8AvgPlannerRelevance.toFixed(2)} / 5    (target ≥ 3.5 for ≥30% hit rate)`)
+    }
+    lines.push('')
+  }
+
+  // Future sections (judges per-role panel agreement, A10 race speedup)
+  // appear when those features land and start writing rows.
 
   return lines.join('\n')
 }

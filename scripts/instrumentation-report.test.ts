@@ -231,3 +231,90 @@ describe('A16 brief-gate section', () => {
     expect(stdout).toMatch(/Acceptance precision\s+n\/a/)
   })
 })
+
+describe('A8 plan-retrieval section', () => {
+  function seedBriefForRetrieval(db: Database, briefId: string, ts: number) {
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint,
+         user_text, a16_decision)
+       VALUES (?, ?, '/p', 'fp', 'x', 'accept')`,
+      [briefId, ts],
+    )
+  }
+
+  function seedRetrieval(
+    db: Database,
+    retrievalId: string,
+    briefId: string,
+    ts: number,
+    durationMs: number,
+    resultsCount: number,
+    fired: 0 | 1,
+    plannerRelevance: number | null,
+  ) {
+    db.run(
+      `INSERT INTO retrievals (retrieval_id, brief_id, ts, query_embedding_model,
+         k, results_count, duration_ms, results_json,
+         retrieval_fired_in_plan, planner_relevance_rating)
+       VALUES (?, ?, ?, 'ollama:nomic-embed-text@2026-05-11', 5, ?, ?, '[]', ?, ?)`,
+      [retrievalId, briefId, ts, resultsCount, durationMs, fired, plannerRelevance],
+    )
+  }
+
+  test('section is omitted when no retrievals exist', () => {
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('A8 plan-retrieval')
+  })
+
+  test('section renders aggregate fields when retrievals exist', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedBriefForRetrieval(db, 'b1', now)
+    seedBriefForRetrieval(db, 'b2', now)
+    seedBriefForRetrieval(db, 'b3', now)
+    // 3 retrievals: 2 fired with relevance 4 and 5; 1 unfired
+    seedRetrieval(db, 'r1', 'b1', now, 15, 5, 1, 4)
+    seedRetrieval(db, 'r2', 'b2', now, 22, 3, 1, 5)
+    seedRetrieval(db, 'r3', 'b3', now, 18, 4, 0, null)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('A8 plan-retrieval prior')
+    expect(stdout).toMatch(/Retrievals\s+3/)
+    // Fire rate = 2/3 = 67%
+    expect(stdout).toMatch(/Fire rate\s+67%/)
+    expect(stdout).toContain('(2/3)')
+    // Avg hits per query = (5+3+4)/3 = 4.0
+    expect(stdout).toContain('Avg hits per query      4.0')
+    // p50 of [15,18,22] sorted → index 1 = 18ms; p99 → last = 22ms
+    expect(stdout).toContain('Latency p50 / p99       18 ms / 22 ms')
+    // Avg planner relevance = (4+5)/2 = 4.5 (null excluded by AVG())
+    expect(stdout).toContain('Avg planner relevance   4.50 / 5')
+  })
+
+  test('omits planner relevance line when all ratings null', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedBriefForRetrieval(db, 'b1', now)
+    seedRetrieval(db, 'r1', 'b1', now, 10, 5, 0, null)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('A8 plan-retrieval prior')
+    expect(stdout).not.toContain('Avg planner relevance')
+  })
+
+  test('handles single-retrieval edge case (p50 = p99 = that value)', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedBriefForRetrieval(db, 'b1', now)
+    seedRetrieval(db, 'r1', 'b1', now, 42, 3, 1, 4)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Latency p50 / p99       42 ms / 42 ms')
+  })
+})
