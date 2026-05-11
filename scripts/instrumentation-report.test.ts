@@ -391,6 +391,115 @@ describe('A8 plan-retrieval section', () => {
     const { stdout } = runReport(dbPath)
     expect(stdout).toContain('Latency p50 / p99       42 ms / 42 ms')
   })
+
+  // REQ-9.2: helpfulness lift
+  function seedBriefWithFiredOutcome(
+    db: Database,
+    briefId: string,
+    ts: number,
+    fired: boolean,
+    prOutcome: 'merged_no_intervention' | 'merged_with_intervention' | 'abandoned' | 'in_flight',
+    reverted: boolean = false,
+  ) {
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint,
+         user_text, a16_decision, pr_outcome, reverted_within_7d)
+       VALUES (?, ?, '/p', 'fp', 'x', 'accept', ?, ?)`,
+      [briefId, ts, prOutcome, reverted ? 1 : 0],
+    )
+    if (fired) {
+      db.run(
+        `INSERT INTO retrievals (retrieval_id, brief_id, ts, query_embedding_model,
+           k, results_count, duration_ms, results_json, retrieval_fired_in_plan)
+         VALUES (?, ?, ?, 'emb', 5, 3, 10, '[]', 1)`,
+        [`retr_${briefId}`, briefId, ts],
+      )
+    }
+  }
+
+  test('helpfulness lift renders when both arms have data', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // Fired-and-succeeded: 3/4 = 75%
+    seedBriefWithFiredOutcome(db, 'f1', now, true, 'merged_no_intervention')
+    seedBriefWithFiredOutcome(db, 'f2', now, true, 'merged_no_intervention')
+    seedBriefWithFiredOutcome(db, 'f3', now, true, 'merged_no_intervention')
+    seedBriefWithFiredOutcome(db, 'f4', now, true, 'abandoned')
+    // Unfired: 2/4 = 50%
+    seedBriefWithFiredOutcome(db, 'u1', now, false, 'merged_no_intervention')
+    seedBriefWithFiredOutcome(db, 'u2', now, false, 'merged_no_intervention')
+    seedBriefWithFiredOutcome(db, 'u3', now, false, 'abandoned')
+    seedBriefWithFiredOutcome(db, 'u4', now, false, 'abandoned')
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Helpfulness lift')
+    expect(stdout).toMatch(/Helpfulness lift\s+\+25pp/)
+    expect(stdout).toMatch(/fired\s+75%/)
+    expect(stdout).toMatch(/unfired\s+50%/)
+  })
+
+  test('helpfulness lift is negative when fired arm underperforms', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedBriefWithFiredOutcome(db, 'f1', now, true, 'abandoned')
+    seedBriefWithFiredOutcome(db, 'f2', now, true, 'abandoned')
+    seedBriefWithFiredOutcome(db, 'u1', now, false, 'merged_no_intervention')
+    seedBriefWithFiredOutcome(db, 'u2', now, false, 'merged_no_intervention')
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/Helpfulness lift\s+-100pp/)
+  })
+
+  test('reverted briefs count as failed even when merged', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // Fired + merged-then-reverted: should NOT count as success
+    seedBriefWithFiredOutcome(db, 'f1', now, true, 'merged_no_intervention', true)
+    seedBriefWithFiredOutcome(db, 'f2', now, true, 'merged_no_intervention', false)
+    seedBriefWithFiredOutcome(db, 'u1', now, false, 'merged_no_intervention', false)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    // Fired = 1/2 = 50%, unfired = 1/1 = 100%
+    expect(stdout).toMatch(/fired\s+50%/)
+    expect(stdout).toMatch(/unfired\s+100%/)
+  })
+
+  test('renders single-arm message when one side has no data', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // Only fired briefs in the window, no unfired with closed outcome
+    seedBriefWithFiredOutcome(db, 'f1', now, true, 'merged_no_intervention')
+    seedBriefWithFiredOutcome(db, 'f2', now, true, 'abandoned')
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Helpfulness')
+    expect(stdout).toMatch(/fired\s+50%/)
+    expect(stdout).toContain('need both arms for lift')
+    expect(stdout).not.toMatch(/Helpfulness lift\s+[-+]?\d+pp/)
+  })
+
+  test('in_flight briefs are excluded from both arms', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedBriefWithFiredOutcome(db, 'f1', now, true, 'merged_no_intervention')
+    seedBriefWithFiredOutcome(db, 'f2', now, true, 'in_flight')  // excluded
+    seedBriefWithFiredOutcome(db, 'u1', now, false, 'merged_no_intervention')
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    // Fired = 1/1 (not 1/2), unfired = 1/1
+    expect(stdout).toMatch(/fired\s+100%\s+\[1\/1\]/)
+    expect(stdout).toMatch(/unfired\s+100%\s+\[1\/1\]/)
+  })
 })
 
 describe('A15 adversarial verifier section', () => {

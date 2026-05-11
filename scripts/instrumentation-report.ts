@@ -99,6 +99,14 @@ interface Metrics {
   a8P50LatencyMs: number | null
   a8P99LatencyMs: number | null
   a8AvgPlannerRelevance: number | null
+  // REQ-9.2: helpfulness — success rate of briefs with vs without retrieval
+  a8WithFiredBriefs: number      // briefs that had retrieval_fired_in_plan=1
+  a8WithFiredMerged: number      // of those, count merged + not reverted/hotpatched
+  a8WithFiredSuccessRate: number | null
+  a8WithoutFiredBriefs: number   // briefs with no fired retrieval (and a closed pr_outcome)
+  a8WithoutFiredMerged: number
+  a8WithoutFiredSuccessRate: number | null
+  a8HelpfulnessLift: number | null  // withFiredSuccess - withoutFiredSuccess (pp)
   // A15 adversarial verifier stats
   a15ReviewsRun: number
   a15ReviewsWithFindings: number
@@ -308,6 +316,49 @@ function compute(db: Database, sinceMs: number): Metrics {
       a8P99LatencyMs = durations[Math.min(durations.length - 1, Math.floor(durations.length * 0.99))]
     }
   }
+
+  // REQ-9.2: helpfulness — success rate of briefs with retrieval_fired_in_plan=1
+  // vs briefs without. "Success" = merged + not reverted + not hotpatched.
+  // Denominator includes only briefs with a closed pr_outcome (excludes
+  // in_flight so the rate isn't dragged by still-running work).
+  const helpRow = db
+    .query<
+      {
+        fired_total: number; fired_merged: number;
+        unfired_total: number; unfired_merged: number;
+      },
+      [number]
+    >(
+      `WITH fired_briefs AS (
+         SELECT DISTINCT brief_id FROM retrievals
+         WHERE retrieval_fired_in_plan = 1 AND ts >= ?
+       )
+       SELECT
+         SUM(CASE WHEN b.brief_id IN (SELECT brief_id FROM fired_briefs) THEN 1 ELSE 0 END) AS fired_total,
+         SUM(CASE WHEN b.brief_id IN (SELECT brief_id FROM fired_briefs)
+                       AND b.pr_outcome IN ('merged_no_intervention', 'merged_with_intervention')
+                       AND b.reverted_within_7d = 0 AND b.hotpatched_within_7d = 0
+                  THEN 1 ELSE 0 END) AS fired_merged,
+         SUM(CASE WHEN b.brief_id NOT IN (SELECT brief_id FROM fired_briefs) THEN 1 ELSE 0 END) AS unfired_total,
+         SUM(CASE WHEN b.brief_id NOT IN (SELECT brief_id FROM fired_briefs)
+                       AND b.pr_outcome IN ('merged_no_intervention', 'merged_with_intervention')
+                       AND b.reverted_within_7d = 0 AND b.hotpatched_within_7d = 0
+                  THEN 1 ELSE 0 END) AS unfired_merged
+       FROM briefs b
+       WHERE b.pr_outcome IS NOT NULL AND b.pr_outcome <> 'in_flight'
+         AND b.ts_submitted >= ?`,
+    )
+    .get(sinceMs, sinceMs) ?? { fired_total: 0, fired_merged: 0, unfired_total: 0, unfired_merged: 0 }
+  const a8WithFiredBriefs = helpRow.fired_total ?? 0
+  const a8WithFiredMerged = helpRow.fired_merged ?? 0
+  const a8WithoutFiredBriefs = helpRow.unfired_total ?? 0
+  const a8WithoutFiredMerged = helpRow.unfired_merged ?? 0
+  const a8WithFiredSuccessRate = a8WithFiredBriefs > 0 ? a8WithFiredMerged / a8WithFiredBriefs : null
+  const a8WithoutFiredSuccessRate = a8WithoutFiredBriefs > 0 ? a8WithoutFiredMerged / a8WithoutFiredBriefs : null
+  const a8HelpfulnessLift =
+    a8WithFiredSuccessRate !== null && a8WithoutFiredSuccessRate !== null
+      ? a8WithFiredSuccessRate - a8WithoutFiredSuccessRate
+      : null
 
   // A15 adversarial verifier. One row per (run × review_kind='a15_adversarial').
   // We pull aggregate findings + cross-reference with the briefs/runs/reviews
@@ -520,6 +571,13 @@ function compute(db: Database, sinceMs: number): Metrics {
     a8P50LatencyMs,
     a8P99LatencyMs,
     a8AvgPlannerRelevance,
+    a8WithFiredBriefs,
+    a8WithFiredMerged,
+    a8WithFiredSuccessRate,
+    a8WithoutFiredBriefs,
+    a8WithoutFiredMerged,
+    a8WithoutFiredSuccessRate,
+    a8HelpfulnessLift,
     a15ReviewsRun,
     a15ReviewsWithFindings,
     a15FindingsCritical,
@@ -625,6 +683,17 @@ function render(m: Metrics, sinceDays: number): string {
     }
     if (m.a8AvgPlannerRelevance !== null) {
       lines.push(`  Avg planner relevance   ${m.a8AvgPlannerRelevance.toFixed(2)} / 5    (target ≥ 3.5 for ≥30% hit rate)`)
+    }
+    // REQ-9.2: helpfulness lift. Render only when both arms have data,
+    // so a brand-new corpus doesn't print misleading "null vs 50%" rows.
+    if (m.a8WithFiredSuccessRate !== null && m.a8WithoutFiredSuccessRate !== null && m.a8HelpfulnessLift !== null) {
+      const liftSign = m.a8HelpfulnessLift >= 0 ? '+' : ''
+      const liftPp = (m.a8HelpfulnessLift * 100).toFixed(0)
+      lines.push(`  Helpfulness lift        ${liftSign}${liftPp}pp    (fired ${fmtPct(m.a8WithFiredSuccessRate)} [${m.a8WithFiredMerged}/${m.a8WithFiredBriefs}] vs unfired ${fmtPct(m.a8WithoutFiredSuccessRate)} [${m.a8WithoutFiredMerged}/${m.a8WithoutFiredBriefs}])`)
+    } else if (m.a8WithFiredBriefs > 0 || m.a8WithoutFiredBriefs > 0) {
+      // Single-arm case: render the one we have for visibility.
+      const arm = m.a8WithFiredSuccessRate !== null ? `fired ${fmtPct(m.a8WithFiredSuccessRate)} (${m.a8WithFiredMerged}/${m.a8WithFiredBriefs})` : `unfired ${fmtPct(m.a8WithoutFiredSuccessRate)} (${m.a8WithoutFiredMerged}/${m.a8WithoutFiredBriefs})`
+      lines.push(`  Helpfulness             ${arm}    (need both arms for lift)`)
     }
     lines.push('')
   }
