@@ -23,6 +23,7 @@ import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { resolvePanel } from './config'
 import { dispatchJudgments, type DispatchResult, type JudgeInput, type ProviderRegistry } from './dispatcher'
 import { buildProviderRegistry } from './providers/registry'
+import { isPrCommentEnabled, postJudgeVerdict } from './pr-comment.js'
 
 /**
  * Fetch the diff for a merged commit lazily. Used when the caller didn't
@@ -123,9 +124,30 @@ export function judgeOnPrMerge(input: TriggerInput): void {
   void (async () => {
     const resolved = await resolveInput(input)
     if (!resolved) return
-    await dispatchJudgments({ input: resolved, panel, providers: registry, writeToDb: true })
-      .then(onDispatchComplete)
-      .catch(onDispatchError)
+    const result = await dispatchJudgments({ input: resolved, panel, providers: registry, writeToDb: true })
+      .catch(e => {
+        onDispatchError(e)
+        return null
+      })
+    if (!result) return
+    onDispatchComplete(result)
+    // Iter 54: post verdict to PR if opted in. Soft-fail; never block.
+    if (isPrCommentEnabled()) {
+      try {
+        const comment = await postJudgeVerdict({
+          prSha: input.prSha,
+          result,
+          repoPath: input.cwd ?? process.cwd(),
+        })
+        if (!comment.posted && comment.reason && comment.reason !== 'opt_out') {
+          // eslint-disable-next-line no-console
+          console.warn(`[asicode judges] pr-comment skipped: ${comment.reason}`)
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[asicode judges] pr-comment threw: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
   })()
 }
 

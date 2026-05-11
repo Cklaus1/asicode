@@ -192,6 +192,7 @@ export ASICODE_INSTRUMENTATION_DB=~/.asicode/instrumentation.db
 | `ASICODE_DENSITY_ENABLED=1`           | Density A/B harness on refactor PRs               |
 | `ASICODE_ADVERSARIAL_ENABLED=1`       | A15: try to break merged production/security PRs  |
 | `ASICODE_PLAN_RETRIEVAL_ENABLED=1`    | A8: embedding index of past attempts              |
+| `ASICODE_PR_COMMENT_ENABLED=1`        | Post judge verdict as a GitHub PR comment         |
 | `ASICODE_EMBEDDING_BACKEND=ollama`    | A8 / A13 embedding backend (also openai)          |
 
 Set `ANTHROPIC_API_KEY` and/or `OLLAMA_HOST` for the LLM calls.

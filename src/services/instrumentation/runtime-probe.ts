@@ -223,6 +223,7 @@ export async function probeRuntime(): Promise<ProbeReport> {
     { flag: 'ASICODE_DENSITY_ENABLED', capability: 'density', needsProvider: true, expectation: 'A4: density A/B on refactor PRs' },
     { flag: 'ASICODE_ADVERSARIAL_ENABLED', capability: 'adversarial', needsProvider: true, expectation: 'A15: try to break production/security PRs' },
     { flag: 'ASICODE_PLAN_RETRIEVAL_ENABLED', capability: 'plan-retrieval', needsProvider: true, expectation: 'A8: embedding index of past attempts' },
+    { flag: 'ASICODE_PR_COMMENT_ENABLED', capability: 'pr-comment', needsProvider: false, expectation: 'iter 54: post judge verdict as GitHub PR comment' },
   ]
 
   for (const f of optInFlags) {

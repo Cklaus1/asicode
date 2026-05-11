@@ -27,6 +27,7 @@ const ENV_KEYS = [
   'ASICODE_DENSITY_ENABLED',
   'ASICODE_ADVERSARIAL_ENABLED',
   'ASICODE_PLAN_RETRIEVAL_ENABLED',
+  'ASICODE_PR_COMMENT_ENABLED',
 ]
 
 let savedEnv: Record<string, string | undefined>
@@ -54,7 +55,7 @@ afterEach(() => {
 })
 
 describe('probeRuntime — empty environment', () => {
-  test('reports nothing enabled and all 6 opt-ins unconfigured', async () => {
+  test('reports nothing enabled and all opt-ins unconfigured', async () => {
     const r = await probeRuntime()
     expect(r.enabled).toEqual([])
     expect(r.blocked).toEqual([])
@@ -65,6 +66,7 @@ describe('probeRuntime — empty environment', () => {
     expect(r.unconfigured).toContain('density')
     expect(r.unconfigured).toContain('adversarial')
     expect(r.unconfigured).toContain('plan-retrieval')
+    expect(r.unconfigured).toContain('pr-comment')
     expect(r.unconfigured).toContain('watch-merges')
   })
 })
@@ -192,7 +194,7 @@ describe('probeRuntime — opt-in flags', () => {
     expect(r.blocked.find(b => b.capability === 'judges')).toBeDefined()
   })
 
-  test('all 6 opt-ins enabled + provider available', async () => {
+  test('all opt-ins enabled + provider available', async () => {
     process.env.ASICODE_INSTRUMENTATION_DB = dbPath
     process.env.ANTHROPIC_API_KEY = 'sk-test'
     process.env.ASICODE_JUDGES_ENABLED = '1'
@@ -201,6 +203,7 @@ describe('probeRuntime — opt-in flags', () => {
     process.env.ASICODE_DENSITY_ENABLED = '1'
     process.env.ASICODE_ADVERSARIAL_ENABLED = '1'
     process.env.ASICODE_PLAN_RETRIEVAL_ENABLED = '1'
+    process.env.ASICODE_PR_COMMENT_ENABLED = '1'
     const r = await probeRuntime()
     expect(r.enabled).toContain('instrumentation')
     expect(r.enabled).toContain('judges')
@@ -209,6 +212,7 @@ describe('probeRuntime — opt-in flags', () => {
     expect(r.enabled).toContain('density')
     expect(r.enabled).toContain('adversarial')
     expect(r.enabled).toContain('plan-retrieval')
+    expect(r.enabled).toContain('pr-comment')
     expect(r.blocked).toEqual([])
   })
 })
