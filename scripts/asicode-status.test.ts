@@ -192,3 +192,75 @@ describe('--json output', () => {
     expect(parsed.pr.reverted_within_7d).toBe(false)
   })
 })
+
+// REQ-17: pr_number + race surfacing.
+describe('REQ-17 pr_number + race', () => {
+  function setPrNumber(db: Database, briefId: string, prNumber: number) {
+    db.run('UPDATE briefs SET pr_number = ? WHERE brief_id = ?', [prNumber, briefId])
+  }
+  function seedRacer(db: Database, runId: string, briefId: string, attempt: number, winner: boolean) {
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [runId, briefId, Date.now() - 5000 + attempt, Date.now() - 1000 + attempt, 'worktree', 'completed', attempt, winner ? 1 : 0],
+    )
+  }
+
+  test('pr_number alone (open, not yet merged) surfaces in text', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_pn1', { text: 'autopr' })
+    setPrNumber(db, 'brf_pn1', 42)
+    db.close()
+    const r = run(['brf_pn1'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('#42')
+    expect(r.stdout).toContain('open; merge will populate sha')
+  })
+
+  test('pr_number + pr_sha (merged) shows both', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_pn2', { prSha: 'deadbeef0000', prOutcome: 'merged_no_intervention' })
+    setPrNumber(db, 'brf_pn2', 99)
+    db.close()
+    const r = run(['brf_pn2'])
+    expect(r.stdout).toMatch(/pr\s+deadbeef0000\s+#99/)
+  })
+
+  test('race info renders when ≥2 worktree runs', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_race')
+    seedRacer(db, 'run_a', 'brf_race', 0, false)
+    seedRacer(db, 'run_b', 'brf_race', 1, true)
+    db.close()
+    const r = run(['brf_race'])
+    expect(r.stdout).toContain('race')
+    expect(r.stdout).toContain('2 racers')
+    expect(r.stdout).toContain('winner=run_b')
+  })
+
+  test('race info absent for single-spawn briefs', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_single')
+    seedRun(db, 'run_x', 'brf_single', { outcome: 'completed' })  // in_process isolation
+    db.close()
+    const r = run(['brf_single'])
+    expect(r.stdout).not.toContain('race ')
+  })
+
+  test('--json exposes pr.number + race block', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_j_race')
+    setPrNumber(db, 'brf_j_race', 7)
+    seedRacer(db, 'run_a', 'brf_j_race', 0, true)
+    seedRacer(db, 'run_b', 'brf_j_race', 1, false)
+    db.close()
+    const r = run(['brf_j_race', '--json'])
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.pr.number).toBe(7)
+    expect(parsed.pr.sha).toBeNull()
+    expect(parsed.race.count).toBe(2)
+    expect(parsed.race.winner_run_id).toBe('run_a')
+    expect(parsed.runs.some((rr: { was_race_winner: boolean; run_id: string }) => rr.run_id === 'run_a' && rr.was_race_winner)).toBe(true)
+  })
+})

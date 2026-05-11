@@ -30,9 +30,10 @@ interface BriefRow {
   project_path: string; user_text: string;
   a16_decision: string; a16_composite: number | null;
   pr_sha: string | null; pr_outcome: string | null;
+  pr_number: number | null;
   reverted_within_7d: number; hotpatched_within_7d: number;
 }
-interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null }
+interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number }
 interface JudgeSummary { rows: number; composite: number | null }
 type ShipItSummary = { verdict: 'ship_it' | 'hold' | 'rollback'; reasons: string[]; signalsAvailable: number } | null
 
@@ -74,13 +75,13 @@ function main() {
 
   const brief = db.query<BriefRow, [string]>(
     `SELECT brief_id, ts_submitted, ts_completed, project_path, user_text,
-            a16_decision, a16_composite, pr_sha, pr_outcome, reverted_within_7d, hotpatched_within_7d
+            a16_decision, a16_composite, pr_sha, pr_outcome, pr_number, reverted_within_7d, hotpatched_within_7d
      FROM briefs WHERE brief_id = ?`,
   ).get(args.briefId!)
   if (!brief) { console.error(`brief not found: ${args.briefId}`); db.close(); process.exit(1) }
 
   const runs = db.query<RunRow, [string]>(
-    `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used
+    `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index
      FROM runs WHERE brief_id = ? ORDER BY ts_started DESC`,
   ).all(args.briefId!)
 
@@ -88,6 +89,16 @@ function main() {
   db.close()
 
   const ship = shipItSummary(brief.pr_sha)
+
+  // REQ-17: race info — derived from runs. A brief was a race when ≥2
+  // runs have isolation_mode='worktree' AND distinct attempt_index OR
+  // any run has was_race_winner=1. winner_run_id is the run flagged
+  // by the dispatcher (or null if no winner yet / FCFS without flag).
+  const winnerRun = runs.find(r => r.was_race_winner === 1) ?? null
+  const racerRuns = runs.filter(r => r.isolation_mode === 'worktree')
+  const race = racerRuns.length >= 2
+    ? { count: racerRuns.length, winner_run_id: winnerRun?.run_id ?? null }
+    : null
 
   if (args.json) {
     console.log(JSON.stringify({
@@ -100,12 +111,15 @@ function main() {
         run_id: r.run_id, ts_started: r.ts_started, ts_completed: r.ts_completed,
         outcome: r.outcome, isolation_mode: r.isolation_mode,
         wall_clock_ms: r.wall_clock_ms, tokens_used: r.tokens_used,
+        was_race_winner: r.was_race_winner === 1, attempt_index: r.attempt_index,
       })),
-      pr: brief.pr_sha ? {
+      pr: (brief.pr_sha || brief.pr_number !== null) ? {
         sha: brief.pr_sha, outcome: brief.pr_outcome,
+        number: brief.pr_number,
         reverted_within_7d: brief.reverted_within_7d === 1,
         hotpatched_within_7d: brief.hotpatched_within_7d === 1,
       } : null,
+      race,
       judges: j,
       ship_it: ship,
     }, null, 2))
@@ -126,11 +140,18 @@ function main() {
     const dur = r.wall_clock_ms !== null ? `${(r.wall_clock_ms / 1000).toFixed(1)}s` : '?'
     console.log(`    ${r.run_id}  ${r.outcome}  ${r.isolation_mode}  ${dur}${r.tokens_used !== null ? `  ${r.tokens_used}tok` : ''}`)
   }
+  if (race) {
+    console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}`)
+  }
+  if (brief.pr_number !== null && !brief.pr_sha) {
+    // Auto-PR opened (REQ-15) but not yet merged — surface the number.
+    console.log(`  pr           #${brief.pr_number}  (open; merge will populate sha)`)
+  }
   if (brief.pr_sha) {
     const flags: string[] = []
     if (brief.reverted_within_7d) flags.push('reverted')
     if (brief.hotpatched_within_7d) flags.push('hotpatched')
-    console.log(`  pr           ${brief.pr_sha.slice(0, 12)}  outcome=${brief.pr_outcome ?? '?'}${flags.length ? `  flags=[${flags.join(',')}]` : ''}`)
+    console.log(`  pr           ${brief.pr_sha.slice(0, 12)}${brief.pr_number !== null ? `  #${brief.pr_number}` : ''}  outcome=${brief.pr_outcome ?? '?'}${flags.length ? `  flags=[${flags.join(',')}]` : ''}`)
     if (j.rows > 0) console.log(`  judges       ${j.rows} rows  composite=${j.composite !== null ? j.composite.toFixed(2) : '?'}/5`)
     else console.log(`  judges       (none yet — gate ASICODE_JUDGES_ENABLED on a merged PR)`)
     if (ship) {
