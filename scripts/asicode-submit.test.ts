@@ -431,4 +431,50 @@ describe('--race best-of-N (REQ-14)', () => {
     expect(r.stdout).toContain('--race')
     expect(r.stdout).toContain('ASICODE_RACE_COUNT')
   })
+
+  test('--help mentions --auto-pr + ASICODE_AUTO_PR (REQ-15)', () => {
+    const r = run(['--help'], { env: { ASICODE_INSTRUMENTATION_DB: '' } })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('--auto-pr')
+    expect(r.stdout).toContain('ASICODE_AUTO_PR')
+  })
+
+  test('race exposes winner_branch in JSON (REQ-15 prerequisite)', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'wb\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo x > out.txt; git config user.email t@t.t; git config user.name T; git add out.txt; git commit -q --no-gpg-sign -m "x"',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-wb'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race?.winner_branch).toMatch(/asicode\/race-/)
+  }, 90_000)
+
+  test('--auto-pr without race + remote → pr_error surfaces (soft-fail)', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b\n', 'utf-8')
+    // race wins, but no remote → openWinnerPr returns no_remote
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--auto-pr', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo y > out.txt; git config user.email t@t.t; git config user.name T; git add out.txt; git commit -q --no-gpg-sign -m "y"',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-pr-fail'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    // Race still won
+    expect(parsed.race).toBeDefined()
+    expect(parsed.pr).toBeUndefined()
+    // pr_error mentions no_remote
+    expect(parsed.pr_error).toContain('no_remote')
+  }, 90_000)
 })
