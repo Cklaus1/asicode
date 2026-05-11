@@ -161,6 +161,74 @@ Advanced and source-build guides:
 - **Provider profiles**: Guided setup plus saved `.openclaude-profile.json` support
 - **Local and remote model backends**: Cloud APIs, local servers, and Apple Silicon local inference
 
+## Autonomy substrate (opt-in)
+
+asicode ships an instrumentation pipeline that lets you measure how
+well it's actually working as an autonomous coding agent:
+hands-off completion rate, regression rate, judge-panel quality
+score, density-on-refactors, plus eight A-features (brief gate,
+brief mode, plan-retrieval prior, adversarial verifier, replay
+corpus, three-stance retrospectives, judge calibration, daily
+reconciliation).
+
+The substrate is **opt-in** — set the env flags below and the
+matching capabilities turn on. Nothing fires until you opt in.
+
+### One-time setup
+
+```bash
+bun run instrumentation:migrate
+export ASICODE_INSTRUMENTATION_DB=~/.asicode/instrumentation.db
+```
+
+### Opt-in env flags
+
+| Flag                                  | What it enables                                    |
+|---------------------------------------|----------------------------------------------------|
+| `ASICODE_INSTRUMENTATION_DB`          | Record briefs / runs / tool calls into sqlite     |
+| `ASICODE_JUDGES_ENABLED=1`            | 3-panel LLM judge on every merged PR              |
+| `ASICODE_BRIEF_GATE_ENABLED=1`        | A16: grade briefs on 5 dimensions before running  |
+| `ASICODE_BRIEF_MODE_ENABLED=1`        | A12: expand paragraph → checklist before running  |
+| `ASICODE_DENSITY_ENABLED=1`           | Density A/B harness on refactor PRs               |
+| `ASICODE_ADVERSARIAL_ENABLED=1`       | A15: try to break merged production/security PRs  |
+| `ASICODE_PLAN_RETRIEVAL_ENABLED=1`    | A8: embedding index of past attempts              |
+| `ASICODE_EMBEDDING_BACKEND=ollama`    | A8 / A13 embedding backend (also openai)          |
+
+Set `ANTHROPIC_API_KEY` and/or `OLLAMA_HOST` for the LLM calls.
+
+### CLI surface
+
+```bash
+bun run instrumentation:migrate     # apply schema migrations
+bun run instrumentation:status      # show applied versions
+bun run instrumentation:report      # Autonomy Index + primary metrics
+bun run instrumentation:reconcile   # daily reverted/hotpatched fill
+bun run instrumentation:calibrate   # judge panel calibration corpus
+bun run instrumentation:retro       # Practice 9 introspection cycle
+bun run instrumentation:brief       # manual A12 expand + A16 grade
+bun run instrumentation:replay      # A11 cross-cycle regression check
+```
+
+Recommended cron-shaped operational loop:
+
+```bash
+# Daily, in the background
+bun run instrumentation:reconcile
+
+# Weekly, before tagging a release
+bun run instrumentation:replay --since 30d --json
+bun run instrumentation:report --since 7d
+
+# Per release tag
+bun run instrumentation:retro --version vX.Y.Z
+```
+
+The full design is in [`GOALS.md`](GOALS.md), [`PLAN.md`](PLAN.md),
+[`PRACTICES.md`](PRACTICES.md), and [`docs/INSTRUMENTATION.md`](docs/INSTRUMENTATION.md).
+The northstar metric — "hand it a brief, walk away, get a verifiably
+correct PR" — is the bar everything in this substrate is built to
+measure.
+
 ## Provider Notes
 
 OpenClaude supports multiple providers, but behavior is not identical across all of them.
