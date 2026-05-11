@@ -478,7 +478,9 @@ describe('--race best-of-N (REQ-14)', () => {
     expect(parsed.pr_error).toContain('no_remote')
   }, 90_000)
 
-  // REQ-20: gate auto-PR when winner failed the verifier.
+  // REQ-20: gate auto-PR when winner failed the verifier. Verifier
+  // chosen so baseline (no f.txt on main) PASSES but racer (writes
+  // f.txt) FAILS — isolates the gate from REQ-26's baseline check.
   test('--auto-pr is GATED when winner verify_outcome=failed', () => {
     gitInit(projDir)
     const briefPath = join(tempDir, 'b.md')
@@ -488,7 +490,8 @@ describe('--race best-of-N (REQ-14)', () => {
       env: {
         ...RACE_ENV,
         ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo broken > f.txt; git config user.email t@t.t; git config user.name T; git add f.txt; git commit -q --no-gpg-sign -m "broken"',
-        ASICODE_VERIFY_CMD: 'exit 1',  // always fail
+        // ! test -f f.txt: passes on base (no file), fails on racer commits
+        ASICODE_VERIFY_CMD: '! test -f f.txt',
         ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
         ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-gate-fail'),
       },
@@ -496,6 +499,7 @@ describe('--race best-of-N (REQ-14)', () => {
     expect(r.code).toBe(0)
     const parsed = JSON.parse(r.stdout)
     expect(parsed.race?.winner_verify).toBe('failed')
+    expect(parsed.race?.baseline_verify).toBe('passed')  // REQ-26 sanity
     // PR was NOT opened
     expect(parsed.pr).toBeUndefined()
     expect(parsed.pr_error).toBeUndefined()
@@ -561,6 +565,55 @@ describe('--race best-of-N (REQ-14)', () => {
     expect(r.stdout).toContain('auto-detected')
     expect(r.stdout).toContain('ASICODE_VERIFY_AUTODETECT')
   })
+
+  // REQ-26: baseline broken → gate is advisory.
+  test('baseline=failed → gate does NOT fire even when winner verify=failed', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'inherit-red\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--auto-pr', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        // racer commits something (so diff exists)
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo r > z.txt; git config user.email t@t.t; git config user.name T; git add z.txt; git commit -q --no-gpg-sign -m "r"',
+        // Verifier always fails (e.g. red tests on main + everywhere)
+        ASICODE_VERIFY_CMD: 'exit 1',
+        ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-baseline-broken'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race?.winner_verify).toBe('failed')
+    expect(parsed.race?.baseline_verify).toBe('failed')
+    // REQ-26 effect: gate is advisory → PR open attempted (fails at
+    // no_remote, so pr_error present, but pr_gated absent).
+    expect(parsed.pr_gated).toBeUndefined()
+    expect(parsed.pr_error).toContain('no_remote')
+  }, 90_000)
+
+  test('ASICODE_VERIFY_BASELINE=0 disables baseline check', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'no-baseline\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--auto-pr', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_VERIFY_BASELINE: '0',
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo r > z.txt; git config user.email t@t.t; git config user.name T; git add z.txt; git commit -q --no-gpg-sign -m "r"',
+        ASICODE_VERIFY_CMD: 'exit 1',
+        ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-no-baseline'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race?.baseline_verify).toBeNull()
+    // No baseline → gate fires as in REQ-20 (winner=failed → gated)
+    expect(parsed.pr_gated).toContain('failed')
+  }, 90_000)
 
   test('ASICODE_AUTO_PR_FORCE=1 sets force-pr default', () => {
     gitInit(projDir)

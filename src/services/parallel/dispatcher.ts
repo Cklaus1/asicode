@@ -77,11 +77,45 @@ export type RaceResult =
       tiebreak: TiebreakResult | null
       /** REQ-25: which verifier ran on the racers (null = none). */
       verifyCmd: string | null
+      /** REQ-26: baseline verifier result on the base branch. When
+       *  'failed', the gate (REQ-20) is advisory only — a racer with
+       *  verify=failed may still be the right ship since the failure
+       *  predates the race. null = no verifier ran or baseline not checked. */
+      baselineVerify: VerifyOutcome | null
     }
   | { ok: false; reason: RaceFailure; detail?: string; racers?: RaceRacer[] }
 
 const DEFAULT_SETTLE_MS = 30_000
 const DEFAULT_MAX_RACE_MS = 10 * 60 * 1000
+
+// REQ-26: cache baseline verifier results keyed by
+// (repoPath, base sha, verifyCmd). Same (repo, base commit, cmd)
+// shouldn't re-run the verifier for every sequential submit.
+const baselineCache = new Map<string, VerifyOutcome>()
+
+export function _clearBaselineCacheForTest(): void { baselineCache.clear() }
+
+async function readBaseSha(repoPath: string, base: string): Promise<string | null> {
+  return new Promise(res => {
+    let out = '', settled = false
+    const ch = spawn('git', ['-C', repoPath, 'rev-parse', base], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const t = setTimeout(() => { ch.kill(); if (!settled) { settled = true; res(null) } }, 5_000)
+    ch.stdout.on('data', c => { out += c.toString('utf-8') })
+    ch.on('error', () => { clearTimeout(t); if (!settled) { settled = true; res(null) } })
+    ch.on('close', code => { clearTimeout(t); if (!settled) { settled = true; res(code === 0 ? out.trim() : null) } })
+  })
+}
+
+async function computeBaseline(repoPath: string, base: string, verifyCmd: string, timeoutMs: number | undefined): Promise<VerifyOutcome | null> {
+  const sha = await readBaseSha(repoPath, base)
+  if (sha === null) return null
+  const key = `${repoPath}\x00${sha}\x00${verifyCmd}`
+  const cached = baselineCache.get(key)
+  if (cached !== undefined) return cached
+  const res = await runVerifier({ worktreePath: repoPath, cmd: verifyCmd, timeoutMs })
+  baselineCache.set(key, res.outcome)
+  return res.outcome
+}
 
 // Capture the diff a racer produced: HEAD against the base branch.
 async function captureDiff(worktree: ProvisionedWorktree, base: string, repoPath: string): Promise<string | null> {
@@ -226,6 +260,16 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
     else if (process.env.ASICODE_VERIFY_AUTODETECT === '0') verifyCmd = ''
     else verifyCmd = detectVerifyCmd(input.repoPath)?.cmd ?? ''
   }
+  // REQ-26: baseline verifier on base branch. Runs before racer
+  // verifiers; cached per (repo, base sha, cmd). When baseline fails,
+  // the dispatcher still scores racers (so a passing racer beats a
+  // failing one) but the result.baselineVerify flag tells the caller
+  // that REQ-20's gate should be advisory: a racer's verify=failed
+  // may be inherited red, not a regression.
+  let baselineVerify: VerifyOutcome | null = null
+  if (verifyCmd && finishers.length > 0 && process.env.ASICODE_VERIFY_BASELINE !== '0') {
+    baselineVerify = await computeBaseline(input.repoPath, base, verifyCmd, input.verifyTimeoutMs)
+  }
   if (verifyCmd && finishers.length > 0) {
     // Run verifiers in parallel — the racers are isolated worktrees,
     // so the verifier processes shouldn't contend.
@@ -336,6 +380,7 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
     racers,
     tiebreak,
     verifyCmd: verifyCmd === '' ? null : verifyCmd,
+    baselineVerify,
   }
 }
 

@@ -229,7 +229,9 @@ describe('REQ-22 northstar walk-away (race + verifier + gate)', () => {
     const sub = subWithTimeout(briefPath, projDir, ['--start', '--race', '2', '--auto-pr', '--json'], {
       ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
       ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo broken > f.txt; git config user.email t@t.t; git config user.name T; git add f.txt; git commit -q --no-gpg-sign -m "broken"',
-      ASICODE_VERIFY_CMD: 'echo "expected fail diagnostic" >&2; exit 1',
+      // Verifier: passes when f.txt absent (base branch), fails when
+      // racer commits f.txt. Isolates REQ-20 gate from REQ-26 baseline.
+      ASICODE_VERIFY_CMD: 'if test -f f.txt; then echo "expected fail diagnostic" >&2; exit 1; fi',
       ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-gate'),
     }, 60_000)
     expect(sub.code).toBe(0)

@@ -351,6 +351,44 @@ describe('raceAgents — verifier-gated winner (REQ-18)', () => {
     } finally { delete process.env.ASICODE_VERIFY_AUTODETECT }
   }, 60_000)
 
+  test('baseline=passed when verifier exits 0 on base branch (REQ-26)', async () => {
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "x" > x.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add x.txt
+      git commit -q --no-gpg-sign -m "x"
+    `
+    const r = await raceAgents({
+      briefId: 'bl1', briefText: 't',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'baseline-pass',
+      settleMs: 500, maxRaceMs: 15_000,
+      verifyCmd: 'true',
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.baselineVerify).toBe('passed')
+  }, 60_000)
+
+  test('baseline=failed when verifier exits non-zero on base (REQ-26)', async () => {
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "x" > x.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add x.txt
+      git commit -q --no-gpg-sign -m "x"
+    `
+    const r = await raceAgents({
+      briefId: 'bl2', briefText: 't',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'baseline-fail',
+      settleMs: 500, maxRaceMs: 15_000,
+      verifyCmd: 'exit 1',
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.baselineVerify).toBe('failed')
+  }, 60_000)
+
   test('explicit verifyCmd: "" disables verifier even when env set', async () => {
     process.env.ASICODE_DISPATCH_CMD = `
       cat > /dev/null
