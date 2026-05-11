@@ -263,6 +263,9 @@ export const RunUpdateSchema = z.object({
   verify_outcome: VerifyOutcomeSchema.optional(),
   verify_exit_code: z.number().int().optional(),
   verify_duration_ms: z.number().int().nonnegative().optional(),
+  // REQ-21: truncated stderr tail (≤2k) captured by the verifier. Null
+  // when no verifier ran or the verifier had no stderr output.
+  verify_stderr_tail: z.string().optional(),
 })
 
 export type RunUpdate = z.infer<typeof RunUpdateSchema>

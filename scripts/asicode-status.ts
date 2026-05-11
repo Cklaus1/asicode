@@ -33,7 +33,7 @@ interface BriefRow {
   pr_number: number | null;
   reverted_within_7d: number; hotpatched_within_7d: number;
 }
-interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null }
+interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null }
 interface JudgeSummary { rows: number; composite: number | null }
 type ShipItSummary = { verdict: 'ship_it' | 'hold' | 'rollback'; reasons: string[]; signalsAvailable: number } | null
 
@@ -82,7 +82,7 @@ function main() {
 
   const runs = db.query<RunRow, [string]>(
     `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index,
-            verify_outcome, verify_exit_code, verify_duration_ms
+            verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail
      FROM runs WHERE brief_id = ? ORDER BY ts_started DESC`,
   ).all(args.briefId!)
 
@@ -113,7 +113,7 @@ function main() {
         outcome: r.outcome, isolation_mode: r.isolation_mode,
         wall_clock_ms: r.wall_clock_ms, tokens_used: r.tokens_used,
         was_race_winner: r.was_race_winner === 1, attempt_index: r.attempt_index,
-        verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms } : null,
+        verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms, stderr_tail: r.verify_stderr_tail } : null,
       })),
       pr: (brief.pr_sha || brief.pr_number !== null) ? {
         sha: brief.pr_sha, outcome: brief.pr_outcome,
@@ -155,6 +155,17 @@ function main() {
       if (failed) parts.push(`${failed} failed`)
       if (errored) parts.push(`${errored} errored`)
       console.log(`  verify       ${parts.join(', ')}`)
+      // REQ-21: when the winner failed, show a short stderr snippet so
+      // the user can debug without grepping run logs. First non-empty
+      // line, capped at 200 chars.
+      const winner = winnerRun
+      if (winner && winner.verify_outcome && winner.verify_outcome !== 'passed' && winner.verify_stderr_tail) {
+        const firstLine = winner.verify_stderr_tail.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''
+        if (firstLine) {
+          const snippet = firstLine.length > 200 ? `${firstLine.slice(0, 197)}…` : firstLine
+          console.log(`               stderr: ${snippet}`)
+        }
+      }
     }
   }
   if (brief.pr_number !== null && !brief.pr_sha) {

@@ -328,3 +328,68 @@ describe('REQ-19 verify_outcome', () => {
     expect(parsed.runs[0].verify).toBeNull()
   })
 })
+
+// REQ-21: stderr tail persistence + surfacing.
+describe('REQ-21 verify_stderr_tail', () => {
+  function seedRacerWithStderr(db: Database, runId: string, briefId: string, attempt: number, winner: boolean, verify: 'passed' | 'failed' | 'verifier_error', stderrTail: string | null) {
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner,
+                         verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [runId, briefId, Date.now() - 5000 + attempt, Date.now() - 1000 + attempt, 'worktree', 'completed', attempt, winner ? 1 : 0,
+       verify, verify === 'passed' ? 0 : 1, 200, stderrTail],
+    )
+  }
+
+  test('text: failing winner shows first stderr line as snippet', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_s1')
+    seedRacerWithStderr(db, 'run_w', 'brf_s1', 0, true, 'failed', 'TypeError: cannot read property foo of undefined\n  at line 42\n')
+    seedRacerWithStderr(db, 'run_l', 'brf_s1', 1, false, 'failed', 'other error')
+    db.close()
+    const r = run(['brf_s1'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('stderr:')
+    expect(r.stdout).toContain('TypeError: cannot read property foo')
+    // 2nd line / loser's stderr not surfaced in text
+    expect(r.stdout).not.toContain('other error')
+  })
+
+  test('text: passing winner does NOT emit stderr line', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_s2')
+    seedRacerWithStderr(db, 'run_a', 'brf_s2', 0, true, 'passed', null)
+    seedRacerWithStderr(db, 'run_b', 'brf_s2', 1, false, 'failed', 'some failure')
+    db.close()
+    const r = run(['brf_s2'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).not.toContain('stderr:')
+  })
+
+  test('text: snippet truncated to 200 chars + ellipsis', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_s3')
+    const long = 'X'.repeat(300)
+    seedRacerWithStderr(db, 'run_a', 'brf_s3', 0, true, 'failed', long)
+    seedRacerWithStderr(db, 'run_b', 'brf_s3', 1, false, 'failed', 'shorter')
+    db.close()
+    const r = run(['brf_s3'])
+    // Snippet should fit in 200 chars, ending with '…'
+    const m = r.stdout.match(/stderr: (.*)$/m)
+    expect(m).not.toBeNull()
+    expect(m![1].length).toBeLessThanOrEqual(200)
+    expect(m![1].endsWith('…')).toBe(true)
+  })
+
+  test('--json: full stderr_tail exposed in runs[].verify', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_s4')
+    seedRacerWithStderr(db, 'run_a', 'brf_s4', 0, true, 'failed', 'big stack trace\n  here\n')
+    seedRacerWithStderr(db, 'run_b', 'brf_s4', 1, false, 'failed', null)
+    db.close()
+    const r = run(['brf_s4', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    const winner = parsed.runs.find((rr: { run_id: string }) => rr.run_id === 'run_a')
+    expect(winner.verify.stderr_tail).toContain('big stack trace')
+  })
+})

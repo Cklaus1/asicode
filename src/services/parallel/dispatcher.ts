@@ -239,6 +239,9 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
           verify_outcome: r.verify.outcome,
           verify_exit_code: r.verify.exitCode ?? undefined,
           verify_duration_ms: r.verify.durationMs,
+          // REQ-21: persist stderr tail only when non-empty so passed
+          // racers don't bloat the runs table with empty strings.
+          ...(r.verify.stderrTail.length > 0 ? { verify_stderr_tail: r.verify.stderrTail } : {}),
         } : {}),
       })
     } catch { /* db unavailable */ }
