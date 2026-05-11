@@ -18,6 +18,11 @@
 import { randomUUID } from 'node:crypto'
 import { redactSecrets } from '../teamMemorySync/secretScanner.js'
 import {
+  adaptBeginRun,
+  adaptFinalizeRun,
+  adaptToolCall,
+} from '../instrumentation/recorder-adapter.js'
+import {
   computeFingerprint,
   type OutcomeKind,
   type OutcomeRecord,
@@ -26,6 +31,52 @@ import {
   type VerifierSignal,
 } from './outcomeRecord.js'
 import { writeOutcomeRecord } from './outcomeStore.js'
+
+/**
+ * Map v1 OutcomeKind → v2 PrOutcome. v1's outcome kind is per-run (success/
+ * failure/aborted/etc); v2's pr_outcome tracks the brief-level merge state.
+ * For the dual-write window we use a best-effort mapping that mirrors v1
+ * semantics: 'success' → merged_no_intervention, anything else → abandoned.
+ * The v1 path remains the disk-of-record; this approximation is fine until
+ * A16 + judges land and the brief-level signal becomes precise.
+ */
+function v1OutcomeToPrOutcome(
+  outcome: OutcomeKind,
+):
+  | 'merged_no_intervention'
+  | 'merged_with_intervention'
+  | 'abandoned'
+  | 'reverted'
+  | 'in_flight' {
+  switch (outcome) {
+    case 'success':
+      return 'merged_no_intervention'
+    case 'failure':
+    case 'aborted':
+    case 'budget_exhausted':
+    case 'unknown':
+    default:
+      return 'abandoned'
+  }
+}
+
+function v1OutcomeToRunOutcome(
+  outcome: OutcomeKind,
+): 'completed' | 'aborted' | 'budget_exhausted' | 'killed' | 'crashed' | 'in_flight' {
+  switch (outcome) {
+    case 'success':
+      return 'completed'
+    case 'failure':
+      return 'crashed'
+    case 'aborted':
+      return 'aborted'
+    case 'budget_exhausted':
+      return 'budget_exhausted'
+    case 'unknown':
+    default:
+      return 'aborted'
+  }
+}
 
 type ActiveRun = {
   taskId: string
@@ -88,6 +139,9 @@ export function beginRun(
     cwd,
     toolCalls: [],
   })
+  // Dual-write to v2 instrumentation. Failure-tolerant — adapter returns
+  // undefined and disables silently if the schema isn't present.
+  adaptBeginRun(taskId, initialPrompt, cwd, fingerprint)
   return taskId
 }
 
@@ -117,6 +171,12 @@ export function recordToolCall(
     success,
     durationMs,
     ...(errorKind !== undefined && { errorKind }),
+  })
+  // Dual-write to v2 instrumentation.
+  adaptToolCall(taskId, name, {
+    status: success ? 'ok' : 'error',
+    durationMs,
+    errorKind,
   })
 }
 
@@ -185,6 +245,14 @@ export async function finalizeRun(
   } catch {
     // Logging is best-effort — never throw out of the main loop.
   }
+
+  // Dual-write the finalize to v2 instrumentation.
+  adaptFinalizeRun(taskId, {
+    runOutcome: v1OutcomeToRunOutcome(outcome),
+    prOutcome: v1OutcomeToPrOutcome(outcome),
+    tokensUsed: options.totalTokens,
+    abortReason: options.reason,
+  })
 }
 
 /**

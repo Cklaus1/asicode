@@ -58,8 +58,19 @@ const map = new Map<string, AdapterEntry>()
 let disabled = false
 let warned = false
 
+/**
+ * v2 instrumentation is opt-in: the user must explicitly set
+ * ASICODE_INSTRUMENTATION_DB. This keeps the v1 path silent for users who
+ * haven't run the migration, and only warns when somebody explicitly
+ * pointed at a db but the schema isn't there.
+ */
+function isOptedIn(): boolean {
+  return !!process.env.ASICODE_INSTRUMENTATION_DB
+}
+
 function tryV2<T>(op: () => T): T | undefined {
   if (disabled) return undefined
+  if (!isOptedIn()) return undefined
   try {
     return op()
   } catch (e) {
@@ -79,6 +90,7 @@ export function _resetAdapterForTest() {
   map.clear()
   disabled = false
   warned = false
+  tsCounter = 0
 }
 
 // ─── Lifecycle hooks ──────────────────────────────────────────────────
@@ -131,7 +143,30 @@ export function adaptBeginRun(
   })
 }
 
-/** Mirror a v1 tool-call event as a row in tool_calls. */
+/**
+ * Mirror a v1 tool-call event as a row in tool_calls.
+ *
+ * v1 only surfaces `durationMs` (no absolute start time), so we set both
+ * ts_started and ts_completed to "now" — ordering across calls in a run
+ * is then by insertion order via ts_started's monotonic strictly-increasing
+ * counter below. Backdating ts_started by durationMs would seem more
+ * accurate but causes ordering inversions when a fast call follows a
+ * slow one.
+ */
+let tsCounter = 0
+function nextTs(): number {
+  // Strictly monotonically increasing so ORDER BY ts_started is stable
+  // even when Date.now() resolution clumps multiple events into the
+  // same millisecond.
+  const now = Date.now()
+  if (now <= tsCounter) {
+    tsCounter += 1
+  } else {
+    tsCounter = now
+  }
+  return tsCounter
+}
+
 export function adaptToolCall(
   taskId: string | undefined,
   name: string,
@@ -149,13 +184,13 @@ export function adaptToolCall(
   if (!entry) return
   tryV2(() => {
     const tcId = newToolCallId()
-    const now = Date.now()
+    const ts = nextTs()
     entry.toolCallCount += 1
     recordToolCall({
       tc_id: tcId,
       run_id: entry.runId,
-      ts_started: opts.durationMs ? now - opts.durationMs : now,
-      ts_completed: now,
+      ts_started: ts,
+      ts_completed: ts,
       tool_name: name,
       dispatch_mode: opts.dispatchMode ?? 'serial',
       status: opts.status ?? 'ok',
