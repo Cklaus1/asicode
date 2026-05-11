@@ -26,6 +26,7 @@
 
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import {
+  findBriefByPrNumber,
   findLatestUnmatchedBrief,
   recordPrLanded,
   type PrLandedResult,
@@ -198,7 +199,10 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
       result.alreadyAttached++
       continue
     }
-    const candidate = findLatestUnmatchedBrief(projectPath)
+    // REQ-16: prefer deterministic pr_number lookup when present
+    // (auto-PR briefs). Fall back to fuzzy oldest-unmatched only for
+    // manually-opened PRs whose brief never persisted a pr_number.
+    const candidate = findBriefByPrNumber(projectPath, pr.number) ?? findLatestUnmatchedBrief(projectPath)
     if (!candidate) {
       result.unmatchable++
       continue

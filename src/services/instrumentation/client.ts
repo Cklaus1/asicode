@@ -36,7 +36,7 @@ import {
   type ToolCallRecord,
 } from './types'
 
-const SCHEMA_VERSION_REQUIRED = 4
+const SCHEMA_VERSION_REQUIRED = 5
 
 let _db: Database | null = null
 

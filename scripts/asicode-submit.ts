@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
-import { newBriefId, newRunId, recordBrief, recordRun } from '../src/services/instrumentation/client'
+import { newBriefId, newRunId, recordBrief, recordRun, updateBrief } from '../src/services/instrumentation/client'
 import { buildRetrievedContext } from '../src/services/plan-retrieval/consumer'
 import { buildMemdirContext } from '../src/services/memdir-retrieval/consumer'
 import { raceAgents } from '../src/services/parallel/dispatcher'
@@ -234,8 +234,14 @@ async function main() {
         branch: race.winnerBranch, repoPath: args.cwd, worktreePath: race.winnerWorktree,
         briefText, briefId, racerRunIds: race.racerRunIds,
       })
-      if (r.ok) pr = { prNumber: r.prNumber, url: r.url, branch: r.branch }
-      else prError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
+      if (r.ok) {
+        pr = { prNumber: r.prNumber, url: r.url, branch: r.branch }
+        // REQ-16: persist pr_number on the brief row so watch-merges
+        // links the merge sha back deterministically. Soft-fail: a db
+        // hiccup must not undo the actual PR that's already open.
+        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber }) }
+        catch (e) { console.error(`[auto-pr] updateBrief(pr_number) failed (PR still open at ${r.url}): ${e instanceof Error ? e.message : String(e)}`) }
+      } else prError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
     } catch (e) { prError = e instanceof Error ? e.message : String(e) }
   }
 

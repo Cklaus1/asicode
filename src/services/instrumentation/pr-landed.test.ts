@@ -19,6 +19,7 @@ import {
 } from './client'
 import {
   _resetPrLandedForTest,
+  findBriefByPrNumber,
   findLatestUnmatchedBrief,
   recordPrLanded,
 } from './pr-landed'
@@ -334,5 +335,45 @@ describe('findLatestUnmatchedBrief', () => {
     const rb = findLatestUnmatchedBrief('/proj-b')
     expect(ra!.briefId).toBe('a-brief')
     expect(rb!.briefId).toBe('b-brief')
+  })
+})
+
+// REQ-16: deterministic brief→PR linking via pr_number.
+describe('findBriefByPrNumber (REQ-16)', () => {
+  function seedWithPrNumber(briefId: string, projectPath: string, prNumber: number | null) {
+    recordBrief({
+      brief_id: briefId, ts_submitted: Date.now(), project_path: projectPath,
+      project_fingerprint: 'fp', user_text: `x ${briefId}`, a16_decision: 'accept',
+    })
+    if (prNumber !== null) {
+      const db = openInstrumentationDb()
+      db.run('UPDATE briefs SET pr_number = ? WHERE brief_id = ?', [prNumber, briefId])
+    }
+  }
+  test('finds the brief whose pr_number matches', () => {
+    seedWithPrNumber('b1', '/p', 42)
+    seedWithPrNumber('b2', '/p', 99)
+    const r = findBriefByPrNumber('/p', 99)
+    expect(r?.briefId).toBe('b2')
+  })
+  test('returns null when no brief has that pr_number', () => {
+    seedWithPrNumber('b1', '/p', 42)
+    expect(findBriefByPrNumber('/p', 100)).toBeNull()
+  })
+  test('returns null when pr_number is unset on every brief', () => {
+    seedWithPrNumber('b1', '/p', null)
+    expect(findBriefByPrNumber('/p', 1)).toBeNull()
+  })
+  test('respects project_path scope', () => {
+    seedWithPrNumber('a', '/proj-a', 7)
+    seedWithPrNumber('b', '/proj-b', 7)
+    expect(findBriefByPrNumber('/proj-a', 7)?.briefId).toBe('a')
+    expect(findBriefByPrNumber('/proj-b', 7)?.briefId).toBe('b')
+  })
+  test('skips briefs that already have pr_sha (already-attached)', () => {
+    seedWithPrNumber('b1', '/p', 42)
+    const db = openInstrumentationDb()
+    db.run('UPDATE briefs SET pr_sha = ? WHERE brief_id = ?', ['deadbeef', 'b1'])
+    expect(findBriefByPrNumber('/p', 42)).toBeNull()
   })
 })

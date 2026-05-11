@@ -101,6 +101,10 @@ export const BriefRecordSchema = z.object({
 
   // v1 outcome-recorder taskId (UUID) for cross-process lookup. Migration 0002.
   v1_task_id: z.string().optional(),
+
+  // REQ-16 (migration 0005): PR number persisted at auto-PR open time
+  // so watch-merges links brief↔PR deterministically.
+  pr_number: z.number().int().positive().optional(),
 })
 
 export type BriefRecord = z.infer<typeof BriefRecordSchema>
@@ -225,6 +229,8 @@ export const BriefUpdateSchema = z.object({
   pr_sha: z.string().optional(),
   pr_outcome: PrOutcomeSchema.optional(),
   intervention_reason: z.string().optional(),
+  // REQ-16: auto-PR number persisted at open time.
+  pr_number: z.number().int().positive().optional(),
   // A12 — populated post-hoc by the brief-mode expander trigger.
   expanded_brief: z.string().optional(),
   // A16 fields — populated post-hoc by the brief-gate trigger.

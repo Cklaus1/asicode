@@ -307,6 +307,27 @@ export async function recordPrLandedByTaskId(input: {
  * This function picks the most recent and lets the caller check
  * .ambiguous to decide whether to warn.
  */
+// REQ-16: deterministic lookup. When asicode auto-opened the PR via
+// openWinnerPr (REQ-15), it persists pr_number on the brief row at
+// open time. watch-merges asks here first; only falls back to the
+// fuzzy oldest-unmatched path when no pr_number match exists.
+export function findBriefByPrNumber(projectPath: string, prNumber: number): {
+  briefId: string
+  userText: string
+  tsSubmitted: number
+} | null {
+  const db = openInstrumentationDb()
+  const row = db
+    .query<{ brief_id: string; user_text: string; ts_submitted: number }, [string, number]>(
+      `SELECT brief_id, user_text, ts_submitted
+       FROM briefs
+       WHERE project_path = ? AND pr_number = ? AND pr_sha IS NULL
+       LIMIT 1`,
+    )
+    .get(projectPath, prNumber)
+  return row ? { briefId: row.brief_id, userText: row.user_text, tsSubmitted: row.ts_submitted } : null
+}
+
 export function findLatestUnmatchedBrief(projectPath: string): {
   briefId: string
   userText: string
