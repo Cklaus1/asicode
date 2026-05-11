@@ -61,10 +61,20 @@ export function openInstrumentationDb(dbPath?: string): Database {
   db.exec('PRAGMA foreign_keys = ON')
   db.exec('PRAGMA synchronous = NORMAL')
 
-  const versionRow = db
-    .query<{ v: number | null }, []>("SELECT MAX(version) AS v FROM _schema_version")
+  // Tolerate fresh / unmigrated dbs cleanly: a missing _schema_version
+  // table means "version 0", same outcome as version-too-old.
+  const hasVersionTable = db
+    .query<{ name: string }, []>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='_schema_version'",
+    )
     .get()
-  const v = versionRow?.v ?? 0
+  let v = 0
+  if (hasVersionTable) {
+    const versionRow = db
+      .query<{ v: number | null }, []>('SELECT MAX(version) AS v FROM _schema_version')
+      .get()
+    v = versionRow?.v ?? 0
+  }
   if (v < SCHEMA_VERSION_REQUIRED) {
     db.close()
     throw new Error(
