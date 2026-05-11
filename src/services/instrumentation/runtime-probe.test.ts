@@ -8,10 +8,23 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { Database } from 'bun:sqlite'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { probeRuntime, renderProbeMarkdown } from './runtime-probe'
+
+// REQ-55: helper to create a properly-migrated db so tests use the
+// schema the probe expects to find (was: empty file, which the probe
+// now rejects as 'misconfigured: unreadable').
+function applyAllMigrations(dbPath: string) {
+  const migDir = join(import.meta.dir, '..', '..', '..', 'migrations', 'instrumentation')
+  const db = new Database(dbPath, { create: true })
+  for (const f of readdirSync(migDir).filter(n => n.endsWith('.sql')).sort()) {
+    db.exec(readFileSync(join(migDir, f), 'utf-8'))
+  }
+  db.close()
+}
 
 let tempDir: string
 let dbPath: string
@@ -52,7 +65,7 @@ beforeEach(() => {
   }
   tempDir = mkdtempSync(join(tmpdir(), 'asicode-probe-'))
   dbPath = join(tempDir, 'instrumentation.db')
-  writeFileSync(dbPath, '')
+  applyAllMigrations(dbPath)  // REQ-55: probe now checks schema version
   originalFetch = globalThis.fetch
 })
 
@@ -554,5 +567,60 @@ describe('REQ-32 race + verifier knobs', () => {
     expect(r.unconfigured).toContain('budget-cap')
     const check = r.checks.find(c => c.name === 'race budget cap')!
     expect(check.detail).toContain('Race will spawn regardless')
+  })
+})
+
+// REQ-55: probe verifies schema version against the client requirement.
+describe('REQ-55 schema version check', () => {
+  test('migrated db (current schema) → ok', async () => {
+    // beforeEach already applied all migrations. Just point at it.
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_INSTRUMENTATION_DB')!
+    expect(check.status).toBe('ok')
+    expect(check.detail).toMatch(/schema v\d+/)
+    expect(r.enabled).toContain('instrumentation')
+  })
+
+  test('empty file (v0, no schema) → misconfigured + blocked', async () => {
+    const stalePath = join(tempDir, 'empty.db')
+    writeFileSync(stalePath, '')
+    process.env.ASICODE_INSTRUMENTATION_DB = stalePath
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_INSTRUMENTATION_DB')!
+    expect(check.status).toBe('misconfigured')
+    expect(check.detail).toMatch(/schema v0.*requires/)
+    expect(r.blocked.some(b => b.capability === 'instrumentation')).toBe(true)
+  })
+
+  test('stale schema (v0, no _schema_version table) → misconfigured', async () => {
+    const stalePath = join(tempDir, 'stale.db')
+    const db = new Database(stalePath, { create: true })
+    db.exec('CREATE TABLE briefs (brief_id TEXT)')
+    db.close()
+    process.env.ASICODE_INSTRUMENTATION_DB = stalePath
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_INSTRUMENTATION_DB')!
+    expect(check.status).toBe('misconfigured')
+    expect(check.detail).toMatch(/schema v0.*requires/)
+    expect(check.detail).toContain('instrumentation:migrate')
+  })
+
+  test('partial migration (v2) → misconfigured with version mismatch', async () => {
+    const partialPath = join(tempDir, 'partial.db')
+    const db = new Database(partialPath, { create: true })
+    db.exec(`CREATE TABLE _schema_version (
+      version INTEGER PRIMARY KEY,
+      applied_at INTEGER NOT NULL,
+      description TEXT
+    )`)
+    db.exec(`INSERT INTO _schema_version VALUES (2, 0, 'partial')`)
+    db.close()
+    process.env.ASICODE_INSTRUMENTATION_DB = partialPath
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_INSTRUMENTATION_DB')!
+    expect(check.status).toBe('misconfigured')
+    expect(check.detail).toContain('v2')
+    expect(check.detail).toContain('requires v')
   })
 })

@@ -20,8 +20,30 @@
  * temporary outage shouldn't mask the true config state.
  */
 
+import { Database } from 'bun:sqlite'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+
+// REQ-55: required schema version mirrored from client.ts. Updated
+// in lockstep when a migration ships. Probe queries this against the
+// db's _schema_version max so users see the gap before submit fails.
+const SCHEMA_VERSION_REQUIRED = 9
+
+function readDbSchemaVersion(dbPath: string): number | null {
+  try {
+    const db = new Database(dbPath, { readonly: true })
+    try {
+      const has = db.query<{ name: string }, []>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_schema_version'",
+      ).get()
+      if (!has) return 0
+      const row = db.query<{ v: number | null }, []>(
+        'SELECT MAX(version) AS v FROM _schema_version',
+      ).get()
+      return row?.v ?? 0
+    } finally { db.close() }
+  } catch { return null }
+}
 
 // ─── Result shape ────────────────────────────────────────────────────
 
@@ -344,13 +366,36 @@ export async function probeRuntime(): Promise<ProbeReport> {
       reason: 'db file missing on disk',
     })
   } else {
-    checks.push({
-      name: 'ASICODE_INSTRUMENTATION_DB',
-      expectation: 'env var points at a migrated db file',
-      status: 'ok',
-      detail: `Path ${dbEnv} exists.`,
-    })
-    enabled.push('instrumentation')
+    // REQ-55: file exists — verify it's actually migrated to the
+    // required schema version. Users upgrading asicode without
+    // running `instrumentation:migrate` get a clean signal here
+    // rather than a schema-too-old throw at submit time.
+    const v = readDbSchemaVersion(dbEnv)
+    if (v === null) {
+      checks.push({
+        name: 'ASICODE_INSTRUMENTATION_DB',
+        expectation: 'env var points at a migrated db file',
+        status: 'misconfigured',
+        detail: `Path ${dbEnv} exists but isn't a readable sqlite db. Re-run \`bun run instrumentation:migrate\`.`,
+      })
+      blocked.push({ capability: 'instrumentation', reason: 'db unreadable' })
+    } else if (v < SCHEMA_VERSION_REQUIRED) {
+      checks.push({
+        name: 'ASICODE_INSTRUMENTATION_DB',
+        expectation: `schema version ≥ ${SCHEMA_VERSION_REQUIRED}`,
+        status: 'misconfigured',
+        detail: `Path ${dbEnv} is at schema v${v}, but client requires v${SCHEMA_VERSION_REQUIRED}. Run \`bun run instrumentation:migrate\` to upgrade.`,
+      })
+      blocked.push({ capability: 'instrumentation', reason: `schema v${v} < required v${SCHEMA_VERSION_REQUIRED}` })
+    } else {
+      checks.push({
+        name: 'ASICODE_INSTRUMENTATION_DB',
+        expectation: 'env var points at a migrated db file',
+        status: 'ok',
+        detail: `Path ${dbEnv} at schema v${v} (≥ required v${SCHEMA_VERSION_REQUIRED}).`,
+      })
+      enabled.push('instrumentation')
+    }
   }
 
   // ── Provider backends ──
