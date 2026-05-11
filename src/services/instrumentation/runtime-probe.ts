@@ -44,6 +44,79 @@ export interface ProbeReport {
   blocked: Array<{ capability: string; reason: string }>
   /** Capabilities the user has not opted into. */
   unconfigured: string[]
+  /** Northstar readiness rollup (iter 57). */
+  readiness: ReadinessVerdict
+}
+
+export type ReadinessLevel = 'ready' | 'partial' | 'not_configured'
+
+export interface ReadinessVerdict {
+  level: ReadinessLevel
+  /** Minimum capabilities present? (db + provider + judges + watch-merges) */
+  minimumViable: boolean
+  /** Optional capabilities still unconfigured. */
+  enrichmentMissing: string[]
+  /** What blocks `ready` — empty when level='ready'. */
+  blockers: string[]
+}
+
+/**
+ * The minimal capability set for the northstar submit-and-walk-away
+ * workflow. Anything missing here means the user has to do manual work
+ * — running the report, kicking the daemon, etc.
+ */
+const NORTHSTAR_REQUIRED: readonly string[] = [
+  'instrumentation', // db migrated → briefs/runs/judgments persist
+  'judges', // primary quality signal fires on merge
+  'watch-merges', // pr_sha attaches automatically on merge
+]
+
+/**
+ * Capabilities that enrich the loop but aren't on the critical path.
+ * Listed in unconfigured if absent but don't downgrade readiness.
+ */
+const NORTHSTAR_ENRICHMENT: readonly string[] = [
+  'brief-gate',
+  'brief-mode',
+  'density',
+  'adversarial',
+  'plan-retrieval',
+  'pr-comment',
+]
+
+function computeReadiness(
+  enabled: string[],
+  blocked: Array<{ capability: string; reason: string }>,
+): ReadinessVerdict {
+  const enabledSet = new Set(enabled)
+  const blockedMap = new Map(blocked.map(b => [b.capability, b.reason]))
+
+  const missing: string[] = []
+  const blockers: string[] = []
+  for (const cap of NORTHSTAR_REQUIRED) {
+    if (enabledSet.has(cap)) continue
+    missing.push(cap)
+    const reason = blockedMap.get(cap)
+    blockers.push(reason ? `${cap} (${reason})` : cap)
+  }
+
+  const enrichmentMissing = NORTHSTAR_ENRICHMENT.filter(c => !enabledSet.has(c))
+
+  let level: ReadinessLevel
+  if (missing.length === 0) {
+    level = enrichmentMissing.length === 0 ? 'ready' : 'partial'
+  } else if (missing.length < NORTHSTAR_REQUIRED.length) {
+    level = 'partial'
+  } else {
+    level = 'not_configured'
+  }
+
+  return {
+    level,
+    minimumViable: missing.length === 0,
+    enrichmentMissing,
+    blockers,
+  }
 }
 
 // ─── Probe primitives ────────────────────────────────────────────────
@@ -295,7 +368,13 @@ export async function probeRuntime(): Promise<ProbeReport> {
     unconfigured.push('watch-merges')
   }
 
-  return { checks, enabled, blocked, unconfigured }
+  return {
+    checks,
+    enabled,
+    blocked,
+    unconfigured,
+    readiness: computeReadiness(enabled, blocked),
+  }
 }
 
 // ─── Markdown rendering ──────────────────────────────────────────────
@@ -303,6 +382,27 @@ export async function probeRuntime(): Promise<ProbeReport> {
 export function renderProbeMarkdown(report: ProbeReport): string {
   const lines: string[] = []
   lines.push('## Runtime probe')
+  lines.push('')
+
+  // Lead with the northstar readiness verdict — what the user actually
+  // wants to know is "am I ready to submit-and-walk-away?"
+  const r = report.readiness
+  const glyph = r.level === 'ready' ? '✓' : r.level === 'partial' ? '⚠' : '✗'
+  const label =
+    r.level === 'ready'
+      ? '**Ready** — submit-and-walk-away workflow fully wired'
+      : r.level === 'partial'
+        ? '**Partial** — northstar workflow runs but some enrichment is off'
+        : '**Not configured** — northstar workflow cannot run as-is'
+  lines.push(`${glyph} ${label}`)
+  if (r.blockers.length > 0) {
+    lines.push('')
+    lines.push(`Blockers: ${r.blockers.join(', ')}`)
+  }
+  if (r.enrichmentMissing.length > 0 && r.level !== 'not_configured') {
+    lines.push('')
+    lines.push(`Enrichment off: ${r.enrichmentMissing.join(', ')}`)
+  }
   lines.push('')
 
   const okCount = report.checks.filter(c => c.status === 'ok').length

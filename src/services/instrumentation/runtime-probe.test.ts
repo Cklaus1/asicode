@@ -217,6 +217,87 @@ describe('probeRuntime — opt-in flags', () => {
   })
 })
 
+describe('readiness rollup', () => {
+  test('empty env → not_configured (all 3 required missing)', async () => {
+    const r = await probeRuntime()
+    expect(r.readiness.level).toBe('not_configured')
+    expect(r.readiness.minimumViable).toBe(false)
+    expect(r.readiness.blockers).toContain('instrumentation')
+    expect(r.readiness.blockers).toContain('judges')
+    expect(r.readiness.blockers).toContain('watch-merges')
+  })
+
+  test('just instrumentation → partial (judges + watch-merges still missing)', async () => {
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    const r = await probeRuntime()
+    expect(r.readiness.level).toBe('partial')
+    expect(r.readiness.minimumViable).toBe(false)
+    expect(r.readiness.blockers).not.toContain('instrumentation')
+    expect(r.readiness.blockers).toContain('judges')
+    expect(r.readiness.blockers).toContain('watch-merges')
+  })
+
+  test('all 3 required + no enrichment → partial (enrichment listed)', async () => {
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    process.env.ANTHROPIC_API_KEY = 'sk-test'
+    process.env.ASICODE_JUDGES_ENABLED = '1'
+    // Spawn dummy watch-merges process
+    const { spawn } = await import('node:child_process')
+    const dummy = spawn(
+      'sh',
+      ['-c', '# instrumentation-watch-merges-test-sentinel\nwhile :; do sleep 1; done'],
+      { stdio: 'ignore', detached: false },
+    )
+    try {
+      await new Promise(resolve => setTimeout(resolve, 250))
+      const r = await probeRuntime()
+      expect(r.readiness.level).toBe('partial')
+      expect(r.readiness.minimumViable).toBe(true)
+      expect(r.readiness.blockers).toEqual([])
+      expect(r.readiness.enrichmentMissing.length).toBeGreaterThan(0)
+    } finally {
+      dummy.kill('SIGTERM')
+    }
+  })
+
+  test('everything wired → ready', async () => {
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    process.env.ANTHROPIC_API_KEY = 'sk-test'
+    process.env.ASICODE_JUDGES_ENABLED = '1'
+    process.env.ASICODE_BRIEF_GATE_ENABLED = '1'
+    process.env.ASICODE_BRIEF_MODE_ENABLED = '1'
+    process.env.ASICODE_DENSITY_ENABLED = '1'
+    process.env.ASICODE_ADVERSARIAL_ENABLED = '1'
+    process.env.ASICODE_PLAN_RETRIEVAL_ENABLED = '1'
+    process.env.ASICODE_PR_COMMENT_ENABLED = '1'
+    const { spawn } = await import('node:child_process')
+    const dummy = spawn(
+      'sh',
+      ['-c', '# instrumentation-watch-merges-test-sentinel\nwhile :; do sleep 1; done'],
+      { stdio: 'ignore', detached: false },
+    )
+    try {
+      await new Promise(resolve => setTimeout(resolve, 250))
+      const r = await probeRuntime()
+      expect(r.readiness.level).toBe('ready')
+      expect(r.readiness.minimumViable).toBe(true)
+      expect(r.readiness.enrichmentMissing).toEqual([])
+      expect(r.readiness.blockers).toEqual([])
+    } finally {
+      dummy.kill('SIGTERM')
+    }
+  })
+
+  test('blocker reason is surfaced when capability is opted-in but blocked', async () => {
+    // Flag set but no provider → judges is in blocked, not unconfigured.
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    process.env.ASICODE_JUDGES_ENABLED = '1'
+    const r = await probeRuntime()
+    expect(r.readiness.level).toBe('partial')
+    expect(r.readiness.blockers.find(b => b.startsWith('judges'))).toMatch(/no provider configured/)
+  })
+})
+
 describe('renderProbeMarkdown', () => {
   test('produces well-formed markdown with all sections', async () => {
     process.env.ASICODE_INSTRUMENTATION_DB = dbPath
@@ -248,6 +329,12 @@ describe('renderProbeMarkdown', () => {
       enabled: [],
       blocked: [],
       unconfigured: [],
+      readiness: {
+        level: 'not_configured',
+        minimumViable: false,
+        enrichmentMissing: [],
+        blockers: [],
+      },
     })
     // Each pipe inside the detail must be escaped so the markdown
     // table still parses as one row.

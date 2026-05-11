@@ -46,6 +46,23 @@ function parseArgs(argv: string[]): { format: Format } {
 
 function renderTable(report: Awaited<ReturnType<typeof probeRuntime>>): string {
   const lines: string[] = []
+
+  // Top-line: northstar readiness verdict (iter 57).
+  const r = report.readiness
+  const glyph = r.level === 'ready' ? '✓' : r.level === 'partial' ? '⚠' : '✗'
+  const label =
+    r.level === 'ready'
+      ? 'Ready — submit-and-walk-away workflow fully wired'
+      : r.level === 'partial'
+        ? 'Partial — northstar workflow runs but some enrichment is off'
+        : 'Not configured — northstar workflow cannot run as-is'
+  lines.push(`${glyph} Northstar: ${label}`)
+  if (r.blockers.length > 0) lines.push(`   Blockers: ${r.blockers.join(', ')}`)
+  if (r.enrichmentMissing.length > 0 && r.level !== 'not_configured') {
+    lines.push(`   Enrichment off: ${r.enrichmentMissing.join(', ')}`)
+  }
+  lines.push('')
+
   const nameWidth = Math.max(...report.checks.map(c => c.name.length), 12)
   const statusWidth = 12
   lines.push(`${'CHECK'.padEnd(nameWidth)}  ${'STATUS'.padEnd(statusWidth)}  DETAIL`)
