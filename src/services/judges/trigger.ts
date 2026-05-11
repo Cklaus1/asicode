@@ -139,7 +139,12 @@ export function judgeOnPrMerge(input: TriggerInput): void {
           result,
           repoPath: input.cwd ?? process.cwd(),
         })
-        if (!comment.posted && comment.reason && comment.reason !== 'opt_out') {
+        if (
+          !comment.posted &&
+          comment.reason &&
+          comment.reason !== 'opt_out' &&
+          comment.reason !== 'already_posted'
+        ) {
           // eslint-disable-next-line no-console
           console.warn(`[asicode judges] pr-comment skipped: ${comment.reason}`)
         }

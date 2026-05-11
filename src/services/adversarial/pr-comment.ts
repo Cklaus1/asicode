@@ -25,7 +25,7 @@ export interface PostAdversarialInput {
 
 export interface PostAdversarialResult {
   posted: boolean
-  reason?: 'opt_out' | 'no_actionable_findings' | 'no_pr' | 'gh_failed'
+  reason?: 'opt_out' | 'no_actionable_findings' | 'no_pr' | 'gh_failed' | 'already_posted'
   prNumber?: number
   bodyPreview?: string
 }
@@ -121,9 +121,17 @@ export async function postAdversarialFindings(
   if (prNumber === null) return { posted: false, reason: 'no_pr' }
 
   const body = buildFindingsMarkdown(input.response)
-  const posted = await postPrComment({ prNumber, repoPath: input.repoPath, body })
+  const outcome = await postPrComment({
+    prNumber,
+    repoPath: input.repoPath,
+    body,
+    idempotencyMarker: ADVERSARIAL_MARKER,
+  })
 
-  if (!posted) {
+  if (outcome === 'already_posted') {
+    return { posted: false, reason: 'already_posted', prNumber, bodyPreview: body.slice(0, 200) }
+  }
+  if (outcome === 'failed') {
     return { posted: false, reason: 'gh_failed', prNumber, bodyPreview: body.slice(0, 200) }
   }
   return { posted: true, prNumber, bodyPreview: body.slice(0, 200) }

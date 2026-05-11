@@ -201,7 +201,8 @@ export function densityOnPrMerge(input: DensityTriggerInput): void {
             !posted.posted &&
             posted.reason !== 'opt_out' &&
             posted.reason !== 'not_a_refactor' &&
-            posted.reason !== 'no_delta'
+            posted.reason !== 'no_delta' &&
+            posted.reason !== 'already_posted'
           ) {
             // eslint-disable-next-line no-console
             console.warn(`[asicode density] pr-comment skipped: ${posted.reason}`)

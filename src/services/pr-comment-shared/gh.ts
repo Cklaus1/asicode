@@ -80,23 +80,39 @@ export async function findPrNumberForSha(
 }
 
 /**
- * Post a markdown comment on a PR via `gh pr comment N --body-file -`.
- * The body is piped on stdin so we don't have to argv-escape multi-line
- * content. Returns true on success.
+ * Look for an existing comment on a PR whose body contains `marker`.
+ * Used by iter-61 idempotency: each PR-comment poster embeds a unique
+ * HTML marker (e.g. `<!-- asicode-judge-verdict -->`); checking for it
+ * before posting prevents duplicates on daemon re-runs or manual
+ * `--post` invocations.
+ *
+ * Returns true when a matching comment exists. False on any failure
+ * (no gh, network down, unauthorized) — soft-fail to "not found" so
+ * the caller falls through to its own post attempt, which can fail
+ * loudly if gh is actually broken.
  */
-export async function postPrComment(opts: {
+export async function findCommentWithMarker(opts: {
   prNumber: number
   repoPath: string
-  body: string
+  marker: string
   timeoutMs?: number
 }): Promise<boolean> {
-  const timeoutMs = opts.timeoutMs ?? 15_000
+  const timeoutMs = opts.timeoutMs ?? 10_000
   return new Promise<boolean>(resolve => {
+    let out = ''
     let settled = false
     const child = spawn(
       'gh',
-      ['pr', 'comment', String(opts.prNumber), '--body-file', '-'],
-      { cwd: opts.repoPath, stdio: ['pipe', 'ignore', 'pipe'] },
+      [
+        'pr',
+        'view',
+        String(opts.prNumber),
+        '--json',
+        'comments',
+        '--jq',
+        '.comments[].body',
+      ],
+      { cwd: opts.repoPath, stdio: ['ignore', 'pipe', 'ignore'] },
     )
     const timer = setTimeout(() => {
       child.kill()
@@ -105,6 +121,9 @@ export async function postPrComment(opts: {
         resolve(false)
       }
     }, timeoutMs)
+    child.stdout.on('data', (chunk: Buffer) => {
+      out += chunk.toString('utf-8')
+    })
     child.on('error', () => {
       clearTimeout(timer)
       if (!settled) {
@@ -116,7 +135,67 @@ export async function postPrComment(opts: {
       clearTimeout(timer)
       if (settled) return
       settled = true
-      resolve(code === 0)
+      if (code !== 0) return resolve(false)
+      resolve(out.includes(opts.marker))
+    })
+  })
+}
+
+/**
+ * Post a markdown comment on a PR via `gh pr comment N --body-file -`.
+ * The body is piped on stdin so we don't have to argv-escape multi-line
+ * content.
+ *
+ * When `idempotencyMarker` is supplied, the function first checks if a
+ * comment containing that marker already exists on the PR. If found,
+ * returns 'already_posted' without re-posting. Each PR-comment poster
+ * passes its unique HTML marker; the marker check is the dedupe key.
+ */
+export type PostPrCommentOutcome = 'posted' | 'already_posted' | 'failed'
+
+export async function postPrComment(opts: {
+  prNumber: number
+  repoPath: string
+  body: string
+  timeoutMs?: number
+  /** When set, skip post if a comment with this string already exists. */
+  idempotencyMarker?: string
+}): Promise<PostPrCommentOutcome> {
+  if (opts.idempotencyMarker) {
+    const exists = await findCommentWithMarker({
+      prNumber: opts.prNumber,
+      repoPath: opts.repoPath,
+      marker: opts.idempotencyMarker,
+    })
+    if (exists) return 'already_posted'
+  }
+  const timeoutMs = opts.timeoutMs ?? 15_000
+  return new Promise<PostPrCommentOutcome>(resolve => {
+    let settled = false
+    const child = spawn(
+      'gh',
+      ['pr', 'comment', String(opts.prNumber), '--body-file', '-'],
+      { cwd: opts.repoPath, stdio: ['pipe', 'ignore', 'pipe'] },
+    )
+    const timer = setTimeout(() => {
+      child.kill()
+      if (!settled) {
+        settled = true
+        resolve('failed')
+      }
+    }, timeoutMs)
+    child.on('error', () => {
+      clearTimeout(timer)
+      if (!settled) {
+        settled = true
+        resolve('failed')
+      }
+    })
+    child.on('close', code => {
+      clearTimeout(timer)
+      if (settled) return
+      settled = true
+      resolve(code === 0 ? 'posted' : 'failed')
     })
     child.stdin.end(opts.body)
   })

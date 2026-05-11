@@ -297,6 +297,10 @@ async function processPendingShipIts(result: PollResult): Promise<void> {
             prNumber: posted.prNumber!,
             verdict: verdict.verdict,
           })
+        } else if (posted.reason === 'already_posted') {
+          // Verdict was already on the PR (iter 61 idempotency: prior
+          // daemon run, manual --post CLI, etc.) — drop from queue
+          // silently. Not an error; the user already has the signal.
         } else if (posted.reason === 'no_pr' || posted.reason === 'no_signals') {
           // Keep retrying until deadline.
           if (!pastDeadline) {

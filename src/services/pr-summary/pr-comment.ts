@@ -20,7 +20,7 @@ export interface PostShipItInput {
 
 export interface PostShipItResult {
   posted: boolean
-  reason?: 'opt_out' | 'no_signals' | 'no_pr' | 'gh_failed'
+  reason?: 'opt_out' | 'no_signals' | 'no_pr' | 'gh_failed' | 'already_posted'
   prNumber?: number
   bodyPreview?: string
 }
@@ -112,8 +112,21 @@ export async function postShipItVerdict(
   if (prNumber === null) return { posted: false, reason: 'no_pr' }
 
   const body = buildShipItMarkdown(input.result)
-  const posted = await postPrComment({ prNumber, repoPath: input.repoPath, body })
-  if (!posted) {
+  const outcome = await postPrComment({
+    prNumber,
+    repoPath: input.repoPath,
+    body,
+    idempotencyMarker: SHIPIT_MARKER,
+  })
+  if (outcome === 'already_posted') {
+    return {
+      posted: false,
+      reason: 'already_posted',
+      prNumber,
+      bodyPreview: body.slice(0, 200),
+    }
+  }
+  if (outcome === 'failed') {
     return {
       posted: false,
       reason: 'gh_failed',

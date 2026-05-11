@@ -150,7 +150,12 @@ async function runAdversarial(
           response: result.response,
           repoPath: input.repoPath,
         })
-        if (!posted.posted && posted.reason !== 'opt_out' && posted.reason !== 'no_actionable_findings') {
+        if (
+          !posted.posted &&
+          posted.reason !== 'opt_out' &&
+          posted.reason !== 'no_actionable_findings' &&
+          posted.reason !== 'already_posted'
+        ) {
           // eslint-disable-next-line no-console
           console.warn(`[asicode adversarial] pr-comment skipped: ${posted.reason}`)
         }

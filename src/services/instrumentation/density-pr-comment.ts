@@ -34,6 +34,7 @@ export interface PostDensityResult {
     | 'no_delta'
     | 'no_pr'
     | 'gh_failed'
+    | 'already_posted'
   prNumber?: number
   bodyPreview?: string
 }
@@ -145,9 +146,17 @@ export async function postDensitySummary(
   if (prNumber === null) return { posted: false, reason: 'no_pr' }
 
   const body = buildDensitySummaryMarkdown(input.result)
-  const posted = await postPrComment({ prNumber, repoPath: input.repoPath, body })
+  const outcome = await postPrComment({
+    prNumber,
+    repoPath: input.repoPath,
+    body,
+    idempotencyMarker: DENSITY_MARKER,
+  })
 
-  if (!posted) {
+  if (outcome === 'already_posted') {
+    return { posted: false, reason: 'already_posted', prNumber, bodyPreview: body.slice(0, 200) }
+  }
+  if (outcome === 'failed') {
     return { posted: false, reason: 'gh_failed', prNumber, bodyPreview: body.slice(0, 200) }
   }
   return { posted: true, prNumber, bodyPreview: body.slice(0, 200) }

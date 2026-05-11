@@ -28,7 +28,7 @@ export interface PostCommentInput {
 
 export interface PostCommentResult {
   posted: boolean
-  reason?: 'opt_out' | 'gh_missing' | 'gh_failed' | 'no_pr' | 'panel_empty'
+  reason?: 'opt_out' | 'gh_missing' | 'gh_failed' | 'no_pr' | 'panel_empty' | 'already_posted'
   prNumber?: number
   bodyPreview?: string
 }
@@ -130,9 +130,17 @@ export async function postJudgeVerdict(input: PostCommentInput): Promise<PostCom
   if (prNumber === null) return { posted: false, reason: 'no_pr' }
 
   const body = buildVerdictMarkdown(input.result)
-  const posted = await postPrComment({ prNumber, repoPath: input.repoPath, body })
+  const outcome = await postPrComment({
+    prNumber,
+    repoPath: input.repoPath,
+    body,
+    idempotencyMarker: VERDICT_MARKER,
+  })
 
-  if (!posted) {
+  if (outcome === 'already_posted') {
+    return { posted: false, reason: 'already_posted', prNumber, bodyPreview: body.slice(0, 200) }
+  }
+  if (outcome === 'failed') {
     return { posted: false, reason: 'gh_failed', prNumber, bodyPreview: body.slice(0, 200) }
   }
   return { posted: true, prNumber, bodyPreview: body.slice(0, 200) }
