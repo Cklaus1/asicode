@@ -259,6 +259,9 @@ export const RunUpdateSchema = z.object({
   wall_clock_ms: z.number().int().nonnegative().optional(),
   tool_calls_total: z.number().int().nonnegative().optional(),
   was_race_winner: z.boolean().optional(),
+  // REQ-30: which strategy decided this run was the winner. Recorded
+  // only on the winning row. 'verifier_pick' | 'llm_tiebreak' | 'fcfs'.
+  race_strategy: z.string().optional(),
   // REQ-19: per-racer verifier signal (migration 0006).
   verify_outcome: VerifyOutcomeSchema.optional(),
   verify_exit_code: z.number().int().optional(),

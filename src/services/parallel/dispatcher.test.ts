@@ -446,6 +446,109 @@ describe('raceAgents — verifier-gated winner (REQ-18)', () => {
     if (r.ok) expect(r.baselineVerify).toBe('failed')
   }, 60_000)
 
+  // REQ-30: race_strategy recorded on winner.
+  test('race_strategy=verifier_pick when verifier eliminates losers', async () => {
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      WT_NAME="$(basename "$PWD")"
+      case "$WT_NAME" in *-0-*) MARKER=fail ;; *) MARKER=ok ;; esac
+      echo "$MARKER" > marker.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add marker.txt
+      git commit -q --no-gpg-sign -m "marker $MARKER"
+    `
+    // Reset client singleton so it picks up the current dbPath.
+    const { closeInstrumentationDb } = await import('../instrumentation/client')
+    closeInstrumentationDb()
+    // Seed brief so the racer's recordRun FK succeeds.
+    const db = new Database(dbPath)
+    db.run(`INSERT OR IGNORE INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision) VALUES (?, ?, ?, ?, ?, ?)`,
+      ['rs1', Date.now(), repoDir, 'fp', 't', 'pending'])
+    db.close()
+    const r = await raceAgents({
+      briefId: 'rs1', briefText: 't',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'strat-vp',
+      settleMs: 800, maxRaceMs: 20_000,
+      verifyCmd: 'grep -q "^ok$" marker.txt',
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      const db2 = new Database(dbPath)
+      const row = db2.query<{ race_strategy: string | null }, [string]>(
+        `SELECT race_strategy FROM runs WHERE run_id = ?`,
+      ).get(r.winnerRunId)
+      db2.close()
+      expect(row?.race_strategy).toBe('verifier_pick')
+    }
+  }, 60_000)
+
+  test('race_strategy=fcfs when no verifier configured', async () => {
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "x" > x.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add x.txt
+      git commit -q --no-gpg-sign -m "x"
+    `
+    delete process.env.ASICODE_VERIFY_CMD
+    const { closeInstrumentationDb } = await import('../instrumentation/client')
+    closeInstrumentationDb()
+    const db = new Database(dbPath)
+    db.run(`INSERT OR IGNORE INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision) VALUES (?, ?, ?, ?, ?, ?)`,
+      ['rs2', Date.now(), repoDir, 'fp', 't', 'pending'])
+    db.close()
+    const r = await raceAgents({
+      briefId: 'rs2', briefText: 't',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'strat-fcfs',
+      settleMs: 500, maxRaceMs: 15_000,
+      verifyCmd: '',
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      const db2 = new Database(dbPath)
+      const row = db2.query<{ race_strategy: string | null }, [string]>(
+        `SELECT race_strategy FROM runs WHERE run_id = ?`,
+      ).get(r.winnerRunId)
+      db2.close()
+      expect(row?.race_strategy).toBe('fcfs')
+    }
+  }, 60_000)
+
+  test('race_strategy=fcfs when verifier leaves all racers in same class', async () => {
+    // Verifier always passes → top class contains everyone → no shrink → fcfs.
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "z" > z.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add z.txt
+      git commit -q --no-gpg-sign -m "z"
+    `
+    const { closeInstrumentationDb } = await import('../instrumentation/client')
+    closeInstrumentationDb()
+    const db = new Database(dbPath)
+    db.run(`INSERT OR IGNORE INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision) VALUES (?, ?, ?, ?, ?, ?)`,
+      ['rs3', Date.now(), repoDir, 'fp', 't', 'pending'])
+    db.close()
+    const r = await raceAgents({
+      briefId: 'rs3', briefText: 't',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'strat-all-pass',
+      settleMs: 500, maxRaceMs: 15_000,
+      verifyCmd: 'true',
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      const db2 = new Database(dbPath)
+      const row = db2.query<{ race_strategy: string | null }, [string]>(
+        `SELECT race_strategy FROM runs WHERE run_id = ?`,
+      ).get(r.winnerRunId)
+      db2.close()
+      expect(row?.race_strategy).toBe('fcfs')
+    }
+  }, 60_000)
+
   test('explicit verifyCmd: "" disables verifier even when env set', async () => {
     process.env.ASICODE_DISPATCH_CMD = `
       cat > /dev/null

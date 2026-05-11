@@ -381,6 +381,64 @@ describe('REQ-21 verify_stderr_tail', () => {
     expect(m![1].endsWith('…')).toBe(true)
   })
 
+  // REQ-30: race strategy surfacing
+  test('race strategy renders in text when set on winner', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_st1')
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, verify_outcome, race_strategy)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['run_w', 'brf_st1', Date.now() - 1000, Date.now(), 'worktree', 'completed', 0, 1, 'passed', 'verifier_pick'],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['run_l', 'brf_st1', Date.now() - 1000, Date.now(), 'worktree', 'completed', 1, 0],
+    )
+    db.close()
+    const r = run(['brf_st1'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('winner=run_w (verifier_pick)')
+  })
+
+  test('--json: race.strategy surfaces the winner row value', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_st2')
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, race_strategy)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['run_a', 'brf_st2', Date.now() - 1000, Date.now(), 'worktree', 'completed', 0, 1, 'llm_tiebreak'],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['run_b', 'brf_st2', Date.now() - 1000, Date.now(), 'worktree', 'completed', 1, 0],
+    )
+    db.close()
+    const r = run(['brf_st2', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race.strategy).toBe('llm_tiebreak')
+  })
+
+  test('strategy null when winner row has no race_strategy set', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_st3')
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['run_a', 'brf_st3', Date.now() - 1000, Date.now(), 'worktree', 'completed', 0, 1],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['run_b', 'brf_st3', Date.now() - 1000, Date.now(), 'worktree', 'completed', 1, 0],
+    )
+    db.close()
+    const r = run(['brf_st3', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race.strategy).toBeNull()
+  })
+
   test('--json: full stderr_tail exposed in runs[].verify', () => {
     const db = new Database(dbPath)
     seedBrief(db, 'brf_s4')

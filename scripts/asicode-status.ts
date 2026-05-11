@@ -33,7 +33,7 @@ interface BriefRow {
   pr_number: number | null;
   reverted_within_7d: number; hotpatched_within_7d: number;
 }
-interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null }
+interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null; race_strategy: string | null }
 interface JudgeSummary { rows: number; composite: number | null }
 type ShipItSummary = { verdict: 'ship_it' | 'hold' | 'rollback'; reasons: string[]; signalsAvailable: number } | null
 
@@ -82,7 +82,7 @@ function main() {
 
   const runs = db.query<RunRow, [string]>(
     `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index,
-            verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail
+            verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail, race_strategy
      FROM runs WHERE brief_id = ? ORDER BY ts_started DESC`,
   ).all(args.briefId!)
 
@@ -98,7 +98,12 @@ function main() {
   const winnerRun = runs.find(r => r.was_race_winner === 1) ?? null
   const racerRuns = runs.filter(r => r.isolation_mode === 'worktree')
   const race = racerRuns.length >= 2
-    ? { count: racerRuns.length, winner_run_id: winnerRun?.run_id ?? null }
+    ? {
+        count: racerRuns.length,
+        winner_run_id: winnerRun?.run_id ?? null,
+        // REQ-30: surface decision strategy (verifier_pick | llm_tiebreak | fcfs).
+        strategy: winnerRun?.race_strategy ?? null,
+      }
     : null
 
   if (args.json) {
@@ -143,7 +148,7 @@ function main() {
     console.log(`    ${r.run_id}  ${r.outcome}  ${r.isolation_mode}  ${dur}${r.tokens_used !== null ? `  ${r.tokens_used}tok` : ''}`)
   }
   if (race) {
-    console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}`)
+    console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}${race.strategy ? ` (${race.strategy})` : ''}`)
     // REQ-19: verifier breakdown across the racers (passed/failed/err)
     const verdicts = racerRuns.filter(r => r.verify_outcome !== null)
     if (verdicts.length > 0) {

@@ -356,7 +356,8 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
   let tiebreak: TiebreakResult | null = null
   let winner: RaceCandidate
   // Restrict tiebreak to racers in the top verifier class only.
-  const topClass = verifyCmd && finishers.some(r => r.verify)
+  const verifierRanCount = finishers.filter(r => r.verify).length
+  const topClass = verifyCmd && verifierRanCount > 0
     ? (() => {
         const ranked = finishers.filter(r => r.verify)
         const topRank = Math.max(...ranked.map(r => verifyRank(r.verify!.outcome)))
@@ -374,8 +375,18 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
   } else {
     winner = topClass[0] ?? candidates[0]
   }
-  // Flag the winner row
-  try { updateRun({ run_id: winner.runId, was_race_winner: true }) } catch { /* db unavailable */ }
+  // REQ-30: record which strategy decided the winner.
+  //   'verifier_pick' — verifier ran AND it shrunk the candidate set
+  //                     (top class smaller than full finishers).
+  //   'llm_tiebreak'  — tiebreaker provider chose.
+  //   'fcfs'          — first-past-the-post (no verifier, or verifier
+  //                     left everything in one class with no LLM).
+  let raceStrategy: 'verifier_pick' | 'llm_tiebreak' | 'fcfs'
+  if (tiebreak !== null) raceStrategy = 'llm_tiebreak'
+  else if (verifyCmd && verifierRanCount > 0 && topClass.length < candidates.length) raceStrategy = 'verifier_pick'
+  else raceStrategy = 'fcfs'
+  // Flag the winner row with strategy.
+  try { updateRun({ run_id: winner.runId, was_race_winner: true, race_strategy: raceStrategy }) } catch { /* db unavailable */ }
 
   // 7. Cleanup non-winner worktrees only. The winner's worktree stays
   // on disk so the caller can read its diff, merge it, or run further
