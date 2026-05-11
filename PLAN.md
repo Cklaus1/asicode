@@ -1,4 +1,5 @@
 @asicode v2 plan|2026-05-10|status=design
+northstar: see [GOALS.md](./GOALS.md) — every phase below is in service of "hand a brief, get a correct PR"
 
 # Legend
 - v1 = current asicode (forked openclaude @ 0.7.0; 585k LOC TypeScript)
