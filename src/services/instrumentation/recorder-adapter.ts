@@ -334,11 +334,18 @@ export function adaptFinalizeRun(
       wall_clock_ms: now - entry.startedAtMs,
       tool_calls_total: entry.toolCallCount,
     })
+    // REQ-48: when finalize aborts (e.g. A16 veto), cascade the run's
+    // abort_reason into briefs.intervention_reason so status (REQ-47)
+    // can surface it. Only when aborted + we have a reason — leaves
+    // intervention_reason untouched for the merged/completed paths.
+    const cascadeReason = opts.runOutcome === 'aborted' && opts.abortReason
+      ? opts.abortReason : undefined
     updateBrief({
       brief_id: entry.briefId,
       ts_completed: now,
       pr_sha: opts.prSha,
       pr_outcome: opts.prOutcome,
+      ...(cascadeReason ? { intervention_reason: cascadeReason } : {}),
     })
   })
 

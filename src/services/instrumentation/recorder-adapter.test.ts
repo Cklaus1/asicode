@@ -331,3 +331,40 @@ describe('checkVetoForRun (iter 63)', () => {
     expect(typeof recordBrief).toBe('function')
   })
 })
+
+// REQ-48: aborted finalize cascades abort_reason → intervention_reason.
+describe('REQ-48 abort_reason cascade', () => {
+  test('aborted finalize writes intervention_reason on brief', () => {
+    const taskId = 'v1-abort-1'
+    const ids = adaptBeginRun(taskId, 'broken brief', '/p', 'fp')
+    expect(ids).toBeDefined()
+    adaptFinalizeRun(taskId, { runOutcome: 'aborted', abortReason: 'a16_reject: 2.1 < 2.5' })
+    const db = openInstrumentationDb()
+    const row = db.query<{ intervention_reason: string | null; pr_outcome: string | null }, [string]>(
+      `SELECT intervention_reason, pr_outcome FROM briefs WHERE brief_id = ?`,
+    ).get(ids!.briefId)
+    expect(row?.intervention_reason).toBe('a16_reject: 2.1 < 2.5')
+  })
+
+  test('completed finalize does NOT touch intervention_reason', () => {
+    const taskId = 'v1-done-1'
+    const ids = adaptBeginRun(taskId, 'good brief', '/p', 'fp')
+    adaptFinalizeRun(taskId, { runOutcome: 'completed', prSha: 'abc123', prOutcome: 'merged_no_intervention' })
+    const db = openInstrumentationDb()
+    const row = db.query<{ intervention_reason: string | null }, [string]>(
+      `SELECT intervention_reason FROM briefs WHERE brief_id = ?`,
+    ).get(ids!.briefId)
+    expect(row?.intervention_reason).toBeNull()
+  })
+
+  test('aborted without abortReason leaves intervention_reason null', () => {
+    const taskId = 'v1-abort-noreason'
+    const ids = adaptBeginRun(taskId, 'x', '/p', 'fp')
+    adaptFinalizeRun(taskId, { runOutcome: 'aborted' })
+    const db = openInstrumentationDb()
+    const row = db.query<{ intervention_reason: string | null }, [string]>(
+      `SELECT intervention_reason FROM briefs WHERE brief_id = ?`,
+    ).get(ids!.briefId)
+    expect(row?.intervention_reason).toBeNull()
+  })
+})
