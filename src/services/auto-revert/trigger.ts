@@ -21,6 +21,10 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import {
+  newRevertId,
+  recordAutoRevert,
+} from '../instrumentation/client.js'
 import { createPrFromBranch } from '../pr-comment-shared/gh.js'
 import type { ShipItResult } from '../pr-summary/aggregate.js'
 import { buildRevertPr } from './builder.js'
@@ -267,6 +271,26 @@ export async function openRevertPr(input: OpenRevertInput): Promise<OpenRevertOu
       detail: created.stderr ?? created.reason,
       branch: spec.branchName,
     }
+  }
+
+  // Iter 70: persist the open event to the auto_reverts audit table.
+  // Soft-fail on the db write — if instrumentation is unavailable we
+  // still want the PR to land (the upstream `gh pr create` already
+  // succeeded). Report visibility is a downstream concern.
+  try {
+    recordAutoRevert({
+      revert_id: newRevertId(),
+      original_pr_sha: input.prSha,
+      revert_pr_number: created.prNumber,
+      branch_name: spec.branchName,
+      ts_opened: Date.now(),
+      trigger_reasons: input.result.reasons,
+    })
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[asicode auto-revert] PR opened but db record failed: ${e instanceof Error ? e.message : String(e)}`,
+    )
   }
 
   return {

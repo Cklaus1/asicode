@@ -121,6 +121,10 @@ interface Metrics {
    *  "halves regression on covered PRs" success bar). */
   a15CoveredRegressionRate: number | null
   a15UncoveredRegressionRate: number | null
+  // Auto-revert (iter 70, REQ-2.4)
+  autoRevertsOpened: number
+  autoRevertsMerged: number
+  autoRevertsClosedNoMerge: number
 }
 
 function compute(db: Database, sinceMs: number): Metrics {
@@ -414,6 +418,27 @@ function compute(db: Database, sinceMs: number): Metrics {
       ? (a15UncoveredRow.uncovered_regressed ?? 0) / a15UncoveredRow.uncovered_total
       : null
 
+  // Auto-revert audit (iter 70, REQ-2.4).
+  // Counts auto-revert PRs opened in the window. ts_merged /
+  // ts_closed_no_merge get populated by a future reconcile pass; for
+  // now those columns are NULL and the row reports "opened/n/a".
+  const arRow = db
+    .query<
+      { opened: number; merged: number; closed_no_merge: number },
+      [number]
+    >(
+      `SELECT
+         COUNT(*) AS opened,
+         SUM(CASE WHEN ts_merged IS NOT NULL THEN 1 ELSE 0 END) AS merged,
+         SUM(CASE WHEN ts_closed_no_merge IS NOT NULL THEN 1 ELSE 0 END) AS closed_no_merge
+       FROM auto_reverts
+       WHERE ts_opened >= ?`,
+    )
+    .get(sinceMs) ?? { opened: 0, merged: 0, closed_no_merge: 0 }
+  const autoRevertsOpened = arRow.opened ?? 0
+  const autoRevertsMerged = arRow.merged ?? 0
+  const autoRevertsClosedNoMerge = arRow.closed_no_merge ?? 0
+
   // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 5)
   // Components that are null become 0 in the composite (be honest about gaps).
   const aiComponents =
@@ -465,6 +490,9 @@ function compute(db: Database, sinceMs: number): Metrics {
     a15FalsePositiveUpperBound,
     a15CoveredRegressionRate,
     a15UncoveredRegressionRate,
+    autoRevertsOpened,
+    autoRevertsMerged,
+    autoRevertsClosedNoMerge,
   }
 }
 
@@ -588,6 +616,22 @@ function render(m: Metrics, sinceDays: number): string {
 
     if (m.a15FalsePositiveUpperBound !== null) {
       lines.push(`  FP upper bound          ${fmtPct(m.a15FalsePositiveUpperBound)}    (target ≤ 15%)`)
+    }
+    lines.push('')
+  }
+
+  // Auto-revert section (iter 70, REQ-2.4).
+  // Renders only when at least one auto-revert PR has been opened.
+  // ts_merged / ts_closed_no_merge stay 0 until a reconcile-style pass
+  // backfills them — until then we just show opened count.
+  if (m.autoRevertsOpened > 0) {
+    lines.push('Auto-revert')
+    lines.push(`  PRs opened              ${String(m.autoRevertsOpened).padStart(4)}    (ship-it=rollback fired ASICODE_AUTO_REVERT_ENABLED)`)
+    if (m.autoRevertsMerged > 0 || m.autoRevertsClosedNoMerge > 0) {
+      lines.push(`  Merged                  ${String(m.autoRevertsMerged).padStart(4)}    (user agreed with verdict)`)
+      lines.push(`  Closed no merge         ${String(m.autoRevertsClosedNoMerge).padStart(4)}    (user disagreed)`)
+    } else {
+      lines.push(`  Status                  open    (merge/close status not yet backfilled)`)
     }
     lines.push('')
   }

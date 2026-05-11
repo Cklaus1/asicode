@@ -547,3 +547,87 @@ describe('A15 adversarial verifier section', () => {
     expect(stdout).toMatch(/FP upper bound\s+50%/)
   })
 })
+
+describe('Auto-revert section (iter 70, REQ-2.4)', () => {
+  test('section omitted when no auto-reverts recorded', () => {
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('Auto-revert')
+  })
+
+  test('section renders count when at least one auto-revert opened', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    db.run(
+      `INSERT INTO auto_reverts
+        (revert_id, original_pr_sha, revert_pr_number, branch_name,
+         ts_opened, trigger_reasons_json)
+        VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        'rev_auto_test1',
+        'abcdef0123',
+        42,
+        'asicode/auto-revert-abcdef01',
+        Date.now(),
+        JSON.stringify(['composite judge score 1.8 < 2.5']),
+      ],
+    )
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Auto-revert')
+    expect(stdout).toMatch(/PRs opened\s+1/)
+    expect(stdout).toContain('merge/close status not yet backfilled')
+  })
+
+  test('section shows merged/closed counts when backfilled', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 3 opened: 1 merged, 1 closed-no-merge, 1 still open
+    db.run(
+      `INSERT INTO auto_reverts
+        (revert_id, original_pr_sha, revert_pr_number, branch_name,
+         ts_opened, trigger_reasons_json, ts_merged)
+        VALUES ('rev_auto_m', 'sha1', 1, 'b1', ?, '[]', ?)`,
+      [now, now + 1000],
+    )
+    db.run(
+      `INSERT INTO auto_reverts
+        (revert_id, original_pr_sha, revert_pr_number, branch_name,
+         ts_opened, trigger_reasons_json, ts_closed_no_merge)
+        VALUES ('rev_auto_c', 'sha2', 2, 'b2', ?, '[]', ?)`,
+      [now, now + 1000],
+    )
+    db.run(
+      `INSERT INTO auto_reverts
+        (revert_id, original_pr_sha, revert_pr_number, branch_name,
+         ts_opened, trigger_reasons_json)
+        VALUES ('rev_auto_o', 'sha3', 3, 'b3', ?, '[]')`,
+      [now],
+    )
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/PRs opened\s+3/)
+    expect(stdout).toMatch(/Merged\s+1/)
+    expect(stdout).toMatch(/Closed no merge\s+1/)
+  })
+
+  test('out-of-window auto-reverts excluded by --since', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const longAgo = Date.now() - 30 * 24 * 60 * 60 * 1000  // 30d ago
+    db.run(
+      `INSERT INTO auto_reverts
+        (revert_id, original_pr_sha, revert_pr_number, branch_name,
+         ts_opened, trigger_reasons_json)
+        VALUES ('rev_old', 'sha-old', 99, 'b-old', ?, '[]')`,
+      [longAgo],
+    )
+    db.close()
+
+    const { stdout } = runReport(dbPath, ['--since', '7d'])
+    // Should not render the section since the only row is out of window
+    expect(stdout).not.toContain('Auto-revert')
+  })
+})

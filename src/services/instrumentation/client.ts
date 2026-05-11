@@ -36,7 +36,7 @@ import {
   type ToolCallRecord,
 } from './types'
 
-const SCHEMA_VERSION_REQUIRED = 2
+const SCHEMA_VERSION_REQUIRED = 3
 
 let _db: Database | null = null
 
@@ -151,6 +151,7 @@ export const newRunId = () => generateId('run')
 export const newToolCallId = () => generateId('tc')
 export const newReviewId = () => generateId('rev')
 export const newJudgmentId = () => generateId('jud')
+export const newRevertId = () => generateId('rev_auto')
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -386,5 +387,40 @@ export function recordReview(rec: ReviewRecord): void {
       $converged: bool(parsed.converged),
       $abandoned: bool(parsed.abandoned),
     },
+  )
+}
+
+// ─── Auto-revert (iter 70, REQ-2.4) ──────────────────────────────────
+
+export interface AutoRevertRecord {
+  revert_id: string
+  original_pr_sha: string
+  revert_pr_number: number
+  branch_name: string
+  ts_opened: number
+  trigger_reasons: string[]
+}
+
+export function recordAutoRevert(rec: AutoRevertRecord): void {
+  if (!/^[0-9a-f]{4,64}$/i.test(rec.original_pr_sha)) {
+    throw new Error(`invalid original_pr_sha: ${rec.original_pr_sha}`)
+  }
+  if (rec.revert_pr_number <= 0 || !Number.isInteger(rec.revert_pr_number)) {
+    throw new Error(`invalid revert_pr_number: ${rec.revert_pr_number}`)
+  }
+  const db = openInstrumentationDb()
+  db.run(
+    `INSERT INTO auto_reverts (
+       revert_id, original_pr_sha, revert_pr_number,
+       branch_name, ts_opened, trigger_reasons_json
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      rec.revert_id,
+      rec.original_pr_sha,
+      rec.revert_pr_number,
+      rec.branch_name,
+      rec.ts_opened,
+      JSON.stringify(rec.trigger_reasons),
+    ],
   )
 }
