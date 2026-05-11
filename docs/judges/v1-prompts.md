@@ -1,16 +1,21 @@
 # asicode 3-panel judge prompts — v1
 
-> v1 panel: **Opus 4.x ⊗ Sonnet 4.6 ⊗ local Qwen 2.5-Coder 32B** (or DeepSeek-Coder V3 / Llama 4 — whichever is locally deployed). Subscription pricing means the marginal cost is $0 across all three; the constraint is **rate limits, latency, and signal-to-noise**, not dollars. Each judge receives the same input; the differentiator is the role prompt — what they're asked to *look for*.
+> v1 panel: **Opus 4.x ⊗ Sonnet 4.6 ⊗ local Qwen 2.5-Coder 32B** (or DeepSeek-Coder V3 / Llama 4 — whichever is locally deployed). Subscription pricing means the marginal *dollar* cost is $0 across all three; the binding constraints are **latency** (judges run on the merge-gate hot path) and **family diversity** (uncorrelated training data is what makes 3 judges actually 3 judges). Each judge receives the same input; the differentiator is the role prompt — what they're asked to *look for*.
 >
-> Initial role-to-model assignment (rotates monthly to surface model-specific biases):
+> **Role-to-model assignment is latency-shaped** (rotates monthly to surface model-specific biases):
 >
-> | Role | v1 model | Why |
-> |---|---|---|
-> | Correctness | Opus 4.x | strongest reasoning catches logic errors others miss |
-> | Code review | Sonnet 4.6 | idiom + style is a Sonnet strength; lower latency for the highest-volume role |
-> | QA / risk | local Qwen 2.5-Coder 32B (or DeepSeek-Coder V3) | different training corpus catches risk patterns Anthropic-family misses |
+> | Role | v1 model | Typical latency | Why |
+> |---|---|---|---|
+> | Correctness | Opus 4.x | 10–60s, high variance | logic-heavy diffs need ≥3-step reasoning; Opus's quality lift here justifies its latency |
+> | Code review | Sonnet 4.6 | 2–10s, low variance | idiom + style is pattern-match-shaped; Sonnet is as good as Opus here at 5–10× the speed |
+> | QA / risk | local Qwen 2.5-Coder 32B (or DeepSeek-Coder V3 / Llama 4) | varies by hardware | different training corpus catches risk patterns Anthropic-family misses; runs in own queue (no Anthropic rate-limit competition) |
 >
-> Fallback if local coder isn't deployed: temporary slot 3 = second Sonnet 4.6 with QA-risk prompt — knowingly correlated until the local model lands.
+> Panel modes (config-selectable):
+> - `quality` — Opus on every slot that can run Opus, 30–60s judgments, for high-stakes briefs
+> - `balanced` (default) — table above
+> - `fast` — Sonnet × 3 (or Sonnet × 2 + local), ~5s median, for high-volume low-risk work
+>
+> Fallback if local coder isn't deployed: temporary slot 3 = second Sonnet 4.6 with QA-risk prompt — knowingly correlated until the local model lands, but better than waiting on local hardware.
 
 ---
 
