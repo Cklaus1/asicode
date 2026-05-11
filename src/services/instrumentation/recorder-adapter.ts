@@ -160,26 +160,38 @@ export function adaptBeginRun(
 ): { briefId: string; runId: string } | undefined {
   if (!taskId) return undefined
   return tryV2(() => {
-    const briefId = newBriefId()
-    const runId = newRunId()
+    // REQ-36: when the spawn site (submit / race dispatcher) already
+    // minted brief+run rows it exports ASICODE_BRIEF_ID + ASICODE_RUN_ID.
+    // Reuse those ids to avoid duplicate rows. Fall back to fresh mint
+    // when unset (legacy entry path: agent launched without submit).
+    const envBrief = process.env.ASICODE_BRIEF_ID
+    const envRun = process.env.ASICODE_RUN_ID
+    const briefId = envBrief && envBrief.startsWith('brf_') ? envBrief : newBriefId()
+    const runId = envRun && envRun.startsWith('run_') ? envRun : newRunId()
     const now = Date.now()
-    recordBrief({
-      brief_id: briefId,
-      ts_submitted: now,
-      ts_accepted: now, // pre-A16, accept-by-default
-      project_path: cwd,
-      project_fingerprint: projectFingerprint,
-      user_text: initialPrompt,
-      a16_decision: opts?.a16Decision ?? 'accept',
-      v1_task_id: taskId,
-    })
-    recordRun({
-      run_id: runId,
-      brief_id: briefId,
-      ts_started: now,
-      isolation_mode: opts?.isolationMode ?? 'in_process',
-      outcome: 'in_flight',
-    })
+    // Only INSERT the brief when we minted it. When reusing an env-id,
+    // trust that submit/dispatcher already wrote the row.
+    if (!envBrief || briefId !== envBrief) {
+      recordBrief({
+        brief_id: briefId,
+        ts_submitted: now,
+        ts_accepted: now, // pre-A16, accept-by-default
+        project_path: cwd,
+        project_fingerprint: projectFingerprint,
+        user_text: initialPrompt,
+        a16_decision: opts?.a16Decision ?? 'accept',
+        v1_task_id: taskId,
+      })
+    }
+    if (!envRun || runId !== envRun) {
+      recordRun({
+        run_id: runId,
+        brief_id: briefId,
+        ts_started: now,
+        isolation_mode: opts?.isolationMode ?? 'in_process',
+        outcome: 'in_flight',
+      })
+    }
     map.set(taskId, {
       briefId,
       runId,

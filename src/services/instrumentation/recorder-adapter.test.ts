@@ -143,6 +143,88 @@ describe('failure tolerance', () => {
   })
 })
 
+describe('REQ-36 env-id reuse', () => {
+  let savedB: string | undefined, savedR: string | undefined
+  beforeEach(() => {
+    savedB = process.env.ASICODE_BRIEF_ID
+    savedR = process.env.ASICODE_RUN_ID
+    delete process.env.ASICODE_BRIEF_ID
+    delete process.env.ASICODE_RUN_ID
+  })
+  afterEach(() => {
+    if (savedB === undefined) delete process.env.ASICODE_BRIEF_ID
+    else process.env.ASICODE_BRIEF_ID = savedB
+    if (savedR === undefined) delete process.env.ASICODE_RUN_ID
+    else process.env.ASICODE_RUN_ID = savedR
+  })
+
+  test('reuses env ASICODE_BRIEF_ID + ASICODE_RUN_ID (no fresh inserts)', () => {
+    // Pre-seed brief + run rows as if submit/dispatcher created them.
+    const db = openInstrumentationDb()
+    const briefId = 'brf_seeded_xxx'
+    const runId = 'run_seeded_xxx'
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [briefId, Date.now(), '/p', 'fp', 'seeded', 'accept'],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome)
+       VALUES (?, ?, ?, ?, ?)`,
+      [runId, briefId, Date.now(), 'in_process', 'in_flight'],
+    )
+    process.env.ASICODE_BRIEF_ID = briefId
+    process.env.ASICODE_RUN_ID = runId
+    const ids = adaptBeginRun('v1-task-reuse', 'x', '/p', 'fp')
+    expect(ids).toBeDefined()
+    expect(ids!.briefId).toBe(briefId)
+    expect(ids!.runId).toBe(runId)
+    // Exactly one row each — no duplicate from adapter
+    const briefCount = (db.query('SELECT COUNT(*) AS n FROM briefs WHERE brief_id = ?').get(briefId) as { n: number }).n
+    const runCount = (db.query('SELECT COUNT(*) AS n FROM runs WHERE run_id = ?').get(runId) as { n: number }).n
+    expect(briefCount).toBe(1)
+    expect(runCount).toBe(1)
+  })
+
+  test('mints fresh ids when env not set (legacy entry path)', () => {
+    const ids = adaptBeginRun('v1-task-legacy', 'x', '/p', 'fp')
+    expect(ids).toBeDefined()
+    expect(ids!.briefId.startsWith('brf_')).toBe(true)
+    expect(ids!.runId.startsWith('run_')).toBe(true)
+    const db = openInstrumentationDb()
+    const n = (db.query('SELECT COUNT(*) AS n FROM briefs WHERE v1_task_id = ?').get('v1-task-legacy') as { n: number }).n
+    expect(n).toBe(1)
+  })
+
+  test('reuses brief id but mints fresh run when only ASICODE_BRIEF_ID is set', () => {
+    const db = openInstrumentationDb()
+    const briefId = 'brf_brief_only'
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [briefId, Date.now(), '/p', 'fp', 'x', 'accept'],
+    )
+    process.env.ASICODE_BRIEF_ID = briefId
+    // ASICODE_RUN_ID unset
+    const ids = adaptBeginRun('v1-task-mix', 'x', '/p', 'fp')
+    expect(ids!.briefId).toBe(briefId)
+    expect(ids!.runId).not.toBe('')
+    expect(ids!.runId.startsWith('run_')).toBe(true)
+    // Run row was minted
+    const runRow = db.query('SELECT brief_id FROM runs WHERE run_id = ?').get(ids!.runId) as { brief_id: string } | undefined
+    expect(runRow?.brief_id).toBe(briefId)
+  })
+
+  test('ignores garbage env values (not brf_/run_ prefixed)', () => {
+    process.env.ASICODE_BRIEF_ID = 'not-a-brief-id'
+    process.env.ASICODE_RUN_ID = 'not-a-run-id'
+    const ids = adaptBeginRun('v1-task-garbage', 'x', '/p', 'fp')
+    expect(ids!.briefId.startsWith('brf_')).toBe(true)
+    expect(ids!.runId.startsWith('run_')).toBe(true)
+    expect(ids!.briefId).not.toBe('not-a-brief-id')
+  })
+})
+
 describe('unknown taskId', () => {
   test('toolCall for taskId never begun is no-op', () => {
     expect(() => adaptToolCall('ghost-taskid', 'Bash')).not.toThrow()
