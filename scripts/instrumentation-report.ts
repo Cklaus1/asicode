@@ -88,6 +88,28 @@ interface Metrics {
   a8P50LatencyMs: number | null
   a8P99LatencyMs: number | null
   a8AvgPlannerRelevance: number | null
+  // A15 adversarial verifier stats
+  a15ReviewsRun: number
+  a15ReviewsWithFindings: number
+  a15FindingsCritical: number
+  a15FindingsHigh: number
+  a15FindingsMedium: number
+  a15FindingsLow: number
+  /** Per-PR averages (over the covered set, not all PRs). */
+  a15AvgFindingsPerReview: number | null
+  /** Catch-rate proxy: covered PRs that were later reverted/hotpatched. */
+  a15CoveredAndRegressed: number
+  a15CoveredAndCleanlyMerged: number
+  /** FP-rate proxy: findings on PRs that turned out clean. We can't fully
+   *  classify each individual finding, so the report shows the brief-level
+   *  shape: percent of covered briefs where the verifier raised >=1 finding
+   *  AND the brief later cleanly merged + survived 7d. Treat as upper-bound
+   *  FP signal. */
+  a15FalsePositiveUpperBound: number | null
+  /** Regression rate on adversarial-covered vs uncovered (for the
+   *  "halves regression on covered PRs" success bar). */
+  a15CoveredRegressionRate: number | null
+  a15UncoveredRegressionRate: number | null
 }
 
 function compute(db: Database, sinceMs: number): Metrics {
@@ -257,6 +279,127 @@ function compute(db: Database, sinceMs: number): Metrics {
     }
   }
 
+  // A15 adversarial verifier. One row per (run × review_kind='a15_adversarial').
+  // We pull aggregate findings + cross-reference with the briefs/runs/reviews
+  // tables to derive catch-rate and FP-rate proxies.
+  const a15Row = db
+    .query<
+      {
+        reviews_run: number
+        reviews_with_findings: number
+        crit: number
+        high: number
+        med: number
+        low: number
+      },
+      [number]
+    >(
+      `SELECT
+         COUNT(*) AS reviews_run,
+         SUM(CASE WHEN (findings_critical + findings_high + findings_medium + findings_low) > 0 THEN 1 ELSE 0 END) AS reviews_with_findings,
+         SUM(findings_critical) AS crit,
+         SUM(findings_high) AS high,
+         SUM(findings_medium) AS med,
+         SUM(findings_low) AS low
+       FROM reviews
+       WHERE review_kind = 'a15_adversarial' AND ts >= ?`,
+    )
+    .get(sinceMs) ?? { reviews_run: 0, reviews_with_findings: 0, crit: 0, high: 0, med: 0, low: 0 }
+
+  const a15ReviewsRun = a15Row.reviews_run ?? 0
+  const a15ReviewsWithFindings = a15Row.reviews_with_findings ?? 0
+  const a15FindingsCritical = a15Row.crit ?? 0
+  const a15FindingsHigh = a15Row.high ?? 0
+  const a15FindingsMedium = a15Row.med ?? 0
+  const a15FindingsLow = a15Row.low ?? 0
+  const totalFindings = a15FindingsCritical + a15FindingsHigh + a15FindingsMedium + a15FindingsLow
+  const a15AvgFindingsPerReview = a15ReviewsRun > 0 ? totalFindings / a15ReviewsRun : null
+
+  // Cross-reference: did the brief whose run got adversarial-covered later
+  // regress? Joins reviews → runs → briefs.
+  const a15CoverageRow = db
+    .query<
+      {
+        covered_total: number
+        covered_regressed: number
+        covered_cleanly_merged: number
+      },
+      [number]
+    >(
+      `SELECT
+         COUNT(DISTINCT runs.brief_id) AS covered_total,
+         COUNT(DISTINCT CASE WHEN briefs.reverted_within_7d + briefs.hotpatched_within_7d > 0 THEN runs.brief_id END) AS covered_regressed,
+         COUNT(DISTINCT CASE
+           WHEN briefs.pr_outcome IN ('merged_no_intervention', 'merged_with_intervention')
+            AND briefs.reverted_within_7d = 0
+            AND briefs.hotpatched_within_7d = 0
+           THEN runs.brief_id
+         END) AS covered_cleanly_merged
+       FROM reviews
+       JOIN runs ON runs.run_id = reviews.run_id
+       JOIN briefs ON briefs.brief_id = runs.brief_id
+       WHERE reviews.review_kind = 'a15_adversarial'
+         AND reviews.ts >= ?`,
+    )
+    .get(sinceMs) ?? { covered_total: 0, covered_regressed: 0, covered_cleanly_merged: 0 }
+
+  const a15CoveredAndRegressed = a15CoverageRow.covered_regressed ?? 0
+  const a15CoveredAndCleanlyMerged = a15CoverageRow.covered_cleanly_merged ?? 0
+  const a15CoveredRegressionRate =
+    a15CoverageRow.covered_total > 0
+      ? a15CoveredAndRegressed / a15CoverageRow.covered_total
+      : null
+
+  // FP upper-bound: covered briefs that had findings AND cleanly merged
+  // without regressing. Genuine FPs are a subset (some findings on those
+  // briefs may have been correctly flagging a risk that the merger
+  // accepted). Without a labeled corpus, this is the upper bound.
+  const a15FpRow = db
+    .query<{ flagged_and_clean: number; covered_total: number }, [number]>(
+      `SELECT
+         COUNT(DISTINCT CASE
+           WHEN (reviews.findings_critical + reviews.findings_high + reviews.findings_medium + reviews.findings_low) > 0
+            AND briefs.pr_outcome IN ('merged_no_intervention', 'merged_with_intervention')
+            AND briefs.reverted_within_7d = 0
+            AND briefs.hotpatched_within_7d = 0
+           THEN runs.brief_id
+         END) AS flagged_and_clean,
+         COUNT(DISTINCT runs.brief_id) AS covered_total
+       FROM reviews
+       JOIN runs ON runs.run_id = reviews.run_id
+       JOIN briefs ON briefs.brief_id = runs.brief_id
+       WHERE reviews.review_kind = 'a15_adversarial'
+         AND reviews.ts >= ?`,
+    )
+    .get(sinceMs) ?? { flagged_and_clean: 0, covered_total: 0 }
+
+  const a15FalsePositiveUpperBound =
+    a15FpRow.covered_total > 0 ? a15FpRow.flagged_and_clean / a15FpRow.covered_total : null
+
+  // Uncovered regression rate: briefs that produced merged PRs but never
+  // had an adversarial review run on their final run.
+  const a15UncoveredRow = db
+    .query<{ uncovered_total: number; uncovered_regressed: number }, [number]>(
+      `SELECT
+         COUNT(*) AS uncovered_total,
+         SUM(reverted_within_7d + hotpatched_within_7d) AS uncovered_regressed
+       FROM briefs
+       WHERE pr_outcome IN ('merged_no_intervention', 'merged_with_intervention')
+         AND ts_completed >= ?
+         AND brief_id NOT IN (
+           SELECT DISTINCT runs.brief_id
+           FROM reviews
+           JOIN runs ON runs.run_id = reviews.run_id
+           WHERE reviews.review_kind = 'a15_adversarial'
+         )`,
+    )
+    .get(sinceMs) ?? { uncovered_total: 0, uncovered_regressed: 0 }
+
+  const a15UncoveredRegressionRate =
+    a15UncoveredRow.uncovered_total > 0
+      ? (a15UncoveredRow.uncovered_regressed ?? 0) / a15UncoveredRow.uncovered_total
+      : null
+
   // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 5)
   // Components that are null become 0 in the composite (be honest about gaps).
   const aiComponents =
@@ -295,6 +438,18 @@ function compute(db: Database, sinceMs: number): Metrics {
     a8P50LatencyMs,
     a8P99LatencyMs,
     a8AvgPlannerRelevance,
+    a15ReviewsRun,
+    a15ReviewsWithFindings,
+    a15FindingsCritical,
+    a15FindingsHigh,
+    a15FindingsMedium,
+    a15FindingsLow,
+    a15AvgFindingsPerReview,
+    a15CoveredAndRegressed,
+    a15CoveredAndCleanlyMerged,
+    a15FalsePositiveUpperBound,
+    a15CoveredRegressionRate,
+    a15UncoveredRegressionRate,
   }
 }
 
@@ -369,6 +524,42 @@ function render(m: Metrics, sinceDays: number): string {
     }
     if (m.a8AvgPlannerRelevance !== null) {
       lines.push(`  Avg planner relevance   ${m.a8AvgPlannerRelevance.toFixed(2)} / 5    (target ≥ 3.5 for ≥30% hit rate)`)
+    }
+    lines.push('')
+  }
+
+  // A15 adversarial verifier section — same conditional render pattern.
+  // GOALS.md A15 success criteria:
+  //   - Catch rate ≥ 50% (on seeded-bug corpus; can't compute without it)
+  //   - FP rate ≤ 15%
+  //   - Regression rate on adversarial-covered ≤ 50% of baseline
+  //   - Cost ceiling ≤ 30% of brief budget
+  // The report surfaces what we CAN compute: per-severity findings,
+  // covered vs uncovered regression rate (the "halves regression" check),
+  // and an FP upper bound.
+  if (m.a15ReviewsRun > 0) {
+    lines.push('A15 adversarial verifier')
+    lines.push(`  Reviews run             ${String(m.a15ReviewsRun).padStart(4)}    (briefs covered: ${m.a15CoveredAndCleanlyMerged + m.a15CoveredAndRegressed})`)
+    const totalFindings = m.a15FindingsCritical + m.a15FindingsHigh + m.a15FindingsMedium + m.a15FindingsLow
+    lines.push(`  Findings                ${String(totalFindings).padStart(4)}    critical ${m.a15FindingsCritical}  high ${m.a15FindingsHigh}  medium ${m.a15FindingsMedium}  low ${m.a15FindingsLow}`)
+    if (m.a15AvgFindingsPerReview !== null) {
+      lines.push(`  Avg findings / review   ${m.a15AvgFindingsPerReview.toFixed(2)}`)
+    }
+
+    if (m.a15CoveredRegressionRate !== null && m.a15UncoveredRegressionRate !== null) {
+      lines.push(
+        `  Regression: covered     ${fmtPct(m.a15CoveredRegressionRate)}    vs uncovered ${fmtPct(m.a15UncoveredRegressionRate)}    (target: halve)`,
+      )
+      const halved =
+        m.a15UncoveredRegressionRate > 0 &&
+        m.a15CoveredRegressionRate <= m.a15UncoveredRegressionRate * 0.5
+      lines.push(`  Halves regression       ${halved ? '✓' : '✗'}`)
+    } else if (m.a15CoveredRegressionRate !== null) {
+      lines.push(`  Regression on covered   ${fmtPct(m.a15CoveredRegressionRate)}    (no uncovered baseline to compare)`)
+    }
+
+    if (m.a15FalsePositiveUpperBound !== null) {
+      lines.push(`  FP upper bound          ${fmtPct(m.a15FalsePositiveUpperBound)}    (target ≤ 15%)`)
     }
     lines.push('')
   }

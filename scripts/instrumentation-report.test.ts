@@ -318,3 +318,158 @@ describe('A8 plan-retrieval section', () => {
     expect(stdout).toContain('Latency p50 / p99       42 ms / 42 ms')
   })
 })
+
+describe('A15 adversarial verifier section', () => {
+  function seedBriefWithOutcome(
+    db: Database,
+    briefId: string,
+    ts: number,
+    outcome: 'merged_no_intervention' | 'merged_with_intervention' | 'abandoned',
+    reverted: 0 | 1 = 0,
+    hotpatched: 0 | 1 = 0,
+  ) {
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, ts_completed, project_path,
+         project_fingerprint, user_text, a16_decision, pr_sha, pr_outcome,
+         reverted_within_7d, hotpatched_within_7d)
+       VALUES (?, ?, ?, '/p', 'fp', 'x', 'accept', 'sha-' || ?, ?, ?, ?)`,
+      [briefId, ts - 1000, ts, briefId, outcome, reverted, hotpatched],
+    )
+  }
+
+  function seedRun(db: Database, runId: string, briefId: string, ts: number) {
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed,
+         isolation_mode, outcome)
+       VALUES (?, ?, ?, ?, 'in_process', 'completed')`,
+      [runId, briefId, ts, ts + 100],
+    )
+  }
+
+  function seedAdversarialReview(
+    db: Database,
+    runId: string,
+    ts: number,
+    findings: { critical: number; high: number; medium: number; low: number },
+  ) {
+    db.run(
+      `INSERT INTO reviews (review_id, run_id, review_kind, iteration, ts,
+         reviewer_model, findings_critical, findings_high, findings_medium,
+         findings_low, converged, abandoned)
+       VALUES (?, ?, 'a15_adversarial', 1, ?, 'opus', ?, ?, ?, ?, ?, 0)`,
+      [
+        `rev-${runId}`,
+        runId,
+        ts,
+        findings.critical,
+        findings.high,
+        findings.medium,
+        findings.low,
+        findings.critical + findings.high + findings.medium + findings.low === 0 ? 1 : 0,
+      ],
+    )
+  }
+
+  test('section omitted when no adversarial reviews exist', () => {
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('A15 adversarial')
+  })
+
+  test('renders findings tally and covered/uncovered split', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+
+    // 3 covered briefs (with adversarial reviews):
+    //   b1: 2 findings, cleanly merged
+    //   b2: 1 finding, regressed (reverted)
+    //   b3: 0 findings, cleanly merged
+    seedBriefWithOutcome(db, 'b1', now, 'merged_no_intervention', 0, 0)
+    seedBriefWithOutcome(db, 'b2', now, 'merged_no_intervention', 1, 0)
+    seedBriefWithOutcome(db, 'b3', now, 'merged_no_intervention', 0, 0)
+    seedRun(db, 'run1', 'b1', now)
+    seedRun(db, 'run2', 'b2', now)
+    seedRun(db, 'run3', 'b3', now)
+    seedAdversarialReview(db, 'run1', now, { critical: 0, high: 1, medium: 1, low: 0 })
+    seedAdversarialReview(db, 'run2', now, { critical: 1, high: 0, medium: 0, low: 0 })
+    seedAdversarialReview(db, 'run3', now, { critical: 0, high: 0, medium: 0, low: 0 })
+
+    // 2 uncovered briefs (no adversarial review): one regressed, one clean
+    seedBriefWithOutcome(db, 'u1', now, 'merged_no_intervention', 1, 0)
+    seedBriefWithOutcome(db, 'u2', now, 'merged_no_intervention', 0, 0)
+    seedRun(db, 'run-u1', 'u1', now)
+    seedRun(db, 'run-u2', 'u2', now)
+
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('A15 adversarial verifier')
+    expect(stdout).toMatch(/Reviews run\s+3\s+\(briefs covered: 3\)/)
+    // Findings: 1 critical + 1 high + 1 medium + 0 low = 3 total
+    expect(stdout).toMatch(/Findings\s+3\s+critical 1\s+high 1\s+medium 1\s+low 0/)
+    expect(stdout).toContain('Avg findings / review   1.00')
+    // Covered regression: 1/3 = 33%; uncovered: 1/2 = 50%
+    expect(stdout).toMatch(/covered\s+33%\s+vs uncovered\s+50%/)
+  })
+
+  test('halves-regression check fires when covered ≤ 0.5 × uncovered', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 4 covered, 1 regressed → 25%
+    for (let i = 1; i <= 4; i++) {
+      seedBriefWithOutcome(db, `b${i}`, now, 'merged_no_intervention', i === 1 ? 1 : 0, 0)
+      seedRun(db, `run${i}`, `b${i}`, now)
+      seedAdversarialReview(db, `run${i}`, now, { critical: 0, high: 0, medium: 0, low: 0 })
+    }
+    // 4 uncovered, 3 regressed → 75%
+    for (let i = 1; i <= 4; i++) {
+      seedBriefWithOutcome(db, `u${i}`, now, 'merged_no_intervention', i <= 3 ? 1 : 0, 0)
+      seedRun(db, `run-u${i}`, `u${i}`, now)
+    }
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    // 25% ≤ 0.5 × 75% (= 37.5%) → halves check passes
+    expect(stdout).toContain('Halves regression       ✓')
+  })
+
+  test('halves-regression check fails when covered > 0.5 × uncovered', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 4 covered, 3 regressed → 75%
+    for (let i = 1; i <= 4; i++) {
+      seedBriefWithOutcome(db, `b${i}`, now, 'merged_no_intervention', i <= 3 ? 1 : 0, 0)
+      seedRun(db, `run${i}`, `b${i}`, now)
+      seedAdversarialReview(db, `run${i}`, now, { critical: 0, high: 0, medium: 0, low: 0 })
+    }
+    // 4 uncovered, 1 regressed → 25%
+    for (let i = 1; i <= 4; i++) {
+      seedBriefWithOutcome(db, `u${i}`, now, 'merged_no_intervention', i === 1 ? 1 : 0, 0)
+      seedRun(db, `run-u${i}`, `u${i}`, now)
+    }
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    // 75% > 0.5 × 25% → halves check fails
+    expect(stdout).toContain('Halves regression       ✗')
+  })
+
+  test('FP upper bound reported when findings exist on cleanly-merged briefs', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 2 covered: both clean-merged, one had findings → FP UB = 1/2 = 50%
+    seedBriefWithOutcome(db, 'b1', now, 'merged_no_intervention', 0, 0)
+    seedBriefWithOutcome(db, 'b2', now, 'merged_no_intervention', 0, 0)
+    seedRun(db, 'run1', 'b1', now)
+    seedRun(db, 'run2', 'b2', now)
+    seedAdversarialReview(db, 'run1', now, { critical: 0, high: 1, medium: 0, low: 0 })
+    seedAdversarialReview(db, 'run2', now, { critical: 0, high: 0, medium: 0, low: 0 })
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/FP upper bound\s+50%/)
+  })
+})
