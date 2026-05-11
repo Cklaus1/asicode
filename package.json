@@ -52,6 +52,7 @@
     "doctor:report": "bun run scripts/system-check.ts --out reports/doctor-runtime.json",
     "instrumentation:migrate": "bun run scripts/instrumentation-migrate.ts",
     "instrumentation:status": "bun run scripts/instrumentation-migrate.ts --status",
+    "instrumentation:report": "bun run scripts/instrumentation-report.ts",
     "setup:trainloop": "bun run scripts/setup-trainloop.ts",
     "hardening:check": "bun run smoke && bun run doctor:runtime",
     "hardening:strict": "bun run typecheck && bun run hardening:check",

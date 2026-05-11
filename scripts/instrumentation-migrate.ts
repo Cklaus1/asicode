@@ -44,7 +44,7 @@ interface Args {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
-    db: join(homedir(), '.asicode', 'instrumentation.db'),
+    db: process.env.ASICODE_INSTRUMENTATION_DB ?? join(homedir(), '.asicode', 'instrumentation.db'),
     status: false,
     dryRun: false,
     migrationsDir: join(import.meta.dir, '..', 'migrations', 'instrumentation'),
