@@ -845,3 +845,110 @@ describe('Calibration drift section (iter 76, REQ-4.3)', () => {
     expect(stdout).toMatch(/3d ago/)
   })
 })
+
+// REQ-23: race + verifier section.
+describe('Race + verifier section (REQ-23)', () => {
+  function seedBriefMin(db: Database, briefId: string, ts: number) {
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [briefId, ts, '/p', 'fp', 'b', 'accept'],
+    )
+  }
+  function seedRacer(db: Database, runId: string, briefId: string, idx: number, winner: boolean, verify: 'passed' | 'failed' | 'verifier_error' | null) {
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, verify_outcome, verify_exit_code, verify_duration_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [runId, briefId, Date.now() - 5000 + idx, Date.now() - 1000 + idx, 'worktree', 'completed', idx, winner ? 1 : 0,
+       verify, verify === 'passed' ? 0 : verify === 'failed' ? 1 : null, verify ? 200 + idx : null],
+    )
+  }
+
+  test('section omitted when no races ran', () => {
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('Race + verifier')
+  })
+
+  test('renders race count + winner pass rate when ≥1 race ran', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 3 races: 2 winners passed, 1 winner failed
+    seedBriefMin(db, 'b1', now)
+    seedRacer(db, 'r1a', 'b1', 0, true, 'passed')
+    seedRacer(db, 'r1b', 'b1', 1, false, 'failed')
+    seedBriefMin(db, 'b2', now)
+    seedRacer(db, 'r2a', 'b2', 0, true, 'passed')
+    seedRacer(db, 'r2b', 'b2', 1, false, 'verifier_error')
+    seedBriefMin(db, 'b3', now)
+    seedRacer(db, 'r3a', 'b3', 0, true, 'failed')
+    seedRacer(db, 'r3b', 'b3', 1, false, 'failed')
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Race + verifier')
+    expect(stdout).toMatch(/Races\s+3\s+\(briefs with ≥2 racers\)/)
+    // Winner passed = 2 / 3 ≈ 67%
+    expect(stdout).toContain('Winner passed')
+    expect(stdout).toMatch(/Winner passed\s+67%/)
+    expect(stdout).toMatch(/Winner failed\s+1\s+\(PR gated by REQ-20\)/)
+  })
+
+  test('racer pass rate aggregates across all racers', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 2 races, 2 racers each: 3 passed, 1 failed → 75%
+    seedBriefMin(db, 'b1', now)
+    seedRacer(db, 'r1a', 'b1', 0, true, 'passed')
+    seedRacer(db, 'r1b', 'b1', 1, false, 'passed')
+    seedBriefMin(db, 'b2', now)
+    seedRacer(db, 'r2a', 'b2', 0, true, 'passed')
+    seedRacer(db, 'r2b', 'b2', 1, false, 'failed')
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/Racer pass rate\s+75%/)
+  })
+
+  test('a single-spawn brief is excluded (needs ≥2 worktree runs)', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    seedBriefMin(db, 'b1', Date.now())
+    seedRacer(db, 'r1', 'b1', 0, true, 'passed')  // only 1 racer
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('Race + verifier')
+  })
+
+  test('verifier-off winners surface separately', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedBriefMin(db, 'b1', now)
+    seedRacer(db, 'r1a', 'b1', 0, true, null)  // verifier didn't run
+    seedRacer(db, 'r1b', 'b1', 1, false, null)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Race + verifier')
+    expect(stdout).toMatch(/Winner verify off\s+1/)
+  })
+
+  test('out-of-window races excluded by --since', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const longAgo = Date.now() - 30 * 24 * 60 * 60 * 1000  // 30d
+    seedBriefMin(db, 'old', longAgo)
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, verify_outcome)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['r_old_a', 'old', longAgo, longAgo + 1000, 'worktree', 'completed', 0, 1, 'passed'],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, verify_outcome)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['r_old_b', 'old', longAgo, longAgo + 1000, 'worktree', 'completed', 1, 0, 'failed'],
+    )
+    db.close()
+    const { stdout } = runReport(dbPath, ['--since', '7d'])
+    expect(stdout).not.toContain('Race + verifier')
+  })
+})

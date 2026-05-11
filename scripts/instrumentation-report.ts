@@ -145,6 +145,17 @@ interface Metrics {
   /** Window-total count of drift runs (so the report can say "30 runs, 2 with drift"). */
   driftRunsInWindow: number
   driftRunsWithDriftInWindow: number
+  // REQ-23: race + verifier (REQ-18..21). Computed over briefs in
+  // the window that had a worktree race. Null when no races ran.
+  raceBriefs: number              // briefs with ≥2 worktree runs in window
+  raceWinnerPassed: number        // winner verify_outcome='passed'
+  raceWinnerFailed: number        // winner verify_outcome='failed'
+  raceWinnerVerifyError: number   // winner verify_outcome='verifier_error'
+  raceWinnerVerifyAbsent: number  // winner ran but verifier didn't (REQ-18 off)
+  raceWinnerPassRate: number | null
+  raceRacerPassRate: number | null  // % of all racers across all races that passed
+  raceTotalRacers: number
+  raceTotalRacersPassed: number
 }
 
 function compute(db: Database, sinceMs: number): Metrics {
@@ -532,6 +543,53 @@ function compute(db: Database, sinceMs: number): Metrics {
     // Table may not exist yet on pre-0004 dbs — silently treat as no runs.
   }
 
+  // REQ-23: race + verifier aggregation. A "race brief" has ≥2
+  // worktree runs in the window. Of those, count winner verify
+  // outcomes + total/passed racers. Soft-fails on pre-0006 dbs
+  // (verify_outcome column missing) by treating all as absent.
+  let raceBriefs = 0, raceWinnerPassed = 0, raceWinnerFailed = 0,
+      raceWinnerVerifyError = 0, raceWinnerVerifyAbsent = 0,
+      raceTotalRacers = 0, raceTotalRacersPassed = 0
+  try {
+    // Brief-level winner outcomes
+    const winnerRows = db.query<{ verify_outcome: string | null; n: number }, [number]>(
+      `WITH race_briefs AS (
+         SELECT brief_id FROM runs WHERE isolation_mode='worktree' AND ts_started >= ?
+         GROUP BY brief_id HAVING COUNT(*) >= 2
+       )
+       SELECT runs.verify_outcome AS verify_outcome, COUNT(*) AS n
+       FROM runs
+       JOIN race_briefs USING (brief_id)
+       WHERE runs.was_race_winner = 1
+       GROUP BY runs.verify_outcome`,
+    ).all(sinceMs)
+    for (const row of winnerRows) {
+      raceBriefs += row.n
+      if (row.verify_outcome === 'passed') raceWinnerPassed += row.n
+      else if (row.verify_outcome === 'failed') raceWinnerFailed += row.n
+      else if (row.verify_outcome === 'verifier_error') raceWinnerVerifyError += row.n
+      else raceWinnerVerifyAbsent += row.n
+    }
+    // Racer-level pass rate (across all racers in all races)
+    const racerRow = db.query<{ total: number; passed: number }, [number]>(
+      `WITH race_briefs AS (
+         SELECT brief_id FROM runs WHERE isolation_mode='worktree' AND ts_started >= ?
+         GROUP BY brief_id HAVING COUNT(*) >= 2
+       )
+       SELECT COUNT(*) AS total,
+              SUM(CASE WHEN runs.verify_outcome='passed' THEN 1 ELSE 0 END) AS passed
+       FROM runs JOIN race_briefs USING (brief_id)
+       WHERE runs.verify_outcome IS NOT NULL`,
+    ).get(sinceMs)
+    raceTotalRacers = racerRow?.total ?? 0
+    raceTotalRacersPassed = racerRow?.passed ?? 0
+  } catch {
+    // Pre-0006 schema (no verify_outcome column) — leave at 0.
+  }
+  const raceVerifyMeasured = raceWinnerPassed + raceWinnerFailed + raceWinnerVerifyError
+  const raceWinnerPassRate = raceVerifyMeasured > 0 ? raceWinnerPassed / raceVerifyMeasured : null
+  const raceRacerPassRate = raceTotalRacers > 0 ? raceTotalRacersPassed / raceTotalRacers : null
+
   // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 5)
   // Components that are null become 0 in the composite (be honest about gaps).
   const aiComponents =
@@ -596,6 +654,15 @@ function compute(db: Database, sinceMs: number): Metrics {
     driftLatest,
     driftRunsInWindow,
     driftRunsWithDriftInWindow,
+    raceBriefs,
+    raceWinnerPassed,
+    raceWinnerFailed,
+    raceWinnerVerifyError,
+    raceWinnerVerifyAbsent,
+    raceWinnerPassRate,
+    raceRacerPassRate,
+    raceTotalRacers,
+    raceTotalRacersPassed,
   }
 }
 
@@ -768,6 +835,28 @@ function render(m: Metrics, sinceDays: number): string {
     // Only nudge when the user has at least started using brief-gate
     // (otherwise drift detection is several steps away).
     lines.push('Calibration drift       no runs yet — run `bun run instrumentation:drift --baseline`')
+    lines.push('')
+  }
+
+  // REQ-23: race + verifier section. Renders when at least one race
+  // ran in the window. This is the leading indicator for the
+  // "verifiably correct PR" northstar — what fraction of races
+  // produced a passing winner?
+  if (m.raceBriefs > 0) {
+    lines.push('Race + verifier')
+    lines.push(`  Races                   ${String(m.raceBriefs).padStart(4)}    (briefs with ≥2 racers)`)
+    const measured = m.raceWinnerPassed + m.raceWinnerFailed + m.raceWinnerVerifyError
+    if (measured > 0) {
+      lines.push(`  Winner passed           ${fmtPct(m.raceWinnerPassRate)}    (${m.raceWinnerPassed}/${measured} with verifier)`)
+      if (m.raceWinnerFailed > 0) lines.push(`  Winner failed           ${String(m.raceWinnerFailed).padStart(4)}    (PR gated by REQ-20)`)
+      if (m.raceWinnerVerifyError > 0) lines.push(`  Winner verifier err     ${String(m.raceWinnerVerifyError).padStart(4)}    (timeout/throw — investigate ASICODE_VERIFY_CMD)`)
+    }
+    if (m.raceWinnerVerifyAbsent > 0) {
+      lines.push(`  Winner verify off       ${String(m.raceWinnerVerifyAbsent).padStart(4)}    (no ASICODE_VERIFY_CMD — winner picked by FCFS)`)
+    }
+    if (m.raceRacerPassRate !== null) {
+      lines.push(`  Racer pass rate         ${fmtPct(m.raceRacerPassRate)}    (${m.raceTotalRacersPassed}/${m.raceTotalRacers} across all races)`)
+    }
     lines.push('')
   }
 
