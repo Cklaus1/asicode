@@ -216,6 +216,9 @@ export interface TrendSnapshot {
   handsOffRate: number | null
   merged: number
   regressionRate: number | null
+  // REQ-54: abandonment rate over the prev window.
+  abandonedTotal: number
+  abandonmentRate: number | null  // abandoned / briefsCompleted
 }
 export function computeTrend(db: Database, fromMs: number, toMs: number): TrendSnapshot {
   try {
@@ -241,13 +244,22 @@ export function computeTrend(db: Database, fromMs: number, toMs: number): TrendS
       ).get(fromMs, toMs) ?? { merged: 0, regressed: 0 }
     const merged = regRow.merged ?? 0
     const regressed = regRow.regressed ?? 0
+    // REQ-54: abandonment count over the prev window.
+    const abRow = db
+      .query<{ abandoned: number }, [number, number]>(
+        `SELECT COUNT(*) AS abandoned FROM briefs
+         WHERE pr_outcome = 'abandoned' AND ts_submitted >= ? AND ts_submitted < ?`,
+      ).get(fromMs, toMs) ?? { abandoned: 0 }
+    const abandonedTotal = abRow.abandoned ?? 0
     return {
       briefsCompleted, merged,
       handsOffRate: briefsCompleted > 0 ? handsOff / briefsCompleted : null,
       regressionRate: merged > 0 ? regressed / merged : null,
+      abandonedTotal,
+      abandonmentRate: briefsCompleted > 0 ? abandonedTotal / briefsCompleted : null,
     }
   } catch {
-    return { briefsCompleted: 0, merged: 0, handsOffRate: null, regressionRate: null }
+    return { briefsCompleted: 0, merged: 0, handsOffRate: null, regressionRate: null, abandonedTotal: 0, abandonmentRate: null }
   }
 }
 
@@ -1031,7 +1043,11 @@ function render(m: Metrics, sinceDays: number, prev?: TrendSnapshot): string {
   // typed reasons; unattributed counts pre-REQ-46/48 rows.
   if (m.abandonedTotal > 0) {
     lines.push('Abandonment reasons')
-    lines.push(`  Total                   ${String(m.abandonedTotal).padStart(4)}    (briefs with pr_outcome=abandoned)`)
+    // REQ-54: abandonment rate W-o-W delta.
+    const currRate = m.briefsCompleted > 0 ? m.abandonedTotal / m.briefsCompleted : null
+    const dAB = prev ? fmtDelta(currRate, prev.abandonmentRate, prev.briefsCompleted) : ''
+    const rateStr = currRate !== null ? fmtPct(currRate) : '  n/a'
+    lines.push(`  Total                   ${String(m.abandonedTotal).padStart(4)}    (${rateStr} of ${m.briefsCompleted} completed)${dAB}`)
     for (const { prefix, n } of m.abandonReasons) {
       lines.push(`    ${prefix.padEnd(36)}${String(n).padStart(4)}`)
     }

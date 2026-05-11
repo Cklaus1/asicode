@@ -1167,6 +1167,38 @@ describe('Trend deltas (REQ-50)', () => {
     expect(stdout).toContain('flat vs prev W')
   })
 
+  // REQ-54: abandonment rate trend
+  test('REQ-54: abandonment rate shows W-o-W delta', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // Prev window: 1 abandoned of 4 completed = 25%
+    for (let i = 0; i < 3; i++) seedBrief(db, `p${i}`, 'merged_no_intervention', now - 10 * ONE_DAY)
+    seedBrief(db, 'p_ab', 'abandoned', now - 10 * ONE_DAY)
+    // Curr window: 2 abandoned of 4 = 50%
+    for (let i = 0; i < 2; i++) seedBrief(db, `c${i}`, 'merged_no_intervention', now - 1 * ONE_DAY)
+    for (let i = 0; i < 2; i++) seedBrief(db, `c_ab${i}`, 'abandoned', now - 1 * ONE_DAY)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    // Total line carries the rate + delta
+    expect(stdout).toMatch(/Total\s+2\s+\(\s*50% of 4 completed\)\s+\(↑25pp from prev W\)/)
+  })
+
+  test('REQ-54: abandonment delta omitted when prev sample too small', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // Prev: 1 brief only — below minN
+    seedBrief(db, 'p0', 'merged_no_intervention', now - 10 * ONE_DAY)
+    // Curr: 4 abandoned
+    for (let i = 0; i < 4; i++) seedBrief(db, `c${i}`, 'abandoned', now - 1 * ONE_DAY)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Abandonment reasons')
+    // Line has the rate but no delta annotation
+    expect(stdout).toMatch(/Total\s+4\s+\(100% of 4 completed\)\s*$/m)
+  })
+
   test('empty prev window → no delta even if curr has data', () => {
     const db = new Database(dbPath)
     db.exec('PRAGMA foreign_keys = ON')
