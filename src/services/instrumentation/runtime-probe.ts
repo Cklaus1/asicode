@@ -91,6 +91,7 @@ const NORTHSTAR_ENRICHMENT: readonly string[] = [
   'plan-retrieval',
   'pr-comment',
   'brief-veto',
+  'auto-revert',
 ]
 
 /**
@@ -167,6 +168,12 @@ function fixFor(capability: string, observedReason?: string): ReadinessBlocker {
         // brief-veto requires brief-gate (which generates the verdict)
         // — chain the two flags so the user sees what to set together.
         fix: 'export ASICODE_BRIEF_GATE_ENABLED=1 && export ASICODE_BRIEF_VETO_ENABLED=1',
+      }
+    case 'auto-revert':
+      return {
+        capability,
+        reason: observedReason ?? 'auto-revert on rollback off',
+        fix: 'export ASICODE_AUTO_REVERT_ENABLED=1',
       }
     default:
       return {
@@ -392,6 +399,7 @@ export async function probeRuntime(): Promise<ProbeReport> {
     { flag: 'ASICODE_PLAN_RETRIEVAL_ENABLED', capability: 'plan-retrieval', needsProvider: true, expectation: 'A8: embedding index of past attempts' },
     { flag: 'ASICODE_PR_COMMENT_ENABLED', capability: 'pr-comment', needsProvider: false, expectation: 'iter 54: post judge verdict as GitHub PR comment' },
     { flag: 'ASICODE_BRIEF_VETO_ENABLED', capability: 'brief-veto', needsProvider: false, expectation: 'iter 63: enforce A16 reject decisions — abort runs on bad briefs' },
+    { flag: 'ASICODE_AUTO_REVERT_ENABLED', capability: 'auto-revert', needsProvider: false, expectation: 'iter 69: auto-open a revert PR when ship-it verdict is rollback' },
   ]
 
   for (const f of optInFlags) {

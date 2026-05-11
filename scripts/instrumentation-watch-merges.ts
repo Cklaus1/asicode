@@ -87,6 +87,12 @@ function formatTickResult(r: Awaited<ReturnType<typeof pollMergedPrs>>): string 
     }
   }
   if (r.shipItPending) parts.push(`ship-it-pending=${r.shipItPending}`)
+  if (r.revertsOpened.length) {
+    parts.push(`auto-reverts=${r.revertsOpened.length}`)
+    for (const rv of r.revertsOpened) {
+      parts.push(`  ↻ pr#${rv.revertPrNumber} reverts ${rv.prSha.slice(0, 8)}`)
+    }
+  }
   if (r.errors.length) {
     parts.push(`errors=${r.errors.length}`)
     for (const e of r.errors) parts.push(`  ! ${e}`)

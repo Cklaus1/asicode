@@ -103,6 +103,8 @@ export interface PollResult {
   shipItPosted: Array<{ prSha: string; prNumber: number; verdict: string }>
   /** Ship-it candidates that were still pending after this tick (iter 60). */
   shipItPending: number
+  /** Auto-revert PRs opened this tick (iter 69, REQ-2.3). */
+  revertsOpened: Array<{ prSha: string; revertPrNumber: number; url: string }>
   /** Errors that surfaced. */
   errors: string[]
 }
@@ -163,6 +165,7 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
     unmatchable: 0,
     shipItPosted: [],
     shipItPending: 0,
+    revertsOpened: [],
     errors: [],
   }
 
@@ -315,6 +318,39 @@ async function processPendingShipIts(result: PollResult): Promise<void> {
       } catch (e) {
         result.errors.push(
           `ship-it post threw for ${p.prSha}: ${e instanceof Error ? e.message : String(e)}`,
+        )
+      }
+    }
+
+    // Iter 69 (REQ-2.3): when verdict is 'rollback', open an
+    // auto-revert PR. Lazy-require to keep watch-merges importable
+    // without pulling the auto-revert tree when the flag is off.
+    if (verdict.verdict === 'rollback') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const autoRevert =
+          require('../auto-revert/trigger.js') as typeof import('../auto-revert/trigger')
+        if (autoRevert.isAutoRevertEnabled()) {
+          const opened = await autoRevert.openRevertPr({
+            prSha: p.prSha,
+            result: verdict,
+            repoPath: p.projectPath,
+          })
+          if (opened.ok) {
+            result.revertsOpened.push({
+              prSha: p.prSha,
+              revertPrNumber: opened.prNumber,
+              url: opened.url,
+            })
+          } else if (opened.reason !== 'opt_out') {
+            result.errors.push(
+              `auto-revert ${opened.reason} for ${p.prSha}${opened.detail ? `: ${opened.detail}` : ''}`,
+            )
+          }
+        }
+      } catch (e) {
+        result.errors.push(
+          `auto-revert threw for ${p.prSha}: ${e instanceof Error ? e.message : String(e)}`,
         )
       }
     }

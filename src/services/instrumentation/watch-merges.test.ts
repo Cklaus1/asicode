@@ -210,4 +210,13 @@ describe('pollMergedPrs — pending ship-it processing (iter 60)', () => {
     // No matched PRs and no pending → pending count stays 0.
     expect(r.shipItPending).toBe(0)
   })
+
+  test('iter 69: result includes revertsOpened field', async () => {
+    const { pollMergedPrs } = await import('./watch-merges.js')
+    const r = await pollMergedPrs(repoDir)
+    expect(r).toHaveProperty('revertsOpened')
+    expect(Array.isArray(r.revertsOpened)).toBe(true)
+    // Empty when no rollbacks pending
+    expect(r.revertsOpened).toEqual([])
+  })
 })

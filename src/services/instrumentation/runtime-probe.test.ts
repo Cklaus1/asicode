@@ -29,6 +29,7 @@ const ENV_KEYS = [
   'ASICODE_PLAN_RETRIEVAL_ENABLED',
   'ASICODE_PR_COMMENT_ENABLED',
   'ASICODE_BRIEF_VETO_ENABLED',
+  'ASICODE_AUTO_REVERT_ENABLED',
 ]
 
 let savedEnv: Record<string, string | undefined>
@@ -69,6 +70,7 @@ describe('probeRuntime — empty environment', () => {
     expect(r.unconfigured).toContain('plan-retrieval')
     expect(r.unconfigured).toContain('pr-comment')
     expect(r.unconfigured).toContain('brief-veto')
+    expect(r.unconfigured).toContain('auto-revert')
     expect(r.unconfigured).toContain('watch-merges')
   })
 })
@@ -207,6 +209,7 @@ describe('probeRuntime — opt-in flags', () => {
     process.env.ASICODE_PLAN_RETRIEVAL_ENABLED = '1'
     process.env.ASICODE_PR_COMMENT_ENABLED = '1'
     process.env.ASICODE_BRIEF_VETO_ENABLED = '1'
+    process.env.ASICODE_AUTO_REVERT_ENABLED = '1'
     const r = await probeRuntime()
     expect(r.enabled).toContain('instrumentation')
     expect(r.enabled).toContain('judges')
@@ -217,6 +220,7 @@ describe('probeRuntime — opt-in flags', () => {
     expect(r.enabled).toContain('plan-retrieval')
     expect(r.enabled).toContain('pr-comment')
     expect(r.enabled).toContain('brief-veto')
+    expect(r.enabled).toContain('auto-revert')
     expect(r.blocked).toEqual([])
   })
 })
@@ -325,6 +329,7 @@ describe('readiness rollup', () => {
     process.env.ASICODE_PLAN_RETRIEVAL_ENABLED = '1'
     process.env.ASICODE_PR_COMMENT_ENABLED = '1'
     process.env.ASICODE_BRIEF_VETO_ENABLED = '1'
+    process.env.ASICODE_AUTO_REVERT_ENABLED = '1'
     const { spawn } = await import('node:child_process')
     const dummy = spawn(
       'sh',
