@@ -23,11 +23,7 @@
 import { Database } from 'bun:sqlite'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-
-// REQ-55: required schema version mirrored from client.ts. Updated
-// in lockstep when a migration ships. Probe queries this against the
-// db's _schema_version max so users see the gap before submit fails.
-const SCHEMA_VERSION_REQUIRED = 9
+import { SCHEMA_VERSION_REQUIRED } from './client'
 
 function readDbSchemaVersion(dbPath: string): number | null {
   try {

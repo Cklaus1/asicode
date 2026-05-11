@@ -570,6 +570,25 @@ describe('REQ-32 race + verifier knobs', () => {
   })
 })
 
+// REQ-56: probe imports SCHEMA_VERSION_REQUIRED from client, so the
+// two stay in lockstep. This test pins that contract.
+describe('REQ-56 single source for schema version', () => {
+  test('probe + client agree on SCHEMA_VERSION_REQUIRED', async () => {
+    const { SCHEMA_VERSION_REQUIRED } = await import('./client')
+    // Render a probe report against a partial-schema db and confirm
+    // the detail message names the same required version.
+    const partialPath = join(tempDir, 'partial-v.db')
+    const db = new Database(partialPath, { create: true })
+    db.exec(`CREATE TABLE _schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT)`)
+    db.exec(`INSERT INTO _schema_version VALUES (1, 0, 'partial')`)
+    db.close()
+    process.env.ASICODE_INSTRUMENTATION_DB = partialPath
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_INSTRUMENTATION_DB')!
+    expect(check.detail).toContain(`v${SCHEMA_VERSION_REQUIRED}`)
+  })
+})
+
 // REQ-55: probe verifies schema version against the client requirement.
 describe('REQ-55 schema version check', () => {
   test('migrated db (current schema) → ok', async () => {
