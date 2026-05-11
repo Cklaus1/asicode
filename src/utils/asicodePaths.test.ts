@@ -86,15 +86,6 @@ describe('Asicode paths', () => {
     )
   })
 
-  test('local installer exposes asicode wrapper path alongside asicode (REQ-8.2)', async () => {
-    process.env.CLAUDE_CONFIG_DIR = join(homedir(), '.asicode')
-    const { getLocalAsicodePath } = await importFreshLocalInstaller()
-
-    expect(getLocalAsicodePath()).toBe(
-      join(homedir(), '.asicode', 'local', 'asicode'),
-    )
-  })
-
   test('local installation detection matches .asicode path', async () => {
     const { isManagedLocalInstallationPath } =
       await importFreshLocalInstaller()

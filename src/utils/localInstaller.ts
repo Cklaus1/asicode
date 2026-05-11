@@ -56,10 +56,6 @@ export function getLocalClaudePath(): string {
   return join(getLocalInstallDir(), 'asicode')
 }
 
-// Alias retained for callers that imported it before the REQ-34
-// rename collapsed the two paths into one.
-export const getLocalAsicodePath = getLocalClaudePath
-
 /**
  * Check if we're running from our managed local installation
  */
