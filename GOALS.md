@@ -118,6 +118,76 @@ Each row is a bar to clear before tagging that version. No partial credit on the
 
 ---
 
+## Per-feature success criteria (A-series — from PLAN.md §5)
+
+The primary metrics judge the harness as a whole. Each ASI feature also needs its own bar so we can tell whether *the feature is pulling its weight*. Ship-and-leave is a failure mode; an A-feature that doesn't move a primary metric within two release cycles gets reverted.
+
+### A8 — Embedding-indexed plan retrieval prior
+
+**Purpose:** at plan time, retrieve top-k past attempts by `{plan_summary, codebase_fingerprint}` embedding similarity so the planner sees what worked / what didn't on similar tasks.
+
+**Success criteria:**
+- **Hit rate ≥ 30%** — fraction of plans where the retrieved past attempt is rated "relevant" by a held-out judge (or by the planner's own assessment when no judge available). Below 30% the index is noise, not signal.
+- **Plan-quality lift** — judge quality on PRs where retrieval fired ≥ 0.3 points higher than baseline (no retrieval) on matched task categories. Measured on a stratified sample (≥ 50 PRs per arm) so it's not lost in noise.
+- **Index latency p99 < 200 ms** for k=5 retrieval on a corpus up to 10k entries. Beyond that, asicode's brief-acceptance hesitates → user perceives lag.
+- **Retrieval-induced regression rate ≤ baseline.** A pattern-matched plan that misfires is worse than no retrieval; the regression rate on retrieval-fired PRs must not exceed baseline by more than 1 pp.
+
+**Kill criterion:** if at v2.5 hit rate is still <20% or plan-quality lift is <0.1 points, replace the embedding store with a simpler tag-based index. Don't ship dead features.
+
+### A10 — Best-of-N race with early termination
+
+(Listed under leading indicators; reproduced here for completeness)
+
+**Success criteria:**
+- **Wall-clock speedup < 0.5×** — `time(best-of-N winner) / time(singleton attempt)` median. If we're not at least 2× faster than singleton, the racing overhead isn't paid for.
+- **Hands-off rate lift ≥ 10 pp** — race mode should add a 10 percentage-point absolute improvement to hands-off rate on hard briefs (those where singleton fails ≥ 30% of the time). Otherwise race is a hammer where a screwdriver would do.
+- **Per-brief budget overrun rate ≤ 5%** — racing 4 attempts means 4× the upper-bound cost. The budget cap must hard-stop the race, and overrun events (cost > brief budget) stay rare.
+- **Variance-of-attempts metric** — when N attempts all converge to similar solutions (judge variance < 0.5), the race wasn't useful for that task. Track this; below a threshold, fall back to singleton automatically.
+
+### A11 — Outcome-log replay as test corpus
+
+**Purpose:** periodically replay a stratified sample of past briefs against the current codebase + current model to catch model/prompt regressions.
+
+**Success criteria:**
+- **Coverage ≥ 5%** — at least 5% of past briefs in a rolling 90-day window are replayed each release.
+- **Time-to-detect ≤ 1 release cycle** — when a model upgrade silently regresses a category of task (e.g. "TypeScript refactors"), replay must surface it before the next release ships.
+- **False-positive rate ≤ 10%** — flagged regressions that turn out to be flaky tests, model-temperature variance, or actually-better-just-different work. Above 10% and the replay output gets ignored.
+- **Stratified by task category** — bugfix / feature / refactor / dep-upgrade / test / doc; report regressions per category, not just in aggregate (per-category signal is what's actionable).
+
+**Kill criterion:** if replay never surfaces a real regression in two release cycles AND the cost of running it exceeds the cost of one human reviewer-week, drop it. It's there to earn its keep, not for completeness.
+
+### A12 — Brief mode
+
+**Purpose:** user writes a paragraph; system expands to a checklist with budgets, success criteria, verifier hooks. User approves, walks away.
+
+**Success criteria:**
+- **Brief expansion accuracy ≥ 80%** — fraction of expanded briefs the user approves *without edits* on first attempt. Below this, brief mode is friction, not leverage.
+- **Brief-to-PR hands-off rate ≥ plan-mode rate + 10 pp** — if the brief workflow doesn't outperform plan mode on the same task category by 10 percentage points, the structured-brief story isn't earning its complexity.
+- **Brief acceptance calibration** — when asicode says "I can handle this within budget," it should be right ≥ 90% of the time. Over-claim rate > 10% destroys trust in the feature.
+- **Mean time-to-walk-away ≤ 2 minutes** — from "submit brief" to "user can close the laptop." Above 2 minutes, brief mode reverts to plan mode.
+
+### A13 — Memdir as queryable semantic store
+
+**Purpose:** `/recall <topic>` returns relevant memory cards from cross-project agent history, embedded-indexed, with provenance.
+
+**Success criteria:**
+- **Recall precision ≥ 70%** — of the top-5 returned cards, fraction the user (or judge) rates as "relevant." Below 70% and the feature is annoying.
+- **Recall-induced plan-quality lift ≥ 0.2 points** — plans that incorporate a recalled card score that much higher on the judge panel than plans that didn't have access. If recall is read but never useful, it's a museum.
+- **Memdir size growth bounded** — < 10MB per project per month for typical agent use. Beyond that, the memory becomes a dataset, not a memory.
+- **Cross-project leakage = 0** — a recall from project A must never return memory from project B unless explicitly scoped (`--scope all`). Privacy/correctness criterion, not a performance one.
+
+### A15 — Adversarial verifier
+
+**Purpose:** for high-stakes briefs, a subagent tries to *break* the patch (counterexample test, injection vector, edge-case crash). Same machinery as L2 self-review, different prompt.
+
+**Success criteria:**
+- **Catch rate ≥ 50%** — on a known-vulnerable-test corpus (seeded bugs: off-by-one, SQL injection, race condition, null deref), adversarial verifier must catch at least half before the patch ships. Below 50% it's theatre.
+- **False-positive rate ≤ 15%** — flagged "vulnerabilities" that aren't. Above 15%, asicode cries wolf and gets ignored; below 15%, every flag is worth reading.
+- **Regression rate on adversarial-verified PRs ≤ 50% of baseline** — the whole point. If adversarial review doesn't halve regressions on the PRs it covers, it's not paying for itself.
+- **Cost ceiling ≤ 30% of brief budget** — adversarial verification should run on the same budget envelope as the main agent. If it doubles cost, it's not viable as a default-on.
+
+---
+
 ## Anti-goals (what asicode is NOT)
 
 Saying yes to these would dilute the northstar. Every "no" below has been said clearly so future contributors don't quietly drift toward them.
