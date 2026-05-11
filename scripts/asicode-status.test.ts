@@ -649,3 +649,92 @@ describe('REQ-37 stale in-flight detection', () => {
     expect(r.stdout).toContain('⚠ stale')
   })
 })
+
+// REQ-51: --list mode.
+describe('REQ-51 --list', () => {
+  function seedAt(db: Database, briefId: string, ts: number, project = '/p', outcome: string | null = null) {
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision, pr_outcome)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [briefId, ts, project, 'fp', `text for ${briefId}`, 'accept', outcome],
+    )
+  }
+
+  test('lists briefs in cwd by default, newest first', () => {
+    const db = new Database(dbPath)
+    seedAt(db, 'b_old', Date.now() - 60_000, process.cwd())
+    seedAt(db, 'b_new', Date.now(), process.cwd())
+    db.close()
+    const r = run(['--list'])
+    expect(r.code).toBe(0)
+    const idx_new = r.stdout.indexOf('b_new')
+    const idx_old = r.stdout.indexOf('b_old')
+    expect(idx_new).toBeGreaterThan(-1)
+    expect(idx_old).toBeGreaterThan(idx_new)  // newer appears earlier
+  })
+
+  test('--project filter restricts to that path', () => {
+    const db = new Database(dbPath)
+    seedAt(db, 'b_proj_a', Date.now(), '/proj-a')
+    seedAt(db, 'b_proj_b', Date.now(), '/proj-b')
+    db.close()
+    const r = run(['--list', '--project', '/proj-a'])
+    expect(r.stdout).toContain('b_proj_a')
+    expect(r.stdout).not.toContain('b_proj_b')
+  })
+
+  test('--limit caps the count', () => {
+    const db = new Database(dbPath)
+    for (let i = 0; i < 5; i++) seedAt(db, `b${i}`, Date.now() + i, process.cwd())
+    db.close()
+    const r = run(['--list', '--limit', '2'])
+    expect(r.stdout).toMatch(/2 briefs in/)
+  })
+
+  test('empty project says so', () => {
+    const r = run(['--list', '--project', '/never-existed'])
+    expect(r.stdout).toContain('no briefs found')
+  })
+
+  test('--json output shape', () => {
+    const db = new Database(dbPath)
+    seedAt(db, 'b_j', Date.now(), process.cwd(), 'merged_no_intervention')
+    db.run(`UPDATE briefs SET pr_number = 42 WHERE brief_id = ?`, ['b_j'])
+    db.close()
+    const r = run(['--list', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.count).toBeGreaterThanOrEqual(1)
+    const b = parsed.briefs.find((x: { brief_id: string }) => x.brief_id === 'b_j')
+    expect(b.pr_outcome).toBe('merged_no_intervention')
+    expect(b.pr_number).toBe(42)
+    expect(b.user_text_snippet).toContain('text for b_j')
+  })
+
+  test('renders pr_outcome and pr number when set', () => {
+    const db = new Database(dbPath)
+    seedAt(db, 'b_pr', Date.now(), process.cwd(), 'merged_no_intervention')
+    db.run(`UPDATE briefs SET pr_number = 42 WHERE brief_id = ?`, ['b_pr'])
+    db.close()
+    const r = run(['--list'])
+    expect(r.stdout).toContain('merged_no_intervention')
+    expect(r.stdout).toContain('#42')
+  })
+
+  test('--limit validation: out of range exits 2', () => {
+    const r = run(['--list', '--limit', '0'])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('--limit')
+  })
+
+  test('no BRIEF_ID + no --list → exits 2 with hint', () => {
+    const r = run([])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('--list')
+  })
+
+  test('--help mentions --list', () => {
+    const r = run(['--help'], { ASICODE_INSTRUMENTATION_DB: '' })
+    expect(r.stdout).toContain('--list')
+    expect(r.stdout).toContain('--limit')
+  })
+})

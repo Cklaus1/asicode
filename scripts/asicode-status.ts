@@ -8,14 +8,21 @@ import { Database } from 'bun:sqlite'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 
-interface Args { briefId: string | null; json: boolean; watch: boolean; watchIntervalMs: number }
+interface Args { briefId: string | null; json: boolean; watch: boolean; watchIntervalMs: number; list: boolean; limit: number; project: string | null }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { briefId: null, json: false, watch: false, watchIntervalMs: 5000 }
+  const args: Args = { briefId: null, json: false, watch: false, watchIntervalMs: 5000, list: false, limit: 10, project: null }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--json') args.json = true
     else if (a === '--watch' || a === '-w') args.watch = true
+    else if (a === '--list' || a === '-l') args.list = true
+    else if (a === '--limit') {
+      const n = parseInt(argv[++i], 10)
+      if (!Number.isFinite(n) || n < 1 || n > 100) { console.error(`--limit expects 1-100, got '${argv[i]}'`); process.exit(2) }
+      args.limit = n
+    }
+    else if (a === '--project') args.project = argv[++i]
     else if (a === '--watch-interval') {
       const n = parseInt(argv[++i], 10) * 1000
       if (!Number.isFinite(n) || n < 1000) { console.error(`--watch-interval expects seconds ≥1, got '${argv[i]}'`); process.exit(2) }
@@ -23,15 +30,19 @@ function parseArgs(argv: string[]): Args {
     }
     else if (a === '-h' || a === '--help') {
       console.log('usage: asicode-status.ts BRIEF_ID [--json] [--watch [--watch-interval SECS]]')
+      console.log('       asicode-status.ts --list [--limit N] [--project PATH] [--json]')
       console.log('  --watch         REQ-43: re-render every 5s until brief completes (Ctrl-C to exit early)')
       console.log('  --watch-interval SECS  override poll interval (default 5)')
+      console.log('  --list          REQ-51: list recent briefs (default: 10 most-recent in cwd)')
+      console.log('  --limit N       cap --list output (1-100, default 10)')
+      console.log('  --project PATH  filter --list by project_path (default: cwd)')
       process.exit(0)
     }
     else if (a.startsWith('-')) { console.error(`unknown arg: ${a}`); process.exit(2) }
     else if (!args.briefId) args.briefId = a
     else { console.error(`unexpected positional arg: ${a}`); process.exit(2) }
   }
-  if (!args.briefId) { console.error('BRIEF_ID required (e.g. brf_XXX)'); process.exit(2) }
+  if (!args.list && !args.briefId) { console.error('BRIEF_ID required (e.g. brf_XXX) — or pass --list'); process.exit(2) }
   return args
 }
 
@@ -257,9 +268,45 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
   return { done: isBriefDone(brief, runs) }
 }
 
+// REQ-51: render the most-recent N briefs in a project.
+function renderList(args: Args): void {
+  const db = new Database(process.env.ASICODE_INSTRUMENTATION_DB!, { readonly: true })
+  db.exec('PRAGMA query_only = ON')
+  const project = args.project ?? process.cwd()
+  const rows = db.query<{
+    brief_id: string; ts_submitted: number; ts_completed: number | null;
+    pr_outcome: string | null; pr_number: number | null; user_text: string;
+  }, [string, number]>(
+    `SELECT brief_id, ts_submitted, ts_completed, pr_outcome, pr_number, user_text
+     FROM briefs WHERE project_path = ? ORDER BY ts_submitted DESC LIMIT ?`,
+  ).all(project, args.limit)
+  db.close()
+  if (args.json) {
+    console.log(JSON.stringify({ project, count: rows.length, briefs: rows.map(r => ({
+      brief_id: r.brief_id, ts_submitted: r.ts_submitted, ts_completed: r.ts_completed,
+      pr_outcome: r.pr_outcome, pr_number: r.pr_number,
+      user_text_snippet: r.user_text.split('\n')[0]?.slice(0, 80) ?? '',
+    })) }, null, 2))
+    return
+  }
+  if (rows.length === 0) {
+    console.log(`no briefs found in ${project}`)
+    return
+  }
+  console.log(`${rows.length} brief${rows.length === 1 ? '' : 's'} in ${project}`)
+  for (const r of rows) {
+    const outcome = r.pr_outcome ?? 'in_flight'
+    const pr = r.pr_number !== null ? `#${r.pr_number}` : ' '.repeat(4)
+    const snippet = (r.user_text.split('\n')[0] ?? '').slice(0, 60).padEnd(60)
+    console.log(`  ${r.brief_id}  ${fmtAge(r.ts_submitted).padEnd(8)}  ${outcome.padEnd(24)}  ${pr.padEnd(6)}  ${snippet}`)
+  }
+}
+
 function main() {
   const args = parseArgs(process.argv)
   if (!process.env.ASICODE_INSTRUMENTATION_DB) { console.error('ASICODE_INSTRUMENTATION_DB must point at a migrated db'); process.exit(2) }
+
+  if (args.list) { renderList(args); process.exit(0) }
 
   if (!args.watch) {
     const r = renderStatusOnce(args)
