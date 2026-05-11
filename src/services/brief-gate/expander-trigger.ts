@@ -19,10 +19,7 @@
  */
 
 import { updateBrief } from '../instrumentation/client'
-import { resolvePanel } from '../judges/config'
-import type { Provider } from '../judges/dispatcher'
-import { buildProviderRegistry } from '../judges/providers/registry'
-import { introspectionProvider } from '../instrumentation/retro-introspect'
+import { createCachedProvider } from '../trigger-shared/cachedProvider'
 import { expandBrief, type ExpandedBrief } from './expander'
 
 // ─── Opt-in ──────────────────────────────────────────────────────────
@@ -31,35 +28,15 @@ export function isBriefModeEnabled(): boolean {
   return process.env.ASICODE_BRIEF_MODE_ENABLED === '1'
 }
 
-// ─── Provider resolution (lazy + cached, mirrors A16 trigger) ────────
+// ─── Provider resolution (lazy + cached, via shared helper) ──────────
 
-let cachedProvider: Provider | null = null
-let cachedProviderError: Error | null = null
+const _providerCache = createCachedProvider({ warnTag: 'brief-mode' })
 
 export function _resetExpanderTriggerForTest() {
-  cachedProvider = null
-  cachedProviderError = null
+  _providerCache.reset()
 }
 
-function getProvider(): Provider | null {
-  if (cachedProvider) return cachedProvider
-  if (cachedProviderError) return null
-  try {
-    const panel = resolvePanel()
-    const providers = buildProviderRegistry(panel)
-    const provider = introspectionProvider(panel, providers)
-    if (!provider) {
-      throw new Error('panel has no correctness slot; cannot pick an expander provider')
-    }
-    cachedProvider = provider
-    return provider
-  } catch (e) {
-    cachedProviderError = e instanceof Error ? e : new Error(String(e))
-    // eslint-disable-next-line no-console
-    console.warn(`[asicode brief-mode] disabled (registry build failed): ${cachedProviderError.message}`)
-    return null
-  }
-}
+const getProvider = _providerCache.getProvider
 
 // ─── Trigger ─────────────────────────────────────────────────────────
 

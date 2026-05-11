@@ -14,11 +14,8 @@
  * on its decisions).
  */
 
-import { resolvePanel } from '../judges/config'
-import { introspectionProvider } from '../instrumentation/retro-introspect'
-import { buildProviderRegistry } from '../judges/providers/registry'
-import type { Provider } from '../judges/dispatcher'
 import { updateBrief } from '../instrumentation/client'
+import { createCachedProvider } from '../trigger-shared/cachedProvider'
 import { evaluateBrief, type A16Result } from './evaluator'
 
 // ─── Opt-in ──────────────────────────────────────────────────────────
@@ -27,35 +24,15 @@ export function isBriefGateEnabled(): boolean {
   return process.env.ASICODE_BRIEF_GATE_ENABLED === '1'
 }
 
-// ─── Provider resolution (lazy + cached) ─────────────────────────────
+// ─── Provider resolution (lazy + cached, via shared helper) ──────────
 
-let cachedProvider: Provider | null = null
-let cachedProviderError: Error | null = null
+const _providerCache = createCachedProvider({ warnTag: 'brief-gate' })
 
 export function _resetBriefGateForTest() {
-  cachedProvider = null
-  cachedProviderError = null
+  _providerCache.reset()
 }
 
-function getProvider(): Provider | null {
-  if (cachedProvider) return cachedProvider
-  if (cachedProviderError) return null
-  try {
-    const panel = resolvePanel()
-    const providers = buildProviderRegistry(panel)
-    const provider = introspectionProvider(panel, providers)
-    if (!provider) {
-      throw new Error('panel has no correctness slot; cannot pick a gate provider')
-    }
-    cachedProvider = provider
-    return provider
-  } catch (e) {
-    cachedProviderError = e instanceof Error ? e : new Error(String(e))
-    // eslint-disable-next-line no-console
-    console.warn(`[asicode brief-gate] disabled (registry build failed): ${cachedProviderError.message}`)
-    return null
-  }
-}
+const getProvider = _providerCache.getProvider
 
 // ─── Trigger ─────────────────────────────────────────────────────────
 
