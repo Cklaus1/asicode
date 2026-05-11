@@ -25,12 +25,16 @@ import { homedir } from 'os'
 interface Args {
   db: string
   sinceDays: number
+  backfill: boolean
+  projectPath: string
 }
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     db: process.env.ASICODE_INSTRUMENTATION_DB ?? join(homedir(), '.asicode', 'instrumentation.db'),
     sinceDays: 7,
+    backfill: true,
+    projectPath: process.cwd(),
   }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
@@ -44,8 +48,14 @@ function parseArgs(argv: string[]): Args {
         process.exit(1)
       }
       args.sinceDays = parseInt(m[1], 10)
+    } else if (a === '--no-backfill') {
+      args.backfill = false
+    } else if (a === '--project') {
+      args.projectPath = argv[++i]
     } else if (a === '-h' || a === '--help') {
-      console.log('usage: instrumentation-report.ts [--db PATH] [--since 7d]')
+      console.log(
+        'usage: instrumentation-report.ts [--db PATH] [--since 7d] [--no-backfill] [--project PATH]',
+      )
       process.exit(0)
     } else {
       console.error(`unknown arg: ${a}`)
@@ -570,13 +580,47 @@ function render(m: Metrics, sinceDays: number): string {
   return lines.join('\n')
 }
 
-function main() {
+async function backfillMerges(projectPath: string): Promise<void> {
+  // Self-heal: one-shot pollMergedPrs tick before the read-only DB
+  // handle is opened. If the watch-merges daemon isn't running, this
+  // catches any unmatched-brief↔merged-PR pairs that landed since the
+  // last invocation. Soft-fails (no gh, no network) are reported on
+  // stderr but never block the report itself.
+  let pollMergedPrs
+  try {
+    ;({ pollMergedPrs } = await import('../src/services/instrumentation/watch-merges.js'))
+  } catch (e) {
+    console.error(`[backfill] could not load watch-merges module: ${e instanceof Error ? e.message : String(e)}`)
+    return
+  }
+  try {
+    const tick = await pollMergedPrs(projectPath)
+    if (tick.matched.length) {
+      console.error(
+        `[backfill] matched ${tick.matched.length} new merge(s): ${tick.matched
+          .map(m => `pr#${m.prNumber}→${m.briefId}`)
+          .join(', ')}`,
+      )
+    } else if (tick.errors.length && !tick.errors[0].includes('gh unavailable')) {
+      console.error(`[backfill] tick errors: ${tick.errors.join('; ')}`)
+    }
+  } catch (e) {
+    console.error(`[backfill] tick threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+async function main() {
   const args = parseArgs(process.argv)
   if (!existsSync(args.db)) {
     console.error(`db not found: ${args.db}`)
     console.error(`(set ASICODE_INSTRUMENTATION_DB or pass --db, or run`)
     console.error(` \`bun run instrumentation:migrate\` to create one)`)
     process.exit(1)
+  }
+  // Backfill MUST happen before opening the read-only handle, since
+  // recordPrLanded needs write access via the singleton client.
+  if (args.backfill) {
+    await backfillMerges(args.projectPath)
   }
   const db = new Database(args.db, { readonly: true })
   db.exec('PRAGMA query_only = ON')
@@ -586,4 +630,7 @@ function main() {
   db.close()
 }
 
-main()
+main().catch(e => {
+  console.error(e instanceof Error ? e.stack : String(e))
+  process.exit(1)
+})
