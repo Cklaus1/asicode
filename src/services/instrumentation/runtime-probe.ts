@@ -93,6 +93,7 @@ const NORTHSTAR_ENRICHMENT: readonly string[] = [
   'brief-veto',
   'auto-revert',
   'auto-start',
+  'memdir-retrieval',
 ]
 
 /**
@@ -182,6 +183,13 @@ function fixFor(capability: string, observedReason?: string): ReadinessBlocker {
         reason: observedReason ?? 'submit does not auto-spawn the agent',
         // Chain the two flags — AUTO_START is useless without DISPATCH_CMD.
         fix: 'export ASICODE_DISPATCH_CMD="bun run dev:profile" && export ASICODE_AUTO_START=1',
+      }
+    case 'memdir-retrieval':
+      return {
+        capability,
+        reason: observedReason ?? 'memdir semantic recall off',
+        // Needs an embedding backend; chain with ollama for the local path.
+        fix: 'export OLLAMA_HOST=http://localhost:11434 && export ASICODE_MEMDIR_RETRIEVAL_ENABLED=1',
       }
     default:
       return {
@@ -409,6 +417,7 @@ export async function probeRuntime(): Promise<ProbeReport> {
     { flag: 'ASICODE_BRIEF_VETO_ENABLED', capability: 'brief-veto', needsProvider: false, expectation: 'iter 63: enforce A16 reject decisions — abort runs on bad briefs' },
     { flag: 'ASICODE_AUTO_REVERT_ENABLED', capability: 'auto-revert', needsProvider: false, expectation: 'iter 69: auto-open a revert PR when ship-it verdict is rollback' },
     { flag: 'ASICODE_AUTO_START', capability: 'auto-start', needsProvider: false, expectation: 'iter 80: asicode:submit spawns the agent automatically (requires ASICODE_DISPATCH_CMD)' },
+    { flag: 'ASICODE_MEMDIR_RETRIEVAL_ENABLED', capability: 'memdir-retrieval', needsProvider: false, expectation: 'iter 85 (REQ-7.2): query the memdir index at submit, prepend relevant memories to the agent prompt' },
   ]
 
   for (const f of optInFlags) {

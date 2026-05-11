@@ -12,6 +12,7 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { newBriefId, newRunId, recordBrief, recordRun } from '../src/services/instrumentation/client'
 import { buildRetrievedContext } from '../src/services/plan-retrieval/consumer'
+import { buildMemdirContext } from '../src/services/memdir-retrieval/consumer'
 
 interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean }
 
@@ -153,21 +154,30 @@ async function main() {
     process.exit(2)
   }
 
-  // REQ-9.1: build retrieved context. When ASICODE_PLAN_RETRIEVAL_ENABLED=1
-  // + embedding backend configured, this returns a markdown snippet of
-  // top-K prior attempts that the dispatcher prepends to the agent's
-  // stdin. Soft-fail: returns null when off / no backend / no hits, and
-  // we proceed with the raw brief unchanged.
+  // REQ-9.1 + REQ-7.2: enrich the brief with prior-attempt (A8) +
+  // memdir (A13) context. Both are opt-in + soft-fail. Format:
+  //   <memdir hits> --- <plan hits> --- <raw brief>
+  // Memdir first because static knowledge tends to be cheaper context
+  // than mid-run trajectory hints.
   let enrichedBrief = briefText
   let retrievalHitCount = 0
+  let memdirHitCount = 0
+  try {
+    const memdirCtx = await buildMemdirContext({ briefText, projectFingerprint: fp, k: 5 })
+    if (memdirCtx) {
+      enrichedBrief = `${memdirCtx.markdown}\n---\n\n${enrichedBrief}`
+      memdirHitCount = memdirCtx.hitCount
+    }
+  } catch (e) {
+    console.error(`[memdir-retrieval] consumer failed (continuing): ${e instanceof Error ? e.message : String(e)}`)
+  }
   try {
     const ctx = await buildRetrievedContext({ briefId, briefText, projectFingerprint: fp, k: 5 })
     if (ctx) {
-      enrichedBrief = `${ctx.markdown}\n---\n\n${briefText}`
+      enrichedBrief = `${ctx.markdown}\n---\n\n${enrichedBrief}`
       retrievalHitCount = ctx.hitCount
     }
   } catch (e) {
-    // Soft-fail; the agent still gets the raw brief.
     console.error(`[plan-retrieval] consumer failed (continuing with raw brief): ${e instanceof Error ? e.message : String(e)}`)
   }
 
@@ -181,6 +191,7 @@ async function main() {
   if (args.json) {
     const out: Record<string, unknown> = { brief_id: briefId, project_fingerprint: fp, project_path: args.cwd, ts_submitted: now }
     if (retrievalHitCount > 0) out.retrieval_hits = retrievalHitCount
+    if (memdirHitCount > 0) out.memdir_hits = memdirHitCount
     if (dispatch?.ok) Object.assign(out, { run_id: dispatch.runId, pid: dispatch.pid, log_path: dispatch.logPath })
     else if (dispatch && !dispatch.ok) Object.assign(out, { dispatch_skipped: dispatch.reason })
     console.log(JSON.stringify(out))
