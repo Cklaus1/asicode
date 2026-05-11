@@ -3,6 +3,7 @@ northstar: see [GOALS.md](./GOALS.md) — every phase below is in service of "ha
 practices: see [PRACTICES.md](./PRACTICES.md) — the engineering loop we bake into the build and the run
 parallelism: see [docs/PARALLELISM.md](./docs/PARALLELISM.md) — per-seam rules for where to parallelize and where not
 judges: see [docs/judges/v1-prompts.md](./docs/judges/v1-prompts.md) + [docs/judges/config.toml](./docs/judges/config.toml) — locked v1 balanced panel
+instrumentation: see [docs/INSTRUMENTATION.md](./docs/INSTRUMENTATION.md) — v2.0 schema for every metric and feature criterion (ships before P3)
 
 # Legend
 - v1 = current asicode (forked openclaude @ 0.7.0; 585k LOC TypeScript)
