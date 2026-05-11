@@ -225,9 +225,23 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
     })
     .map(r => ({ runId: r.runId, diff: r.diff!, worktreePath: r.path, branch: r.branch }))
 
-  // Update db rows so status CLI sees the outcomes
+  // Update db rows so status CLI sees the outcomes. REQ-19: include
+  // verifier outcome when present so status surfaces which racers
+  // passed.
   for (const r of racers) {
-    try { updateRun({ run_id: r.runId, ts_completed: r.finishedAtMs ?? Date.now(), outcome: r.outcome === 'completed' ? 'completed' : r.outcome === 'timed_out' ? 'aborted' : 'crashed', wall_clock_ms: (r.finishedAtMs ?? Date.now()) - tsStarted }) } catch { /* db unavailable */ }
+    try {
+      updateRun({
+        run_id: r.runId,
+        ts_completed: r.finishedAtMs ?? Date.now(),
+        outcome: r.outcome === 'completed' ? 'completed' : r.outcome === 'timed_out' ? 'aborted' : 'crashed',
+        wall_clock_ms: (r.finishedAtMs ?? Date.now()) - tsStarted,
+        ...(r.verify ? {
+          verify_outcome: r.verify.outcome,
+          verify_exit_code: r.verify.exitCode ?? undefined,
+          verify_duration_ms: r.verify.durationMs,
+        } : {}),
+      })
+    } catch { /* db unavailable */ }
   }
 
   if (candidates.length === 0) {

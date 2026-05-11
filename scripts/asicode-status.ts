@@ -33,7 +33,7 @@ interface BriefRow {
   pr_number: number | null;
   reverted_within_7d: number; hotpatched_within_7d: number;
 }
-interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number }
+interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null }
 interface JudgeSummary { rows: number; composite: number | null }
 type ShipItSummary = { verdict: 'ship_it' | 'hold' | 'rollback'; reasons: string[]; signalsAvailable: number } | null
 
@@ -81,7 +81,8 @@ function main() {
   if (!brief) { console.error(`brief not found: ${args.briefId}`); db.close(); process.exit(1) }
 
   const runs = db.query<RunRow, [string]>(
-    `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index
+    `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index,
+            verify_outcome, verify_exit_code, verify_duration_ms
      FROM runs WHERE brief_id = ? ORDER BY ts_started DESC`,
   ).all(args.briefId!)
 
@@ -112,6 +113,7 @@ function main() {
         outcome: r.outcome, isolation_mode: r.isolation_mode,
         wall_clock_ms: r.wall_clock_ms, tokens_used: r.tokens_used,
         was_race_winner: r.was_race_winner === 1, attempt_index: r.attempt_index,
+        verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms } : null,
       })),
       pr: (brief.pr_sha || brief.pr_number !== null) ? {
         sha: brief.pr_sha, outcome: brief.pr_outcome,
@@ -142,6 +144,18 @@ function main() {
   }
   if (race) {
     console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}`)
+    // REQ-19: verifier breakdown across the racers (passed/failed/err)
+    const verdicts = racerRuns.filter(r => r.verify_outcome !== null)
+    if (verdicts.length > 0) {
+      const passed = verdicts.filter(r => r.verify_outcome === 'passed').length
+      const failed = verdicts.filter(r => r.verify_outcome === 'failed').length
+      const errored = verdicts.filter(r => r.verify_outcome === 'verifier_error').length
+      const parts: string[] = []
+      if (passed) parts.push(`${passed} passed`)
+      if (failed) parts.push(`${failed} failed`)
+      if (errored) parts.push(`${errored} errored`)
+      console.log(`  verify       ${parts.join(', ')}`)
+    }
   }
   if (brief.pr_number !== null && !brief.pr_sha) {
     // Auto-PR opened (REQ-15) but not yet merged — surface the number.

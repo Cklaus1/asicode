@@ -264,3 +264,67 @@ describe('REQ-17 pr_number + race', () => {
     expect(parsed.runs.some((rr: { was_race_winner: boolean; run_id: string }) => rr.run_id === 'run_a' && rr.was_race_winner)).toBe(true)
   })
 })
+
+// REQ-19: verifier outcome persistence + status surfacing.
+describe('REQ-19 verify_outcome', () => {
+  function seedRacerWithVerify(db: Database, runId: string, briefId: string, attempt: number, winner: boolean, verify: 'passed' | 'failed' | 'verifier_error' | null) {
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner,
+                         verify_outcome, verify_exit_code, verify_duration_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [runId, briefId, Date.now() - 5000 + attempt, Date.now() - 1000 + attempt, 'worktree', 'completed', attempt, winner ? 1 : 0,
+       verify, verify === 'passed' ? 0 : verify === 'failed' ? 1 : null, verify ? 200 + attempt : null],
+    )
+  }
+
+  test('text: race line + verify breakdown', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_v1')
+    seedRacerWithVerify(db, 'run_a', 'brf_v1', 0, false, 'failed')
+    seedRacerWithVerify(db, 'run_b', 'brf_v1', 1, true, 'passed')
+    seedRacerWithVerify(db, 'run_c', 'brf_v1', 2, false, 'verifier_error')
+    db.close()
+    const r = run(['brf_v1'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('3 racers, winner=run_b')
+    expect(r.stdout).toContain('1 passed')
+    expect(r.stdout).toContain('1 failed')
+    expect(r.stdout).toContain('1 errored')
+  })
+
+  test('text: omits verify line when no racer has a verifier outcome', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_v2')
+    seedRacerWithVerify(db, 'run_a', 'brf_v2', 0, true, null)
+    seedRacerWithVerify(db, 'run_b', 'brf_v2', 1, false, null)
+    db.close()
+    const r = run(['brf_v2'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('race ')
+    expect(r.stdout).not.toContain('verify ')
+  })
+
+  test('--json: runs[].verify block populated', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_v3')
+    seedRacerWithVerify(db, 'run_a', 'brf_v3', 0, true, 'passed')
+    db.close()
+    const r = run(['brf_v3', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    const ra = parsed.runs.find((rr: { run_id: string }) => rr.run_id === 'run_a')
+    expect(ra.verify).not.toBeNull()
+    expect(ra.verify.outcome).toBe('passed')
+    expect(ra.verify.exit_code).toBe(0)
+    expect(typeof ra.verify.duration_ms).toBe('number')
+  })
+
+  test('--json: verify is null when not set', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_v4')
+    seedRacerWithVerify(db, 'run_a', 'brf_v4', 0, true, null)
+    db.close()
+    const r = run(['brf_v4', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.runs[0].verify).toBeNull()
+  })
+})

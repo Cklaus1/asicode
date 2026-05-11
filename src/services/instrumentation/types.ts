@@ -245,6 +245,8 @@ export const BriefUpdateSchema = z.object({
 
 export type BriefUpdate = z.infer<typeof BriefUpdateSchema>
 
+export const VerifyOutcomeSchema = z.enum(['passed', 'failed', 'verifier_error'])
+
 export const RunUpdateSchema = z.object({
   run_id: z.string().min(1),
   ts_completed: z.number().int().nonnegative().optional(),
@@ -257,6 +259,10 @@ export const RunUpdateSchema = z.object({
   wall_clock_ms: z.number().int().nonnegative().optional(),
   tool_calls_total: z.number().int().nonnegative().optional(),
   was_race_winner: z.boolean().optional(),
+  // REQ-19: per-racer verifier signal (migration 0006).
+  verify_outcome: VerifyOutcomeSchema.optional(),
+  verify_exit_code: z.number().int().optional(),
+  verify_duration_ms: z.number().int().nonnegative().optional(),
 })
 
 export type RunUpdate = z.infer<typeof RunUpdateSchema>
