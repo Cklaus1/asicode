@@ -125,6 +125,18 @@ interface Metrics {
   autoRevertsOpened: number
   autoRevertsMerged: number
   autoRevertsClosedNoMerge: number
+  // Drift (iter 76, REQ-4.3) — latest row in window (or null if no runs yet)
+  driftLatest: {
+    tsMs: number
+    nSamples: number
+    threshold: number
+    meanAbsDelta: number
+    driftDetected: boolean
+    panelMode: string
+  } | null
+  /** Window-total count of drift runs (so the report can say "30 runs, 2 with drift"). */
+  driftRunsInWindow: number
+  driftRunsWithDriftInWindow: number
 }
 
 function compute(db: Database, sinceMs: number): Metrics {
@@ -439,6 +451,36 @@ function compute(db: Database, sinceMs: number): Metrics {
   const autoRevertsMerged = arRow.merged ?? 0
   const autoRevertsClosedNoMerge = arRow.closed_no_merge ?? 0
 
+  // REQ-4.3: drift row. Latest run + window aggregates. Two queries:
+  // most-recent row (regardless of window — staleness is itself useful
+  // info) and window counts.
+  let driftLatest: Metrics['driftLatest'] = null
+  let driftRunsInWindow = 0
+  let driftRunsWithDriftInWindow = 0
+  try {
+    const latestRow = db
+      .query<{ ts: number; n_samples: number; threshold: number; mean_abs_delta: number; drift_detected: number; panel_mode: string }, []>(
+        `SELECT ts, n_samples, threshold, mean_abs_delta, drift_detected, panel_mode FROM drift_runs ORDER BY ts DESC LIMIT 1`,
+      )
+      .get()
+    if (latestRow) {
+      driftLatest = {
+        tsMs: latestRow.ts, nSamples: latestRow.n_samples, threshold: latestRow.threshold,
+        meanAbsDelta: latestRow.mean_abs_delta, driftDetected: latestRow.drift_detected === 1,
+        panelMode: latestRow.panel_mode,
+      }
+    }
+    const wRow = db
+      .query<{ total: number; with_drift: number }, [number]>(
+        `SELECT COUNT(*) AS total, SUM(drift_detected) AS with_drift FROM drift_runs WHERE ts >= ?`,
+      )
+      .get(sinceMs) ?? { total: 0, with_drift: 0 }
+    driftRunsInWindow = wRow.total ?? 0
+    driftRunsWithDriftInWindow = wRow.with_drift ?? 0
+  } catch {
+    // Table may not exist yet on pre-0004 dbs — silently treat as no runs.
+  }
+
   // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 5)
   // Components that are null become 0 in the composite (be honest about gaps).
   const aiComponents =
@@ -493,6 +535,9 @@ function compute(db: Database, sinceMs: number): Metrics {
     autoRevertsOpened,
     autoRevertsMerged,
     autoRevertsClosedNoMerge,
+    driftLatest,
+    driftRunsInWindow,
+    driftRunsWithDriftInWindow,
   }
 }
 
@@ -633,6 +678,27 @@ function render(m: Metrics, sinceDays: number): string {
     } else {
       lines.push(`  Status                  open    (merge/close status not yet backfilled)`)
     }
+    lines.push('')
+  }
+
+  // Drift section (iter 76, REQ-4.3). Renders when drift_runs has ≥1 row.
+  // Sad-path: no rows yet → suggest `bun run instrumentation:drift --baseline`.
+  if (m.driftLatest) {
+    lines.push('Calibration drift')
+    const dl = m.driftLatest
+    const ageMs = Date.now() - dl.tsMs
+    const ageH = Math.floor(ageMs / 3_600_000)
+    const ageStr = ageH < 24 ? `${ageH}h ago` : `${Math.floor(ageH / 24)}d ago`
+    const verdict = dl.driftDetected ? '✗ DRIFT' : '✓ ok'
+    lines.push(`  Latest run              ${dl.meanAbsDelta.toFixed(2)} ± ${dl.threshold.toFixed(2)}  ${verdict}    (n=${dl.nSamples} ${dl.panelMode}, ${ageStr})`)
+    if (m.driftRunsInWindow > 0) {
+      lines.push(`  Window                  ${m.driftRunsInWindow} runs, ${m.driftRunsWithDriftInWindow} with drift`)
+    }
+    lines.push('')
+  } else if (m.a16TotalGraded > 0) {
+    // Only nudge when the user has at least started using brief-gate
+    // (otherwise drift detection is several steps away).
+    lines.push('Calibration drift       no runs yet — run `bun run instrumentation:drift --baseline`')
     lines.push('')
   }
 

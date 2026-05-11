@@ -631,3 +631,108 @@ describe('Auto-revert section (iter 70, REQ-2.4)', () => {
     expect(stdout).not.toContain('Auto-revert')
   })
 })
+
+// REQ-4.3: drift row in report
+describe('Calibration drift section (iter 76, REQ-4.3)', () => {
+  function seedDrift(db: Database, ts: number, opts: { mean?: number; threshold?: number; detected?: boolean; n?: number; mode?: string } = {}) {
+    db.run(
+      `INSERT INTO drift_runs (drift_id, ts, n_samples, threshold, mean_abs_delta, drift_detected, per_dimension_json, per_tier_json, panel_mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        `drift_${ts}`, ts, opts.n ?? 30, opts.threshold ?? 0.5,
+        opts.mean ?? 0.3, opts.detected ? 1 : 0, '{}', '{}',
+        opts.mode ?? 'balanced',
+      ],
+    )
+  }
+
+  test('section omitted when no drift runs and no A16 activity', () => {
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('Calibration drift')
+  })
+
+  test('renders latest run with verdict', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    seedDrift(db, Date.now() - 1000, { mean: 0.32, threshold: 0.5, detected: false, n: 30 })
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Calibration drift')
+    expect(stdout).toContain('Latest run')
+    expect(stdout).toMatch(/0\.32 ± 0\.50/)
+    expect(stdout).toContain('✓ ok')
+    expect(stdout).toContain('n=30')
+    expect(stdout).toContain('balanced')
+  })
+
+  test('drift verdict surfaces ✗ DRIFT when detected', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    seedDrift(db, Date.now() - 1000, { mean: 0.85, detected: true })
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('✗ DRIFT')
+  })
+
+  test('latest = most recent ts (not insertion order)', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    seedDrift(db, Date.now() - 10_000_000, { mean: 0.1, detected: false })
+    seedDrift(db, Date.now() - 1000, { mean: 0.9, detected: true })
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/0\.90/)
+    expect(stdout).toContain('DRIFT')
+  })
+
+  test('window summary counts runs', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedDrift(db, now - 1000, { mean: 0.3, detected: false })
+    seedDrift(db, now - 2000, { mean: 0.8, detected: true })
+    seedDrift(db, now - 3000, { mean: 0.2, detected: false })
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/Window\s+3 runs, 1 with drift/)
+  })
+
+  test('out-of-window runs still surface as latest but excluded from window count', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const longAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
+    seedDrift(db, longAgo, { mean: 0.3, detected: false })
+    db.close()
+    const { stdout } = runReport(dbPath, ['--since', '7d'])
+    // Latest still shows (we look at all-time for "latest")
+    expect(stdout).toContain('Calibration drift')
+    expect(stdout).toContain('Latest run')
+    // But the window section is suppressed when 0 in-window
+    expect(stdout).not.toContain('Window  ')
+  })
+
+  test('nudge appears when A16 active but no drift runs', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision, a16_asi_readiness, a16_well_formedness, a16_verifier_shaped, a16_density_clarity)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['b1', now, '/p', 'fp', 'b', 'accept', 4, 4, 4, 4],
+    )
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Calibration drift')
+    expect(stdout).toContain('no runs yet')
+    expect(stdout).toContain('instrumentation:drift --baseline')
+  })
+
+  test('day-scale age formatting when run is >24h old', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    seedDrift(db, Date.now() - 3 * 24 * 60 * 60 * 1000, { mean: 0.2 })
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/3d ago/)
+  })
+})
