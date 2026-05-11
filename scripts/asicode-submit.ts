@@ -261,7 +261,19 @@ async function main() {
           baselineVerify: r.baselineVerify,
         }
       }
-      else raceError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
+      else {
+        raceError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
+        // REQ-46: terminal race failures mean no PR will ever ship from
+        // this brief. Mark abandoned immediately so reports + status
+        // reflect reality (otherwise the brief sits pr_outcome=NULL
+        // for 6h until REQ-38/39 reaps). Skip user-config errors —
+        // those signal a setup mistake, not failed work.
+        const config = r.reason === 'opt_out' || r.reason === 'invalid_count' || r.reason === 'not_a_git_worktree'
+        if (!config) {
+          try { updateBrief({ brief_id: briefId, pr_outcome: 'abandoned', ts_completed: Date.now(), intervention_reason: `race:${r.reason}` }) }
+          catch { /* db unavailable — leave brief NULL; REQ-39 cleans later */ }
+        }
+      }
     } catch (e) { raceError = e instanceof Error ? e.message : String(e) }
   } else if (shouldStart) {
     dispatch = dispatchAgent(briefId, enrichedBrief, args.cwd, args.background)

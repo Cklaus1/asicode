@@ -602,6 +602,78 @@ describe('--race best-of-N (REQ-14)', () => {
     expect(r.stdout).toContain('budget_exhausted')
   })
 
+  // REQ-46: terminal race failures mark the brief abandoned immediately.
+  test('all_racers_failed marks brief pr_outcome=abandoned (REQ-46)', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'broken\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        // dispatch exits non-zero with no commit → no diff → all_racers_failed
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; exit 1',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-fail'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race_error).toContain('all_racers_failed')
+    // Brief was marked abandoned synchronously
+    const db = new Database(dbPath)
+    const row = db.query<{ pr_outcome: string | null; intervention_reason: string | null }, [string]>(
+      `SELECT pr_outcome, intervention_reason FROM briefs WHERE brief_id = ?`,
+    ).get(parsed.brief_id)
+    db.close()
+    expect(row?.pr_outcome).toBe('abandoned')
+    expect(row?.intervention_reason).toContain('all_racers_failed')
+  }, 90_000)
+
+  test('budget_exhausted marks brief abandoned (REQ-46)', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '4', '--json'], {
+      timeout: 15_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_DISPATCH_CMD: 'true',
+        ASICODE_RACE_MAX_TOTAL_TOKENS: '1000',
+        ASICODE_PER_RACER_TOKEN_BUDGET: '50000',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-bud-46'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race_error).toContain('budget_exhausted')
+    const db = new Database(dbPath)
+    const row = db.query<{ pr_outcome: string | null }, [string]>(
+      `SELECT pr_outcome FROM briefs WHERE brief_id = ?`,
+    ).get(parsed.brief_id)
+    db.close()
+    expect(row?.pr_outcome).toBe('abandoned')
+  })
+
+  test('opt_out (user config error) does NOT mark abandoned (REQ-46)', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--json'], {
+      timeout: 15_000,
+      env: { ...RACE_ENV, ASICODE_DISPATCH_CMD: '' },  // empty → opt_out
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race_error).toContain('opt_out')
+    const db = new Database(dbPath)
+    const row = db.query<{ pr_outcome: string | null }, [string]>(
+      `SELECT pr_outcome FROM briefs WHERE brief_id = ?`,
+    ).get(parsed.brief_id)
+    db.close()
+    // User config issue — brief stays NULL so user can retry without
+    // an abandoned-counted row.
+    expect(row?.pr_outcome).toBeNull()
+  })
+
   test('budget cap surfaces race_error before any spawn (REQ-29)', () => {
     gitInit(projDir)
     const briefPath = join(tempDir, 'b.md')
