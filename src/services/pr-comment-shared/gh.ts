@@ -12,7 +12,18 @@
  * always return a structured result. Callers stay tolerant.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn as realSpawn } from 'node:child_process'
+
+// REQ-11 (iter 89): injectable spawn for unit tests. Production uses
+// the real node:child_process.spawn. Tests pass a stub via
+// _setSpawnForTest, restore via _resetSpawnForTest. This avoids the
+// mock.module pattern that iter-50 identified as a test-pollution
+// vector.
+type SpawnFn = typeof realSpawn
+let spawn: SpawnFn = realSpawn
+
+export function _setSpawnForTest(stub: SpawnFn): void { spawn = stub }
+export function _resetSpawnForTest(): void { spawn = realSpawn }
 
 /**
  * Find the PR number for a given merge sha by asking gh. Returns null
