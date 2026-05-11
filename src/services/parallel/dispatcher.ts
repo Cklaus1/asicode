@@ -65,6 +65,7 @@ export type RaceFailure =
   | 'provision_failed'         // all worktrees failed to provision
   | 'all_racers_failed'        // no racer produced a usable diff
   | 'no_finishers'             // race timed out with no finishers
+  | 'budget_exhausted'         // REQ-29: projected race cost > cap
 
 export type RaceResult =
   | {
@@ -166,6 +167,32 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
   const dispatchCmd = process.env.ASICODE_DISPATCH_CMD
   if (!dispatchCmd || dispatchCmd.trim() === '') return { ok: false, reason: 'opt_out', detail: 'ASICODE_DISPATCH_CMD not set' }
   if (input.count < 1 || input.count > 10) return { ok: false, reason: 'invalid_count', detail: `count must be 1-10, got ${input.count}` }
+
+  // REQ-29: budget cap. Refuse before provisioning worktrees / spawning
+  // racers when projected total > cap. Per-racer default 50k tokens;
+  // user can tighten via ASICODE_PER_RACER_TOKEN_BUDGET. The cap caps
+  // EITHER tokens (ASICODE_RACE_MAX_TOTAL_TOKENS) OR dollars
+  // (ASICODE_RACE_MAX_TOTAL_USD with ASICODE_USD_PER_1K_TOKENS rate).
+  const perRacerTokens = parseInt(process.env.ASICODE_PER_RACER_TOKEN_BUDGET ?? '50000', 10)
+  const projectedTokens = (Number.isFinite(perRacerTokens) ? perRacerTokens : 50000) * input.count
+  const maxTokens = parseInt(process.env.ASICODE_RACE_MAX_TOTAL_TOKENS ?? '', 10)
+  if (Number.isFinite(maxTokens) && maxTokens > 0 && projectedTokens > maxTokens) {
+    return {
+      ok: false, reason: 'budget_exhausted',
+      detail: `projected ${projectedTokens} tokens (${input.count} racers × ${perRacerTokens}) > cap ${maxTokens}`,
+    }
+  }
+  const maxUsd = parseFloat(process.env.ASICODE_RACE_MAX_TOTAL_USD ?? '')
+  const usdPer1k = parseFloat(process.env.ASICODE_USD_PER_1K_TOKENS ?? '0.01')
+  if (Number.isFinite(maxUsd) && maxUsd > 0) {
+    const projectedUsd = (projectedTokens / 1000) * (Number.isFinite(usdPer1k) ? usdPer1k : 0.01)
+    if (projectedUsd > maxUsd) {
+      return {
+        ok: false, reason: 'budget_exhausted',
+        detail: `projected $${projectedUsd.toFixed(2)} (${input.count} racers × ${perRacerTokens} tok @ $${usdPer1k}/1k) > cap $${maxUsd.toFixed(2)}`,
+      }
+    }
+  }
 
   const base = input.base ?? 'main'
   const settleMs = input.settleMs ?? DEFAULT_SETTLE_MS

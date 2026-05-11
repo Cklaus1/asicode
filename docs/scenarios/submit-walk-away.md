@@ -252,3 +252,23 @@ bun run instrumentation:report --since 7d | grep -A4 "Race + verifier"
 
 (REQ-23). Tells you `Winner passed XX%` across the panel — the
 leading indicator for "verifiably correct PR".
+
+### Budget cap (REQ-29)
+
+A 4-way race spends 4× a single agent's compute. Cap the worst case:
+
+```bash
+# tokens cap: refuse race if projected total > 200k tokens
+export ASICODE_RACE_MAX_TOTAL_TOKENS=200000
+
+# OR dollar cap (with USD/1k token rate, default 0.01):
+export ASICODE_RACE_MAX_TOTAL_USD=2.00
+export ASICODE_USD_PER_1K_TOKENS=0.01
+
+# adjust the per-racer estimate when you know your average:
+export ASICODE_PER_RACER_TOKEN_BUDGET=30000   # default 50000
+```
+
+When projected > cap, the race exits BEFORE provisioning worktrees
+with `race_error: "budget_exhausted: projected … tokens > cap …"`.
+Tighten `--race N` or raise the cap and resubmit.

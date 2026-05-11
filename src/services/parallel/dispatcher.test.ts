@@ -75,6 +75,63 @@ describe('raceAgents — guards', () => {
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toBe('not_a_git_worktree')
   })
+
+  // REQ-29: budget cap refuses before provisioning.
+  test('budget cap: projected tokens > cap → budget_exhausted', async () => {
+    process.env.ASICODE_DISPATCH_CMD = 'true'
+    process.env.ASICODE_RACE_MAX_TOTAL_TOKENS = '10000'  // 10k cap
+    process.env.ASICODE_PER_RACER_TOKEN_BUDGET = '50000'  // 50k each → 4×50k=200k > 10k
+    try {
+      const r = await raceAgents({ briefId: 'b1', briefText: 't', repoPath: repoDir, count: 4, rootDir: tempDir, label: 'budget' })
+      expect(r.ok).toBe(false)
+      if (!r.ok) {
+        expect(r.reason).toBe('budget_exhausted')
+        expect(r.detail).toContain('200000 tokens')
+        expect(r.detail).toContain('10000')
+      }
+    } finally {
+      delete process.env.ASICODE_RACE_MAX_TOTAL_TOKENS
+      delete process.env.ASICODE_PER_RACER_TOKEN_BUDGET
+    }
+  })
+
+  test('budget cap: projected USD > cap → budget_exhausted', async () => {
+    process.env.ASICODE_DISPATCH_CMD = 'true'
+    process.env.ASICODE_RACE_MAX_TOTAL_USD = '1.00'  // $1 cap
+    process.env.ASICODE_PER_RACER_TOKEN_BUDGET = '50000'
+    process.env.ASICODE_USD_PER_1K_TOKENS = '0.01'  // 4*50k = 200k tok → $2 > $1
+    try {
+      const r = await raceAgents({ briefId: 'b1', briefText: 't', repoPath: repoDir, count: 4, rootDir: tempDir, label: 'budget-usd' })
+      expect(r.ok).toBe(false)
+      if (!r.ok) {
+        expect(r.reason).toBe('budget_exhausted')
+        expect(r.detail).toContain('$2.00')
+        expect(r.detail).toContain('$1.00')
+      }
+    } finally {
+      delete process.env.ASICODE_RACE_MAX_TOTAL_USD
+      delete process.env.ASICODE_PER_RACER_TOKEN_BUDGET
+      delete process.env.ASICODE_USD_PER_1K_TOKENS
+    }
+  })
+
+  test('budget cap: under cap → race proceeds', async () => {
+    process.env.ASICODE_DISPATCH_CMD = 'cat > /dev/null; echo x > x.txt; git config user.email t@t.t; git config user.name T; git add x.txt; git commit -q --no-gpg-sign -m "x"'
+    process.env.ASICODE_RACE_MAX_TOTAL_TOKENS = '1000000'  // 1M cap, plenty
+    try {
+      const r = await raceAgents({ briefId: 'b1', briefText: 't', repoPath: repoDir, count: 2, rootDir: tempDir, label: 'budget-ok', settleMs: 500, maxRaceMs: 15_000 })
+      expect(r.ok).toBe(true)
+    } finally { delete process.env.ASICODE_RACE_MAX_TOTAL_TOKENS }
+  }, 30_000)
+
+  test('budget cap: no env set → no enforcement (back-compat)', async () => {
+    process.env.ASICODE_DISPATCH_CMD = 'cat > /dev/null; echo y > y.txt; git config user.email t@t.t; git config user.name T; git add y.txt; git commit -q --no-gpg-sign -m "y"'
+    // Make sure no leftover env from prior tests
+    delete process.env.ASICODE_RACE_MAX_TOTAL_TOKENS
+    delete process.env.ASICODE_RACE_MAX_TOTAL_USD
+    const r = await raceAgents({ briefId: 'b1', briefText: 't', repoPath: repoDir, count: 2, rootDir: tempDir, label: 'budget-off', settleMs: 500, maxRaceMs: 15_000 })
+    expect(r.ok).toBe(true)
+  }, 30_000)
 })
 
 describe('raceAgents — happy path', () => {

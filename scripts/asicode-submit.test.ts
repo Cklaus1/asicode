@@ -566,6 +566,38 @@ describe('--race best-of-N (REQ-14)', () => {
     expect(r.stdout).toContain('ASICODE_VERIFY_AUTODETECT')
   })
 
+  test('--help mentions budget cap (REQ-29)', () => {
+    const r = run(['--help'], { env: { ASICODE_INSTRUMENTATION_DB: '' } })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('ASICODE_RACE_MAX_TOTAL_TOKENS')
+    expect(r.stdout).toContain('ASICODE_RACE_MAX_TOTAL_USD')
+    expect(r.stdout).toContain('budget_exhausted')
+  })
+
+  test('budget cap surfaces race_error before any spawn (REQ-29)', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'broke\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '4', '--json'], {
+      timeout: 15_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_DISPATCH_CMD: 'true',
+        ASICODE_RACE_MAX_TOTAL_TOKENS: '1000',  // tight cap
+        ASICODE_PER_RACER_TOKEN_BUDGET: '50000',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-budget'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race).toBeUndefined()
+    expect(parsed.race_error).toContain('budget_exhausted')
+    expect(parsed.race_error).toContain('200000 tokens')
+    // No PR, no dispatch fired
+    expect(parsed.pr).toBeUndefined()
+    expect(parsed.dispatch_skipped).toBeUndefined()
+  }, 30_000)
+
   // REQ-26: baseline broken → gate is advisory.
   test('baseline=failed → gate does NOT fire even when winner verify=failed', () => {
     gitInit(projDir)
