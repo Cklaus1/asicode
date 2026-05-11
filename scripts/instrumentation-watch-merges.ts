@@ -91,6 +91,7 @@ export function formatTickResult(r: Awaited<ReturnType<typeof pollMergedPrs>>): 
   // surface the counts so operators see what the daemon did.
   if (r.staleRunsReaped) parts.push(`reaped=${r.staleRunsReaped}`)
   if (r.briefsAbandoned) parts.push(`abandoned=${r.briefsAbandoned}`)
+  if (r.worktreesCleanedUp) parts.push(`worktrees-cleaned=${r.worktreesCleanedUp}`)
   if (r.revertsOpened.length) {
     parts.push(`auto-reverts=${r.revertsOpened.length}`)
     for (const rv of r.revertsOpened) {

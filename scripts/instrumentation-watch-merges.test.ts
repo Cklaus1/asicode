@@ -5,7 +5,7 @@ import { formatTickResult } from './instrumentation-watch-merges'
 const base = {
   prsFound: 0, alreadyAttached: 0, matched: [], unmatchable: 0,
   shipItPosted: [], shipItPending: 0, revertsOpened: [],
-  staleRunsReaped: 0, briefsAbandoned: 0, errors: [],
+  staleRunsReaped: 0, briefsAbandoned: 0, worktreesCleanedUp: 0, errors: [],
 }
 
 describe('formatTickResult (REQ-40)', () => {
@@ -29,5 +29,15 @@ describe('formatTickResult (REQ-40)', () => {
     const s = formatTickResult({ ...base, staleRunsReaped: 4, briefsAbandoned: 1 })
     expect(s).toContain('reaped=4')
     expect(s).toContain('abandoned=1')
+  })
+
+  test('REQ-42: shows worktrees-cleaned when >0', () => {
+    const s = formatTickResult({ ...base, worktreesCleanedUp: 2 })
+    expect(s).toContain('worktrees-cleaned=2')
+  })
+
+  test('REQ-42: omits worktrees-cleaned when zero', () => {
+    const s = formatTickResult({ ...base })
+    expect(s).not.toContain('worktrees-cleaned')
   })
 })

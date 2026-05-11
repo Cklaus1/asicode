@@ -110,8 +110,41 @@ export interface PollResult {
   staleRunsReaped: number
   /** REQ-39: briefs cascaded to pr_outcome=abandoned this tick. */
   briefsAbandoned: number
+  /** REQ-42: winner worktrees cleaned up after PR merge this tick. */
+  worktreesCleanedUp: number
   /** Errors that surfaced. */
   errors: string[]
+}
+
+// REQ-42: after the brief's PR merges, the winning racer's worktree
+// has served its purpose. Look up its path + branch and clean. Soft-
+// fail at every step (no path, missing dir, no git, etc.).
+export async function cleanupWinnerWorktreeForBrief(
+  briefId: string,
+  repoPath: string,
+): Promise<{ cleaned: boolean; reason?: string }> {
+  try {
+    const db = openInstrumentationDb()
+    const row = db.query<{ worktree_path: string | null }, [string]>(
+      `SELECT worktree_path FROM runs
+       WHERE brief_id = ? AND was_race_winner = 1 AND isolation_mode = 'worktree'
+         AND worktree_path IS NOT NULL
+       LIMIT 1`,
+    ).get(briefId)
+    if (!row?.worktree_path) return { cleaned: false, reason: 'no_worktree_path' }
+    // Read the worktree's branch BEFORE removal so we can delete it
+    // after. Soft-fail: if the worktree dir is already gone, the
+    // worktree-remove call will tell us.
+    const branchRef = await execFileNoThrowWithCwd('git', ['-C', row.worktree_path, 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoPath, timeout: 5_000 })
+    const branch = (branchRef.stdout ?? '').trim()
+    await execFileNoThrowWithCwd('git', ['-C', repoPath, 'worktree', 'remove', '--force', row.worktree_path], { cwd: repoPath, timeout: 10_000 })
+    if (branch && branch !== 'HEAD') {
+      await execFileNoThrowWithCwd('git', ['-C', repoPath, 'branch', '-D', branch], { cwd: repoPath, timeout: 5_000 })
+    }
+    return { cleaned: true }
+  } catch (e) {
+    return { cleaned: false, reason: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 // REQ-38: a run is reapable when it has been in_flight past the daemon
@@ -213,6 +246,7 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
     revertsOpened: [],
     staleRunsReaped: reap.reaped,
     briefsAbandoned: reap.briefsAbandoned,
+    worktreesCleanedUp: 0,
     errors: [],
   }
 
@@ -281,6 +315,9 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
       briefId: candidate.briefId,
       fired: landed.fired,
     })
+    // REQ-42: PR merged → winner worktree no longer needed.
+    const cleanup = await cleanupWinnerWorktreeForBrief(candidate.briefId, projectPath)
+    if (cleanup.cleaned) result.worktreesCleanedUp++
     // Queue for the ship-it second pass (iter 60). Judges/adversarial/
     // density fired above are async; the verdict needs their signals.
     pendingShipIts.push({

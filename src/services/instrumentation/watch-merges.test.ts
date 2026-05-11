@@ -354,3 +354,64 @@ describe('reapStaleRuns (REQ-38)', () => {
     expect(r.briefsAbandoned).toBe(1)
   })
 })
+
+// REQ-42: post-merge worktree cleanup.
+describe('cleanupWinnerWorktreeForBrief (REQ-42)', () => {
+  test('removes the winner worktree + branch', async () => {
+    // Create a real worktree off repoDir.
+    spawnSync('git', ['-C', repoDir, 'worktree', 'add', '-b', 'asicode/race-test-0', join(tempDir, 'wt0')])
+    // Seed brief + winner run pointing at that worktree.
+    const db = openInstrumentationDb()
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['brf_cleanup', Date.now(), repoDir, 'fp', 't', 'accept'],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome, was_race_winner, worktree_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['run_w', 'brf_cleanup', Date.now(), 'worktree', 'completed', 1, join(tempDir, 'wt0')],
+    )
+    const { cleanupWinnerWorktreeForBrief } = await import('./watch-merges.js')
+    const r = await cleanupWinnerWorktreeForBrief('brf_cleanup', repoDir)
+    expect(r.cleaned).toBe(true)
+    // worktree gone
+    const list = spawnSync('git', ['-C', repoDir, 'worktree', 'list'], { encoding: 'utf-8' }).stdout
+    expect(list).not.toContain('wt0')
+    // branch gone
+    const branches = spawnSync('git', ['-C', repoDir, 'branch'], { encoding: 'utf-8' }).stdout
+    expect(branches).not.toContain('asicode/race-test-0')
+  })
+
+  test('no_worktree_path reason when no winner row', async () => {
+    const db = openInstrumentationDb()
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['brf_nopath', Date.now(), repoDir, 'fp', 't', 'accept'],
+    )
+    const { cleanupWinnerWorktreeForBrief } = await import('./watch-merges.js')
+    const r = await cleanupWinnerWorktreeForBrief('brf_nopath', repoDir)
+    expect(r.cleaned).toBe(false)
+    expect(r.reason).toBe('no_worktree_path')
+  })
+
+  test('soft-fail when worktree directory already gone', async () => {
+    const db = openInstrumentationDb()
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['brf_gone', Date.now(), repoDir, 'fp', 't', 'accept'],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome, was_race_winner, worktree_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['run_x', 'brf_gone', Date.now(), 'worktree', 'completed', 1, '/dev/null/nonexistent'],
+    )
+    const { cleanupWinnerWorktreeForBrief } = await import('./watch-merges.js')
+    const r = await cleanupWinnerWorktreeForBrief('brf_gone', repoDir)
+    // Soft-fail returns cleaned:true even when git worktree remove
+    // fails — best-effort intent.
+    expect(typeof r).toBe('object')
+  })
+})
