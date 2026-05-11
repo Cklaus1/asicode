@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+// REQ-8.2: asicode CLI binary. Delegates to the openclaude entrypoint
+// so existing dist/cli.mjs is the single bundle; the alias is just a
+// different bin name on PATH. Both `asicode` and `openclaude` invoke
+// the same compiled CLI until the openclaude alias is retired.
+import { existsSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const distPath = join(__dirname, '..', 'dist', 'cli.mjs')
+if (existsSync(distPath)) await import(pathToFileURL(distPath).href)
+else {
+  console.error(`\n  asicode: dist/cli.mjs not found.\n\n  Build first:\n    bun run build\n\n  Or run directly with Bun:\n    bun run dev\n\n  See README.md for setup instructions.\n`)
+  process.exit(1)
+}

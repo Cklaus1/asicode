@@ -86,6 +86,15 @@ describe('OpenClaude paths', () => {
     )
   })
 
+  test('local installer exposes asicode wrapper path alongside openclaude (REQ-8.2)', async () => {
+    process.env.CLAUDE_CONFIG_DIR = join(homedir(), '.openclaude')
+    const { getLocalAsicodePath } = await importFreshLocalInstaller()
+
+    expect(getLocalAsicodePath()).toBe(
+      join(homedir(), '.openclaude', 'local', 'asicode'),
+    )
+  })
+
   test('local installation detection matches .openclaude path', async () => {
     const { isManagedLocalInstallationPath } =
       await importFreshLocalInstaller()

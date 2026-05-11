@@ -37,7 +37,11 @@ export function getCandidateLocalInstallDirs(options?: {
 }
 
 function getCandidateLocalBinaryPaths(localInstallDir: string): string[] {
+  // REQ-8.2: prefer `asicode` bin if present, fall back to `openclaude`
+  // (back-compat for installs predating the rename) and `claude` (the
+  // upstream-Anthropic shadow).
   return [
+    join(localInstallDir, 'node_modules', '.bin', 'asicode'),
     join(localInstallDir, 'node_modules', '.bin', 'openclaude'),
     join(localInstallDir, 'node_modules', '.bin', 'claude'),
   ]
@@ -53,6 +57,12 @@ export function isManagedLocalInstallationPath(execPath: string): boolean {
 
 export function getLocalClaudePath(): string {
   return join(getLocalInstallDir(), 'openclaude')
+}
+
+// REQ-8.2: asicode wrapper path alongside the openclaude one. Both
+// resolve to the same node_modules/.bin/<bin> shim.
+export function getLocalAsicodePath(): string {
+  return join(getLocalInstallDir(), 'asicode')
 }
 
 /**
@@ -101,16 +111,15 @@ export async function ensureLocalPackageEnvironment(): Promise<boolean> {
       ),
     )
 
-    // Create the wrapper script if it doesn't exist
+    // Create the wrapper script(s) if they don't exist. Both `asicode`
+    // and legacy `openclaude` invoke the same package bin shim.
     const wrapperPath = getLocalClaudePath()
-    const created = await writeIfMissing(
-      wrapperPath,
-      `#!/bin/sh\nexec "${localInstallDir}/node_modules/.bin/openclaude" "$@"`,
-      0o755,
-    )
-    if (created) {
-      // Mode in writeFile is masked by umask; chmod to ensure executable bit.
-      await chmod(wrapperPath, 0o755)
+    const asicodeWrapperPath = getLocalAsicodePath()
+    const binShim = `${localInstallDir}/node_modules/.bin/openclaude`
+    for (const p of [wrapperPath, asicodeWrapperPath]) {
+      const created = await writeIfMissing(p, `#!/bin/sh\nexec "${binShim}" "$@"`, 0o755)
+      // Mode in writeFile is masked by umask; chmod to ensure exec bit.
+      if (created) await chmod(p, 0o755)
     }
 
     return true
