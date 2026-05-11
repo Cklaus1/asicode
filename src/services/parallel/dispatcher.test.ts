@@ -194,3 +194,120 @@ describe('raceAgents — failure modes', () => {
     if (!r.ok) expect(r.reason).toBe('all_racers_failed')
   }, 30_000)
 })
+
+// REQ-18: verifier-gated winner selection.
+describe('raceAgents — verifier-gated winner (REQ-18)', () => {
+  test('passing racer wins over failing racer (regardless of finish order)', async () => {
+    // Each racer writes a "marker" file naming itself, then commits.
+    // The verifier checks the marker: only racers where marker says
+    // "ok" pass. We seed BOTH racers to write differently so each
+    // has a distinguishable diff; the verifier picks the passing one.
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      # Pick a marker value from the worktree path so each racer differs.
+      # Use a function of the path to ensure deterministic but distinct
+      # markers between the two worktrees.
+      WT_NAME="$(basename "$PWD")"
+      case "$WT_NAME" in
+        *-0-*) MARKER=fail ;;
+        *) MARKER=ok ;;
+      esac
+      echo "$MARKER" > marker.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add marker.txt
+      git commit -q --no-gpg-sign -m "marker $MARKER"
+    `
+    const r = await raceAgents({
+      briefId: 'bv1', briefText: 'pick a marker',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-pass',
+      settleMs: 800, maxRaceMs: 20_000,
+      verifyCmd: 'grep -q "^ok$" marker.txt',
+      verifyTimeoutMs: 5000,
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      // Winner's diff contains "ok" marker, not "fail"
+      expect(r.winnerDiff).toContain('ok')
+      expect(r.winnerDiff).not.toContain('+fail')
+      // Winner's verify outcome is 'passed'
+      const winner = r.racers.find(rr => rr.runId === r.winnerRunId)
+      expect(winner?.verify?.outcome).toBe('passed')
+    }
+  }, 60_000)
+
+  test('no passing racer → still picks best (failing) over no candidate', async () => {
+    // Both racers commit but both fail the verifier. Result: a winner
+    // is still chosen (the FCFS one among failing), not 'all_failed'.
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "broken" > f.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add f.txt
+      git commit -q --no-gpg-sign -m "broken"
+    `
+    const r = await raceAgents({
+      briefId: 'bv2', briefText: 't',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-allfail',
+      settleMs: 800, maxRaceMs: 20_000,
+      verifyCmd: 'exit 1',  // always fail
+      verifyTimeoutMs: 3000,
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      const winner = r.racers.find(rr => rr.runId === r.winnerRunId)
+      expect(winner?.verify?.outcome).toBe('failed')
+    }
+  }, 60_000)
+
+  test('verifyCmd undefined (default) → reads from ASICODE_VERIFY_CMD env', async () => {
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "x" > x.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add x.txt
+      git commit -q --no-gpg-sign -m "x"
+    `
+    process.env.ASICODE_VERIFY_CMD = 'true'  // always pass
+    try {
+      const r = await raceAgents({
+        briefId: 'bv3', briefText: 't',
+        repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-env',
+        settleMs: 500, maxRaceMs: 15_000,
+        // verifyCmd omitted on purpose
+      })
+      expect(r.ok).toBe(true)
+      if (r.ok) {
+        const winner = r.racers.find(rr => rr.runId === r.winnerRunId)
+        expect(winner?.verify?.outcome).toBe('passed')
+      }
+    } finally { delete process.env.ASICODE_VERIFY_CMD }
+  }, 60_000)
+
+  test('explicit verifyCmd: "" disables verifier even when env set', async () => {
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      echo "x" > x.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add x.txt
+      git commit -q --no-gpg-sign -m "x"
+    `
+    process.env.ASICODE_VERIFY_CMD = 'true'
+    try {
+      const r = await raceAgents({
+        briefId: 'bv4', briefText: 't',
+        repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-off',
+        settleMs: 500, maxRaceMs: 15_000,
+        verifyCmd: '',
+      })
+      expect(r.ok).toBe(true)
+      if (r.ok) {
+        // No verify ran → racers' verify field stays null.
+        expect(r.racers.every(rr => rr.verify === null)).toBe(true)
+      }
+    } finally { delete process.env.ASICODE_VERIFY_CMD }
+  }, 60_000)
+})

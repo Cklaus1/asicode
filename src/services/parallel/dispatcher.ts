@@ -13,6 +13,7 @@ import {
 import type { JudgeProvider } from '../judges/dispatcher.js'
 import { provisionWorktrees, type ProvisionedWorktree } from './worktreeProvisioner.js'
 import { pickWinner, type RaceCandidate, type TiebreakResult } from './tiebreaker.js'
+import { runVerifier, verifyCmdFromEnv, verifyRank, type VerifyOutcome } from './verifier.js'
 
 export interface RaceInput {
   briefId: string
@@ -33,6 +34,16 @@ export interface RaceInput {
   rootDir?: string
   /** Label suffix for branch names (for tests + concurrent races). */
   label?: string
+  /**
+   * REQ-18: verifier shell command run inside each finished racer's
+   * worktree. When set, the dispatcher prefers passing racers over
+   * failing ones; ties within a class fall through to tiebreak.
+   * Defaults to ASICODE_VERIFY_CMD when undefined; pass empty string
+   * to explicitly disable.
+   */
+  verifyCmd?: string
+  /** Hard cap on verifier wall-clock per racer. Default 5 min. */
+  verifyTimeoutMs?: number
 }
 
 export interface RaceRacer extends ProvisionedWorktree {
@@ -42,6 +53,8 @@ export interface RaceRacer extends ProvisionedWorktree {
   outcome: 'pending' | 'completed' | 'crashed' | 'killed' | 'timed_out'
   finishedAtMs: number | null
   diff: string | null
+  /** REQ-18: per-racer verifier result. null when no verifyCmd ran. */
+  verify: { outcome: VerifyOutcome; exitCode: number | null; durationMs: number; stderrTail: string } | null
 }
 
 export type RaceFailure =
@@ -131,7 +144,7 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
     const runId = newRunId()
     const logPath = resolve(logDir, `${runId}.log`)
     const racer: RaceRacer = {
-      ...wt, runId, pid: 0, logPath, outcome: 'pending', finishedAtMs: null, diff: null,
+      ...wt, runId, pid: 0, logPath, outcome: 'pending', finishedAtMs: null, diff: null, verify: null,
     }
     try {
       recordRun({
@@ -186,8 +199,30 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
     if (r.outcome !== 'completed') continue
     r.diff = await captureDiff(r, base, input.repoPath)
   }
-  const candidates: RaceCandidate[] = racers
-    .filter(r => r.outcome === 'completed' && r.diff !== null && r.diff.trim() !== '')
+  const finishers = racers.filter(r => r.outcome === 'completed' && r.diff !== null && r.diff.trim() !== '')
+
+  // REQ-18: run the verifier inside each finished worktree. verifyCmd
+  // explicitly empty string disables; undefined falls back to env.
+  const verifyCmd = input.verifyCmd !== undefined ? input.verifyCmd : verifyCmdFromEnv() ?? ''
+  if (verifyCmd && finishers.length > 0) {
+    // Run verifiers in parallel — the racers are isolated worktrees,
+    // so the verifier processes shouldn't contend.
+    await Promise.all(finishers.map(async r => {
+      const res = await runVerifier({ worktreePath: r.path, cmd: verifyCmd, timeoutMs: input.verifyTimeoutMs })
+      r.verify = { outcome: res.outcome, exitCode: res.exitCode, durationMs: res.durationMs, stderrTail: res.stderrTail }
+    }))
+  }
+
+  // Candidate list, sorted by verify rank desc (passed first, then
+  // failed, then verifier_error). Within the same rank, FCFS order
+  // is preserved by stable sort on finishedAtMs.
+  const candidates: RaceCandidate[] = [...finishers]
+    .sort((a, b) => {
+      const ar = a.verify ? verifyRank(a.verify.outcome) : -1
+      const br = b.verify ? verifyRank(b.verify.outcome) : -1
+      if (br !== ar) return br - ar
+      return (a.finishedAtMs ?? 0) - (b.finishedAtMs ?? 0)
+    })
     .map(r => ({ runId: r.runId, diff: r.diff!, worktreePath: r.path, branch: r.branch }))
 
   // Update db rows so status CLI sees the outcomes
@@ -204,18 +239,30 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
     return { ok: false, reason: 'all_racers_failed', racers }
   }
 
-  // 6. Tiebreak (or first-past-the-post when provider absent)
+  // 6. Tiebreak (or first-past-the-post when provider absent). With
+  // REQ-18, candidates are pre-sorted by verifier rank, so an LLM
+  // tiebreak only fires when ≥2 racers share the top class (e.g.
+  // multiple passing diffs).
   let tiebreak: TiebreakResult | null = null
   let winner: RaceCandidate
-  if (input.tiebreakProvider && candidates.length > 1) {
+  // Restrict tiebreak to racers in the top verifier class only.
+  const topClass = verifyCmd && finishers.some(r => r.verify)
+    ? (() => {
+        const ranked = finishers.filter(r => r.verify)
+        const topRank = Math.max(...ranked.map(r => verifyRank(r.verify!.outcome)))
+        const topIds = new Set(ranked.filter(r => verifyRank(r.verify!.outcome) === topRank).map(r => r.runId))
+        return candidates.filter(c => topIds.has(c.runId))
+      })()
+    : candidates
+  if (input.tiebreakProvider && topClass.length > 1) {
     tiebreak = await pickWinner({
       briefText: input.briefText,
-      candidates,
+      candidates: topClass,
       provider: input.tiebreakProvider,
     })
-    winner = tiebreak.winner ?? candidates[0]
+    winner = tiebreak.winner ?? topClass[0]
   } else {
-    winner = candidates[0]
+    winner = topClass[0] ?? candidates[0]
   }
   // Flag the winner row
   try { updateRun({ run_id: winner.runId, was_race_winner: true }) } catch { /* db unavailable */ }
