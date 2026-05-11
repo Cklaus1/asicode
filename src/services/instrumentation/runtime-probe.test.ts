@@ -65,6 +65,42 @@ describe('probeRuntime — empty environment', () => {
     expect(r.unconfigured).toContain('density')
     expect(r.unconfigured).toContain('adversarial')
     expect(r.unconfigured).toContain('plan-retrieval')
+    expect(r.unconfigured).toContain('watch-merges')
+  })
+})
+
+describe('probeRuntime — watch-merges daemon detection', () => {
+  test('reports missing when no daemon is running', async () => {
+    const r = await probeRuntime()
+    const c = r.checks.find(c => c.name === 'watch-merges daemon')!
+    expect(c).toBeDefined()
+    expect(c.status).toBe('missing')
+    expect(c.detail).toMatch(/Not running/)
+    expect(r.unconfigured).toContain('watch-merges')
+  })
+
+  test('reports ok when a process matching the pattern is alive', async () => {
+    // Spawn `sh -c "while :; do sleep 1; done"` — the sh stays as the
+    // process (no exec), so its argv keeps the sentinel string that
+    // pgrep -f matches against. Without the `while` loop, sh would
+    // tail-call into sleep and lose the sentinel from its argv.
+    const { spawn } = await import('node:child_process')
+    const dummy = spawn(
+      'sh',
+      ['-c', '# instrumentation-watch-merges-test-sentinel\nwhile :; do sleep 1; done'],
+      { stdio: 'ignore', detached: false },
+    )
+    try {
+      // Give pgrep a moment to see the process in /proc.
+      await new Promise(resolve => setTimeout(resolve, 300))
+      const r = await probeRuntime()
+      const c = r.checks.find(c => c.name === 'watch-merges daemon')!
+      expect(c.status).toBe('ok')
+      expect(c.detail).toMatch(/Running/)
+      expect(r.enabled).toContain('watch-merges')
+    } finally {
+      dummy.kill('SIGTERM')
+    }
   })
 })
 

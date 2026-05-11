@@ -20,6 +20,7 @@
  * temporary outage shouldn't mask the true config state.
  */
 
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
 // ─── Result shape ────────────────────────────────────────────────────
@@ -56,6 +57,49 @@ function envSet(name: string, expectedValue?: string): ProbeStatus {
 
 function fileExists(path: string): ProbeStatus {
   return existsSync(path) ? 'ok' : 'missing'
+}
+
+/**
+ * Look for a running process whose argv contains `pattern`. Used to
+ * detect background daemons like watch-merges. Implemented via spawn
+ * to avoid pulling in the codebase's execFileNoThrow wrapper (which
+ * is itself mocked by some tests — see iter-50 triage doc).
+ *
+ * Returns the PIDs found, or [] when none. On non-POSIX or when pgrep
+ * is missing, returns [] (treated as 'unknown' by the caller).
+ */
+async function findProcessByPattern(pattern: string): Promise<number[]> {
+  return new Promise(resolve => {
+    let out = ''
+    let settled = false
+    const child = spawn('pgrep', ['-f', pattern], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const finish = (pids: number[]) => {
+      if (settled) return
+      settled = true
+      resolve(pids)
+    }
+    const timer = setTimeout(() => {
+      child.kill()
+      finish([])
+    }, 2000)
+    child.stdout.on('data', (chunk: Buffer) => {
+      out += chunk.toString('utf-8')
+    })
+    child.on('error', () => {
+      clearTimeout(timer)
+      finish([])
+    })
+    child.on('close', code => {
+      clearTimeout(timer)
+      if (code !== 0) return finish([])
+      const ownPid = process.pid
+      const pids = out
+        .split('\n')
+        .map(s => parseInt(s.trim(), 10))
+        .filter(n => !Number.isNaN(n) && n !== ownPid)
+      finish(pids)
+    })
+  })
 }
 
 /**
@@ -223,6 +267,31 @@ export async function probeRuntime(): Promise<ProbeReport> {
       })
       enabled.push(f.capability)
     }
+  }
+
+  // ── watch-merges daemon ──
+  // Without this daemon (or the report --backfill that runs one tick),
+  // briefs that ship merged PRs stay at pr_sha=NULL and the merge-time
+  // triggers never fire. This check tells the user whether the
+  // northstar workflow is wired end-to-end.
+  const watchPids = await findProcessByPattern('instrumentation-watch-merges')
+  if (watchPids.length > 0) {
+    checks.push({
+      name: 'watch-merges daemon',
+      expectation: 'background process auto-fires pr-landed on every merge',
+      status: 'ok',
+      detail: `Running, pid${watchPids.length > 1 ? 's' : ''}=${watchPids.join(',')}.`,
+    })
+    enabled.push('watch-merges')
+  } else {
+    checks.push({
+      name: 'watch-merges daemon',
+      expectation: 'background process auto-fires pr-landed on every merge',
+      status: 'missing',
+      detail:
+        'Not running. Reports still self-heal via --backfill at startup, but real-time triggers are deferred. Start with `bun run instrumentation:watch-merges &`.',
+    })
+    unconfigured.push('watch-merges')
   }
 
   return { checks, enabled, blocked, unconfigured }
