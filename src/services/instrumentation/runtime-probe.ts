@@ -90,6 +90,7 @@ const NORTHSTAR_ENRICHMENT: readonly string[] = [
   'adversarial',
   'plan-retrieval',
   'pr-comment',
+  'brief-veto',
 ]
 
 /**
@@ -158,6 +159,14 @@ function fixFor(capability: string, observedReason?: string): ReadinessBlocker {
         capability,
         reason: observedReason ?? 'PR-thread visibility off',
         fix: 'export ASICODE_PR_COMMENT_ENABLED=1',
+      }
+    case 'brief-veto':
+      return {
+        capability,
+        reason: observedReason ?? 'A16 veto enforcement off',
+        // brief-veto requires brief-gate (which generates the verdict)
+        // — chain the two flags so the user sees what to set together.
+        fix: 'export ASICODE_BRIEF_GATE_ENABLED=1 && export ASICODE_BRIEF_VETO_ENABLED=1',
       }
     default:
       return {
@@ -382,6 +391,7 @@ export async function probeRuntime(): Promise<ProbeReport> {
     { flag: 'ASICODE_ADVERSARIAL_ENABLED', capability: 'adversarial', needsProvider: true, expectation: 'A15: try to break production/security PRs' },
     { flag: 'ASICODE_PLAN_RETRIEVAL_ENABLED', capability: 'plan-retrieval', needsProvider: true, expectation: 'A8: embedding index of past attempts' },
     { flag: 'ASICODE_PR_COMMENT_ENABLED', capability: 'pr-comment', needsProvider: false, expectation: 'iter 54: post judge verdict as GitHub PR comment' },
+    { flag: 'ASICODE_BRIEF_VETO_ENABLED', capability: 'brief-veto', needsProvider: false, expectation: 'iter 63: enforce A16 reject decisions — abort runs on bad briefs' },
   ]
 
   for (const f of optInFlags) {

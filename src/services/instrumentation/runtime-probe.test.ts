@@ -28,6 +28,7 @@ const ENV_KEYS = [
   'ASICODE_ADVERSARIAL_ENABLED',
   'ASICODE_PLAN_RETRIEVAL_ENABLED',
   'ASICODE_PR_COMMENT_ENABLED',
+  'ASICODE_BRIEF_VETO_ENABLED',
 ]
 
 let savedEnv: Record<string, string | undefined>
@@ -67,6 +68,7 @@ describe('probeRuntime — empty environment', () => {
     expect(r.unconfigured).toContain('adversarial')
     expect(r.unconfigured).toContain('plan-retrieval')
     expect(r.unconfigured).toContain('pr-comment')
+    expect(r.unconfigured).toContain('brief-veto')
     expect(r.unconfigured).toContain('watch-merges')
   })
 })
@@ -204,6 +206,7 @@ describe('probeRuntime — opt-in flags', () => {
     process.env.ASICODE_ADVERSARIAL_ENABLED = '1'
     process.env.ASICODE_PLAN_RETRIEVAL_ENABLED = '1'
     process.env.ASICODE_PR_COMMENT_ENABLED = '1'
+    process.env.ASICODE_BRIEF_VETO_ENABLED = '1'
     const r = await probeRuntime()
     expect(r.enabled).toContain('instrumentation')
     expect(r.enabled).toContain('judges')
@@ -213,7 +216,56 @@ describe('probeRuntime — opt-in flags', () => {
     expect(r.enabled).toContain('adversarial')
     expect(r.enabled).toContain('plan-retrieval')
     expect(r.enabled).toContain('pr-comment')
+    expect(r.enabled).toContain('brief-veto')
     expect(r.blocked).toEqual([])
+  })
+})
+
+describe('brief-veto opt-in (iter 66)', () => {
+  test('flag unset → brief-veto in unconfigured with the chained fix', async () => {
+    const r = await probeRuntime()
+    expect(r.unconfigured).toContain('brief-veto')
+    const enrichment = r.readiness.enrichmentMissing.find(b => b.capability === 'brief-veto')
+    expect(enrichment).toBeDefined()
+    // Fix must reference brief-gate so the user sees the prereq, not
+    // just the veto flag itself
+    expect(enrichment!.fix).toContain('ASICODE_BRIEF_GATE_ENABLED=1')
+    expect(enrichment!.fix).toContain('ASICODE_BRIEF_VETO_ENABLED=1')
+  })
+
+  test('flag set + provider available → brief-veto enabled', async () => {
+    process.env.ASICODE_BRIEF_VETO_ENABLED = '1'
+    process.env.ASICODE_BRIEF_GATE_ENABLED = '1'
+    process.env.ANTHROPIC_API_KEY = 'sk-test'
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    const r = await probeRuntime()
+    expect(r.enabled).toContain('brief-veto')
+  })
+
+  test('brief-veto is enrichment not required (still partial-ready when only blocker is veto)', async () => {
+    // All 3 required wired, just no veto. Readiness = partial, not
+    // not_configured — veto is enrichment.
+    process.env.ASICODE_INSTRUMENTATION_DB = dbPath
+    process.env.ANTHROPIC_API_KEY = 'sk-test'
+    process.env.ASICODE_JUDGES_ENABLED = '1'
+    const { spawn } = await import('node:child_process')
+    const dummy = spawn(
+      'sh',
+      ['-c', '# instrumentation-watch-merges-test-sentinel\nwhile :; do sleep 1; done'],
+      { stdio: 'ignore', detached: false },
+    )
+    try {
+      await new Promise(resolve => setTimeout(resolve, 250))
+      const r = await probeRuntime()
+      expect(r.readiness.minimumViable).toBe(true)
+      // brief-veto in enrichment-missing list
+      expect(
+        r.readiness.enrichmentMissing.map(b => b.capability),
+      ).toContain('brief-veto')
+      expect(r.readiness.level).toBe('partial')
+    } finally {
+      dummy.kill('SIGTERM')
+    }
   })
 })
 
@@ -272,6 +324,7 @@ describe('readiness rollup', () => {
     process.env.ASICODE_ADVERSARIAL_ENABLED = '1'
     process.env.ASICODE_PLAN_RETRIEVAL_ENABLED = '1'
     process.env.ASICODE_PR_COMMENT_ENABLED = '1'
+    process.env.ASICODE_BRIEF_VETO_ENABLED = '1'
     const { spawn } = await import('node:child_process')
     const dummy = spawn(
       'sh',
