@@ -14,6 +14,7 @@
  * what the judge verdict comment is for.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { findPrNumberForSha, postPrComment } from '../pr-comment-shared/gh.js'
 import type { Finding, VerifierResponse } from './verifier.js'
 
@@ -33,7 +34,7 @@ export interface PostAdversarialResult {
 const ADVERSARIAL_MARKER = '<!-- asicode-adversarial-findings -->'
 
 export function isPrCommentEnabled(): boolean {
-  return process.env.ASICODE_PR_COMMENT_ENABLED === '1'
+  return asicodeEnv('PR_COMMENT_ENABLED') === '1'
 }
 
 /**

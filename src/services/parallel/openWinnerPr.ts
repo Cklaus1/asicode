@@ -7,6 +7,7 @@
 // {ok, prNumber?, url?, reason?, detail?}. Never throws.
 
 import { spawn } from 'node:child_process'
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { createPrFromBranch } from '../pr-comment-shared/gh.js'
 
 export type OpenWinnerPrFailure =
@@ -59,7 +60,7 @@ export interface OpenWinnerPrInput {
 }
 
 export function isAutoPrEnabled(): boolean {
-  return process.env.ASICODE_AUTO_PR === '1'
+  return asicodeEnv('AUTO_PR') === '1'
 }
 
 function spawnPipe(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {

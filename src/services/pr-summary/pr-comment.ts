@@ -9,6 +9,7 @@
  * in the per-signal comments anyway.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { findPrNumberForSha, postPrComment } from '../pr-comment-shared/gh.js'
 import type { ShipItResult } from './aggregate.js'
 
@@ -28,7 +29,7 @@ export interface PostShipItResult {
 const SHIPIT_MARKER = '<!-- asicode-ship-it-verdict -->'
 
 export function isPrCommentEnabled(): boolean {
-  return process.env.ASICODE_PR_COMMENT_ENABLED === '1'
+  return asicodeEnv('PR_COMMENT_ENABLED') === '1'
 }
 
 export function buildShipItMarkdown(result: ShipItResult): string {

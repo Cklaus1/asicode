@@ -20,6 +20,7 @@
  * blocking the caller.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { generateId, openInstrumentationDb } from '../instrumentation/client'
 import { embedBrief, resolveBackend } from './embedding'
 import {
@@ -33,7 +34,7 @@ import {
 // ─── Opt-in ──────────────────────────────────────────────────────────
 
 export function isPlanRetrievalEnabled(): boolean {
-  return process.env.ASICODE_PLAN_RETRIEVAL_ENABLED === '1'
+  return asicodeEnv('PLAN_RETRIEVAL_ENABLED') === '1'
 }
 
 // ─── Backend cache ───────────────────────────────────────────────────

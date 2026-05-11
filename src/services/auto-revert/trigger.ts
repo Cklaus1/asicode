@@ -21,6 +21,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { asicodeEnv } from '../../utils/envCompat.js'
 import {
   newRevertId,
   recordAutoRevert,
@@ -30,7 +31,7 @@ import type { ShipItResult } from '../pr-summary/aggregate.js'
 import { buildRevertPr } from './builder.js'
 
 export function isAutoRevertEnabled(): boolean {
-  return process.env.ASICODE_AUTO_REVERT_ENABLED === '1'
+  return asicodeEnv('AUTO_REVERT_ENABLED') === '1'
 }
 
 export interface OpenRevertInput {

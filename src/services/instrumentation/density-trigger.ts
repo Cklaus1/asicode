@@ -22,13 +22,14 @@
  * judge equivalence score still record, which is the floor we want first.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { recordDensity } from './density'
 
 // ─── Opt-in ──────────────────────────────────────────────────────────
 
 export function isDensityEnabled(): boolean {
-  return process.env.ASICODE_DENSITY_ENABLED === '1'
+  return asicodeEnv('DENSITY_ENABLED') === '1'
 }
 
 // ─── Refactor classification ─────────────────────────────────────────

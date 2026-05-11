@@ -17,6 +17,7 @@
  * env var controls all three; reduce config surface.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { findPrNumberForSha, postPrComment } from '../pr-comment-shared/gh.js'
 import type { RecordDensityResult } from './density.js'
 
@@ -42,7 +43,7 @@ export interface PostDensityResult {
 const DENSITY_MARKER = '<!-- asicode-density-summary -->'
 
 export function isPrCommentEnabled(): boolean {
-  return process.env.ASICODE_PR_COMMENT_ENABLED === '1'
+  return asicodeEnv('PR_COMMENT_ENABLED') === '1'
 }
 
 /**

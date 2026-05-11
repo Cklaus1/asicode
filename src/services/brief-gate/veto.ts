@@ -19,6 +19,7 @@
  * feeds the calibration corpus (was the user right?).
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { openInstrumentationDb } from '../instrumentation/client.js'
 import {
   evaluateBriefOnSubmitAwait,
@@ -33,11 +34,11 @@ export type VetoOutcome =
   | { vetoed: true; decision: 'reject'; composite: number | null; reasonText?: string }
 
 export function isVetoEnabled(): boolean {
-  return process.env.ASICODE_BRIEF_VETO_ENABLED === '1'
+  return asicodeEnv('BRIEF_VETO_ENABLED') === '1'
 }
 
 export function isVetoOverridden(): boolean {
-  return process.env.ASICODE_BRIEF_VETO_OVERRIDE === '1'
+  return asicodeEnv('BRIEF_VETO_OVERRIDE') === '1'
 }
 
 /**

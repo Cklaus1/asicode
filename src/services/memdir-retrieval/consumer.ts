@@ -6,6 +6,7 @@
 // Opt-in: ASICODE_MEMDIR_RETRIEVAL_ENABLED=1. Without the flag,
 // buildMemdirContext returns null and the agent gets the raw brief.
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { embedBrief } from '../plan-retrieval/embedding.js'
 import { queryIndex, type MemdirHit } from './index.js'
 
@@ -16,7 +17,7 @@ export interface RetrievedMemdirContext {
 }
 
 export function isMemdirRetrievalEnabled(): boolean {
-  return process.env.ASICODE_MEMDIR_RETRIEVAL_ENABLED === '1'
+  return asicodeEnv('MEMDIR_RETRIEVAL_ENABLED') === '1'
 }
 
 export interface BuildContextInput {

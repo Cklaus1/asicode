@@ -18,6 +18,7 @@
  * using the existing recordReview writer from iter 5.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import {
   newReviewId,
   openInstrumentationDb,
@@ -31,7 +32,7 @@ import { isPrCommentEnabled, postAdversarialFindings } from './pr-comment.js'
 // ─── Opt-in ──────────────────────────────────────────────────────────
 
 export function isAdversarialEnabled(): boolean {
-  return process.env.ASICODE_ADVERSARIAL_ENABLED === '1'
+  return asicodeEnv('ADVERSARIAL_ENABLED') === '1'
 }
 
 // ─── Cached provider ─────────────────────────────────────────────────

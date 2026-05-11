@@ -19,6 +19,7 @@
  *     provider registry construction, and failure tolerance.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { resolvePanel } from './config'
 import { dispatchJudgments, type DispatchResult, type JudgeInput, type ProviderRegistry } from './dispatcher'
@@ -83,7 +84,7 @@ export function _resetJudgesTriggerForTest() {
  * ASICODE_INSTRUMENTATION_DB opt-in pattern.
  */
 export function isJudgesEnabled(): boolean {
-  return process.env.ASICODE_JUDGES_ENABLED === '1'
+  return asicodeEnv('JUDGES_ENABLED') === '1'
 }
 
 /**

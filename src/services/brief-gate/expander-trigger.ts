@@ -18,6 +18,7 @@
  * "measure before enforce" stance.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { updateBrief } from '../instrumentation/client'
 import { createCachedProvider } from '../trigger-shared/cachedProvider'
 import { expandBrief, type ExpandedBrief } from './expander'
@@ -25,7 +26,7 @@ import { expandBrief, type ExpandedBrief } from './expander'
 // ─── Opt-in ──────────────────────────────────────────────────────────
 
 export function isBriefModeEnabled(): boolean {
-  return process.env.ASICODE_BRIEF_MODE_ENABLED === '1'
+  return asicodeEnv('BRIEF_MODE_ENABLED') === '1'
 }
 
 // ─── Provider resolution (lazy + cached, via shared helper) ──────────

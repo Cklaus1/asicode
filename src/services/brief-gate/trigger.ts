@@ -14,6 +14,7 @@
  * on its decisions).
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { updateBrief } from '../instrumentation/client'
 import { createCachedProvider } from '../trigger-shared/cachedProvider'
 import { evaluateBrief, type A16Result } from './evaluator'
@@ -21,7 +22,7 @@ import { evaluateBrief, type A16Result } from './evaluator'
 // ─── Opt-in ──────────────────────────────────────────────────────────
 
 export function isBriefGateEnabled(): boolean {
-  return process.env.ASICODE_BRIEF_GATE_ENABLED === '1'
+  return asicodeEnv('BRIEF_GATE_ENABLED') === '1'
 }
 
 // ─── Provider resolution (lazy + cached, via shared helper) ──────────

@@ -10,6 +10,7 @@
 // Without this consumer, retrievals accumulate in the db but never
 // influence the agent's behavior — exactly the iter-44 retro Q3 gap.
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { openInstrumentationDb } from '../instrumentation/client.js'
 import { retrievePriorAttempts, type RetrieveInput } from './trigger.js'
 
@@ -97,5 +98,5 @@ export function formatHits(hits: Array<{ entry: { entry_id: string; plan_summary
  * agent's --no-retrieval CLI flag.
  */
 export function isConsumerDisabled(): boolean {
-  return process.env.ASICODE_PLAN_RETRIEVAL_CONSUMER_DISABLED === '1'
+  return asicodeEnv('PLAN_RETRIEVAL_CONSUMER_DISABLED') === '1'
 }

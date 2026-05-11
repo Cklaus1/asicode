@@ -17,6 +17,7 @@
  * once that pattern proves out.
  */
 
+import { asicodeEnv } from '../../utils/envCompat.js'
 import { findPrNumberForSha, postPrComment } from '../pr-comment-shared/gh.js'
 import type { DispatchResult, JudgeResult } from './dispatcher.js'
 
@@ -36,7 +37,7 @@ export interface PostCommentResult {
 const VERDICT_MARKER = '<!-- asicode-judge-verdict -->'
 
 export function isPrCommentEnabled(): boolean {
-  return process.env.ASICODE_PR_COMMENT_ENABLED === '1'
+  return asicodeEnv('PR_COMMENT_ENABLED') === '1'
 }
 
 /**

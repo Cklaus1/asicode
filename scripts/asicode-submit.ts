@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
+import { asicodeEnv } from '../src/utils/envCompat'
 import { newBriefId, newRunId, recordBrief, recordRun, updateBrief } from '../src/services/instrumentation/client'
 import { buildRetrievedContext } from '../src/services/plan-retrieval/consumer'
 import { buildMemdirContext } from '../src/services/memdir-retrieval/consumer'
@@ -20,7 +21,7 @@ interface Args { file: string | null; stdin: boolean; cwd: string; background: b
 
 function parseArgs(argv: string[]): Args {
   const envRace = parseInt(process.env.ASICODE_RACE_COUNT ?? '', 10)
-  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false, race: Number.isFinite(envRace) && envRace >= 2 ? envRace : 1, autoPr: isAutoPrEnabled(), forcePr: process.env.ASICODE_AUTO_PR_FORCE === '1' }
+  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false, race: Number.isFinite(envRace) && envRace >= 2 ? envRace : 1, autoPr: isAutoPrEnabled(), forcePr: asicodeEnv('AUTO_PR_FORCE') === '1' }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--file' || a === '-f') args.file = argv[++i]
@@ -214,7 +215,7 @@ async function main() {
 
   // REQ-13 dispatch. Default off; --start opts in; --no-start always
   // off (overrides ASICODE_AUTO_START=1).
-  const autoStart = process.env.ASICODE_AUTO_START === '1'
+  const autoStart = asicodeEnv('AUTO_START') === '1'
   const shouldStart = !args.noStart && (args.start || autoStart)
   let dispatch: DispatchResult | DispatchSkip | null = null
   // REQ-14: race mode (best-of-N). When race>=2 and shouldStart, use
