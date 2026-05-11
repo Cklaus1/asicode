@@ -5,8 +5,6 @@
 // Exit: 0 found, 1 not found, 2 setup error.
 
 import { Database } from 'bun:sqlite'
-import { homedir } from 'node:os'
-import { resolve } from 'node:path'
 
 interface Args { briefId: string | null; json: boolean; watch: boolean; watchIntervalMs: number; list: boolean; limit: number; project: string | null; outcome: string | null }
 
@@ -72,17 +70,6 @@ function fmtAge(tsMs: number): string {
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`
   if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`
   return `${Math.floor(ms / 86_400_000)}d ago`
-}
-
-// REQ-44: reconstruct the per-run log path. Submit (single-spawn)
-// writes ~/.asicode/runs/<brief_id>.log; dispatcher (race) writes
-// .../<run_id>.log. We can't tell from the runs row which writer it
-// was, but isolation_mode='worktree' implies race; 'in_process'
-// implies single-spawn.
-function logPathFor(briefId: string, runId: string, isolationMode: string): string {
-  const dir = process.env.ASICODE_RUN_LOG_DIR ?? resolve(homedir(), '.asicode', 'runs')
-  const base = isolationMode === 'worktree' ? runId : briefId
-  return resolve(dir, `${base}.log`)
 }
 
 // REQ-37: a run is "stale" when it never completed AND its ts_started
@@ -183,10 +170,9 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
         was_race_winner: r.was_race_winner === 1, attempt_index: r.attempt_index,
         // REQ-37: stale=true when in_flight + ts_started exceeds threshold
         stale: isStaleInFlight(r.outcome, r.ts_started),
-        // REQ-44/45: log path the user can tail -f. Prefer the persisted
-        // column (REQ-45) so it matches what the writer used; fall back
-        // to env-based reconstruction for pre-REQ-45 rows.
-        log_path: r.log_path ?? logPathFor(brief.brief_id, r.run_id, r.isolation_mode),
+        // REQ-45: log path the writer persisted (schema v9+ guarantees
+        // this is set for every run that ever spawned an agent).
+        log_path: r.log_path,
         verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms, stderr_tail: r.verify_stderr_tail } : null,
       })),
       pr: (brief.pr_sha || brief.pr_number !== null) ? {
@@ -217,8 +203,8 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
     const dur = r.wall_clock_ms !== null ? `${(r.wall_clock_ms / 1000).toFixed(1)}s` : '?'
     const stale = isStaleInFlight(r.outcome, r.ts_started) ? ` ⚠ stale (started ${fmtAge(r.ts_started)})` : ''
     console.log(`    ${r.run_id}  ${r.outcome}${stale}  ${r.isolation_mode}  ${dur}${r.tokens_used !== null ? `  ${r.tokens_used}tok` : ''}`)
-    // REQ-44/45: log path for the latest run (tail -f hint).
-    console.log(`    log:         ${r.log_path ?? logPathFor(brief.brief_id, r.run_id, r.isolation_mode)}`)
+    // REQ-45: log path for the latest run (tail -f hint).
+    if (r.log_path) console.log(`    log:         ${r.log_path}`)
   }
   if (race) {
     console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}${race.strategy ? ` (${race.strategy})` : ''}`)

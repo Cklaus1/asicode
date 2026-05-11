@@ -543,50 +543,57 @@ describe('REQ-37 stale in-flight detection', () => {
     expect(parsed.brief.intervention_reason).toBe('reviewer caught typo')
   })
 
-  // REQ-44: log_path reconstruction
-  test('log_path: single-spawn (in_process) uses brief_id', () => {
+  // REQ-45: log_path read from persisted column (no reconstruction).
+  test('log_path: persisted column returned as-is in JSON', () => {
     const db = new Database(dbPath)
     seedBrief(db, 'brf_log1')
-    seedRun(db, 'run_l1', 'brf_log1', { outcome: 'in_flight' })
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome, log_path)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['run_l1', 'brf_log1', Date.now(), 'in_process', 'in_flight', '/custom/runs/brf_log1.log'],
+    )
     db.close()
     const r = run(['brf_log1', '--json'])
     const parsed = JSON.parse(r.stdout)
-    expect(parsed.runs[0].log_path).toContain('brf_log1.log')
+    expect(parsed.runs[0].log_path).toBe('/custom/runs/brf_log1.log')
   })
 
-  test('log_path: race (worktree isolation) uses run_id', () => {
+  test('log_path: race worktree path persisted with run_id', () => {
     const db = new Database(dbPath)
     seedBrief(db, 'brf_log2')
     db.run(
-      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome)
-       VALUES (?, ?, ?, ?, ?)`,
-      ['run_w_abc', 'brf_log2', Date.now(), 'worktree', 'completed'],
+      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome, log_path)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['run_w_abc', 'brf_log2', Date.now(), 'worktree', 'completed', '/runs/run_w_abc.log'],
     )
     db.close()
     const r = run(['brf_log2', '--json'])
     const parsed = JSON.parse(r.stdout)
-    expect(parsed.runs[0].log_path).toContain('run_w_abc.log')
-    expect(parsed.runs[0].log_path).not.toContain('brf_log2.log')
+    expect(parsed.runs[0].log_path).toBe('/runs/run_w_abc.log')
   })
 
-  test('log_path: ASICODE_RUN_LOG_DIR override honored', () => {
+  test('log_path: null when writer pre-dated REQ-45 (legacy row)', () => {
     const db = new Database(dbPath)
     seedBrief(db, 'brf_log3')
-    seedRun(db, 'run_l3', 'brf_log3', { outcome: 'in_flight' })
+    seedRun(db, 'run_l3', 'brf_log3', { outcome: 'in_flight' })  // no log_path
     db.close()
-    const r = run(['brf_log3', '--json'], { ASICODE_RUN_LOG_DIR: '/custom/logs' })
+    const r = run(['brf_log3', '--json'])
     const parsed = JSON.parse(r.stdout)
-    expect(parsed.runs[0].log_path).toBe('/custom/logs/brf_log3.log')
+    expect(parsed.runs[0].log_path).toBeNull()
   })
 
-  test('log_path surfaces in text output too', () => {
+  test('log_path surfaces in text output when persisted', () => {
     const db = new Database(dbPath)
     seedBrief(db, 'brf_log4')
-    seedRun(db, 'run_l4', 'brf_log4', { outcome: 'completed' })
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, log_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['run_l4', 'brf_log4', Date.now() - 1000, Date.now(), 'in_process', 'completed', '/runs/brf_log4.log'],
+    )
     db.close()
     const r = run(['brf_log4'])
     expect(r.stdout).toContain('log:')
-    expect(r.stdout).toContain('brf_log4.log')
+    expect(r.stdout).toContain('/runs/brf_log4.log')
   })
 
   test('REQ-41: pr_url surfaces in text + JSON when set', () => {
