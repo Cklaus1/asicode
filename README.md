@@ -208,7 +208,11 @@ bun run instrumentation:retro       # Practice 9 introspection cycle
 bun run instrumentation:brief       # manual A12 expand + A16 grade
 bun run instrumentation:replay      # A11 cross-cycle regression check
 bun run instrumentation:pr-landed   # notify a brief's PR has merged
+bun run instrumentation:probe       # check which capabilities are live in this env
 ```
+
+Before opt-in, run `instrumentation:probe` to see which env flags and
+providers are configured and which capabilities would actually fire.
 
 Recommended cron-shaped operational loop:
 

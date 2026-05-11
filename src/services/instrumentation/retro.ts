@@ -381,7 +381,7 @@ export function shouldForceRetro(opts: {
 export function renderRetroMarkdown(
   rec: RetroRecord,
   metrics?: CycleMetrics,
-  opts: { includePathWalk?: boolean } = {},
+  opts: { includePathWalk?: boolean; runtimeProbeMarkdown?: string } = {},
 ): string {
   const lines: string[] = []
   lines.push(`# Retro: asicode ${rec.version_tag} — ${new Date(rec.ts).toISOString().slice(0, 10)}`)
@@ -414,6 +414,15 @@ export function renderRetroMarkdown(
       void e
       // Silently skip — the retro's other sections still render.
     }
+  }
+
+  // Runtime probe — iter 47 follow-on. The path-walker only catches
+  // *static* breakages; the probe answers "given this env, which
+  // capabilities would actually fire?" Caller passes pre-computed
+  // markdown because probeRuntime is async and renderRetroMarkdown is
+  // sync. When undefined, the section is simply omitted.
+  if (opts.runtimeProbeMarkdown) {
+    lines.push(opts.runtimeProbeMarkdown)
   }
 
   lines.push('## Q1 — kept right')
