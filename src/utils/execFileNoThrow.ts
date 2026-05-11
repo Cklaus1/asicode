@@ -172,6 +172,11 @@ export function execFileNoThrowWithCwd(
 ): Promise<{ stdout: string; stderr: string; code: number; error?: string }> {
   const executableError = validateExecutable(file)
   if (executableError) {
+    if (process.env.ASICODE_EXEC_TRACE === '1') {
+      console.error(
+        `[exec-trace] validateExecutable rejected: file=${JSON.stringify(file)} err=${executableError}`,
+      )
+    }
     return Promise.resolve({
       stdout: '',
       stderr: '',
@@ -279,6 +284,16 @@ export function execFileNoThrowWithCwd(
 
     child.once('error', error => {
       logError(error)
+      // ASICODE_EXEC_TRACE=1 surfaces the actual cwd/argv/error when a
+      // child fails to spawn. Used in iter 49 test-pollution triage —
+      // see docs/triage/test-suite-pollution-2026-05.md. Off by default
+      // because production runs would flood stderr.
+      if (process.env.ASICODE_EXEC_TRACE === '1') {
+        const argvShort = args.slice(0, 4).join(' ')
+        console.error(
+          `[exec-trace] spawn error: file=${file} args="${argvShort}" cwd=${finalCwd ?? '<unset>'} err=${error.message}`,
+        )
+      }
       finish({ stdout: '', stderr: '', code: 1, error: error.message })
     })
 
@@ -309,6 +324,12 @@ export function execFileNoThrowWithCwd(
       }
 
       if (errorCode !== 0) {
+        if (process.env.ASICODE_EXEC_TRACE === '1') {
+          const argvShort = args.slice(0, 4).join(' ')
+          console.error(
+            `[exec-trace] non-zero exit: file=${file} args="${argvShort}" cwd=${finalCwd ?? '<unset>'} code=${errorCode} signal=${signal ?? '<none>'} stderr=${stderr.slice(0, 200).replace(/\n/g, '\\n')}`,
+          )
+        }
         if (finalPreserveOutput) {
           finish({
             stdout,
