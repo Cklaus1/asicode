@@ -154,3 +154,101 @@ The agent itself updates the row's outcome when the run completes
 
 Use `--no-start` when you want to record a brief without spawning
 (e.g. for later batch-running).
+
+## Best-of-N race + verifier-gated PR (REQ-14..27)
+
+The strongest northstar shape: race N agents in isolated worktrees,
+let the project's own verifier pick the winner, open a PR
+automatically, gate it if the winner fails.
+
+### Setup
+
+```bash
+export ASICODE_DISPATCH_CMD="bun run dev:profile"   # how each racer is spawned
+export ASICODE_RACE_COUNT=4                          # default race width (or pass --race N)
+export ASICODE_AUTO_PR=1                             # open a PR from the winner (or pass --auto-pr)
+# ASICODE_VERIFY_CMD optional — auto-detected for bun/cargo/pytest/npm.
+# Override only if your tests don't fit the standard layout.
+# export ASICODE_VERIFY_CMD="bun test --bail"
+```
+
+### Submit + walk away
+
+```bash
+bun run asicode:submit /tmp/brief.md --start --json | jq
+```
+
+What asicode does on its own:
+
+1. Brief recorded; project fingerprint computed.
+2. 4 racers provisioned in isolated git worktrees (REQ-6.1).
+3. Each racer spawned via `$ASICODE_DISPATCH_CMD`, brief piped on stdin.
+4. First-finished + settle window decides candidate list (REQ-6.2).
+5. **Baseline check** (REQ-26): verifier runs on `main` once,
+   cached per (repo, base sha, cmd). Result drives the gate's
+   advisory mode (below).
+6. **Verifier in each finished worktree** (REQ-18): every racer's
+   diff runs against the auto-detected or configured verifier.
+   Passing racers outrank failing ones (REQ-18 + REQ-24).
+7. Tiebreak among the top class (LLM judge if configured, else FCFS).
+8. Non-winner worktrees + branches cleaned up.
+9. **Auto-PR** (REQ-15): winner branch pushed; `gh pr create`
+   against base. PR body leads with verification result + baseline
+   context (REQ-25 + REQ-27):
+
+   > ## Verification
+   > ✓ PASSED in 12.4s — 3/4 racers passed.
+   > ```
+   > bun test
+   > ```
+
+10. `pr_number` persisted on the brief row (REQ-16) so watch-merges
+    links the eventual merge deterministically.
+
+### Gate behavior (REQ-20 + REQ-26)
+
+| Baseline | Winner verify | PR open? |
+|----------|---------------|----------|
+| passed   | passed        | yes (happy path) |
+| passed   | failed        | **GATED** — body says "regression; --force-pr to override" |
+| failed   | failed        | yes (advisory) — body says "inherited red, not new regression" |
+| failed   | passed        | yes — body says "appears to fix inherited red" |
+| n/a      | error         | gated (unless `--force-pr`) |
+
+Force open even when the winner failed:
+
+```bash
+bun run asicode:submit /tmp/brief.md --start --auto-pr --force-pr
+# or: export ASICODE_AUTO_PR_FORCE=1
+```
+
+Skip the verifier entirely:
+
+```bash
+ASICODE_VERIFY_AUTODETECT=0 bun run asicode:submit /tmp/brief.md --start --race 4 --auto-pr
+# or: pass an empty verify cmd via API; CLI inherits env order.
+```
+
+### Inspect the run
+
+```bash
+bun run asicode:status $BRIEF_ID --json | jq '{race, pr, runs: .runs | map({run_id, verify, was_race_winner})}'
+```
+
+You'll see:
+- `race.count`, `race.winner_run_id`, `race.winner_verify`
+- `race.baseline_verify` (REQ-26 signal)
+- `pr.number` (REQ-16)
+- `runs[].verify.outcome` + `runs[].verify.stderr_tail` (REQ-19 + REQ-21)
+
+Text mode surfaces the same plus a one-line stderr snippet when the
+winner failed.
+
+### Watch the rate
+
+```bash
+bun run instrumentation:report --since 7d | grep -A4 "Race + verifier"
+```
+
+(REQ-23). Tells you `Winner passed XX%` across the panel — the
+leading indicator for "verifiably correct PR".

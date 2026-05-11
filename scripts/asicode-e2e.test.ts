@@ -278,4 +278,26 @@ describe('docs/scenarios/submit-walk-away.md exists + names the right commands',
     // Names the dispatch knob.
     expect(doc).toContain('ASICODE_DISPATCH_CMD')
   })
+
+  // REQ-28: race + verifier section added to the walk-away doc.
+  test('scenario doc covers race + verifier path', () => {
+    const docPath = join(import.meta.dir, '..', 'docs', 'scenarios', 'submit-walk-away.md')
+    const doc = readFileSync(docPath, 'utf-8')
+    expect(doc).toMatch(/Best-of-N|race \+ verifier/i)
+    // Knobs introduced REQ-14..27
+    expect(doc).toContain('ASICODE_RACE_COUNT')
+    expect(doc).toContain('ASICODE_AUTO_PR')
+    expect(doc).toContain('ASICODE_VERIFY_CMD')
+    expect(doc).toContain('ASICODE_AUTO_PR_FORCE')
+    expect(doc).toContain('ASICODE_VERIFY_AUTODETECT')
+    // Names the substrate REQs so a reader can grep the codebase.
+    expect(doc).toContain('REQ-18')  // verifier-gated
+    expect(doc).toContain('REQ-20')  // gate
+    expect(doc).toContain('REQ-26')  // baseline
+    // The gate decision table covers all four baseline/winner combos.
+    expect(doc).toContain('inherited red')
+    expect(doc).toContain('--force-pr')
+    // Status JSON shows the new shape.
+    expect(doc).toContain('baseline_verify')
+  })
 })
