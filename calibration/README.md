@@ -6,6 +6,9 @@ the v1 panel shipped, run it against a known-graded corpus of 30 PRs
 them cleanly. If it can't, the prompts are wrong — not the model. Iterate
 prompts before iterating panel composition.
 
+**For the curation flow** (how to pick the 30 PRs, what tier means,
+worked examples), see [`docs/calibration-guide.md`](../docs/calibration-guide.md).
+
 ## How to use
 
 ```bash
