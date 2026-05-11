@@ -6,15 +6,23 @@
 
 import { Database } from 'bun:sqlite'
 
-interface Args { briefId: string | null; json: boolean }
+interface Args { briefId: string | null; json: boolean; watch: boolean; watchIntervalMs: number }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { briefId: null, json: false }
+  const args: Args = { briefId: null, json: false, watch: false, watchIntervalMs: 5000 }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--json') args.json = true
+    else if (a === '--watch' || a === '-w') args.watch = true
+    else if (a === '--watch-interval') {
+      const n = parseInt(argv[++i], 10) * 1000
+      if (!Number.isFinite(n) || n < 1000) { console.error(`--watch-interval expects seconds ≥1, got '${argv[i]}'`); process.exit(2) }
+      args.watchIntervalMs = n
+    }
     else if (a === '-h' || a === '--help') {
-      console.log('usage: asicode-status.ts BRIEF_ID [--json]')
+      console.log('usage: asicode-status.ts BRIEF_ID [--json] [--watch [--watch-interval SECS]]')
+      console.log('  --watch         REQ-43: re-render every 5s until brief completes (Ctrl-C to exit early)')
+      console.log('  --watch-interval SECS  override poll interval (default 5)')
       process.exit(0)
     }
     else if (a.startsWith('-')) { console.error(`unknown arg: ${a}`); process.exit(2) }
@@ -79,10 +87,19 @@ function shipItSummary(prSha: string | null): ShipItSummary {
   } catch { return null }
 }
 
-function main() {
-  const args = parseArgs(process.argv)
-  if (!process.env.ASICODE_INSTRUMENTATION_DB) { console.error('ASICODE_INSTRUMENTATION_DB must point at a migrated db'); process.exit(2) }
+// REQ-43: a brief is "done" when its pr_outcome is set OR all runs
+// have terminal outcomes (no in_flight). Drives --watch loop exit.
+function isBriefDone(brief: BriefRow, runs: RunRow[]): boolean {
+  if (brief.pr_outcome !== null && brief.pr_outcome !== '') return true
+  if (runs.length === 0) return false
+  return runs.every(r => r.outcome !== 'in_flight')
+}
 
+// Lines emitted by the last text render — used by --watch to backspace
+// over the previous frame on the next tick.
+let lastRenderLines = 0
+
+function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
   const db = new Database(process.env.ASICODE_INSTRUMENTATION_DB!, { readonly: true })
   db.exec('PRAGMA query_only = ON')
 
@@ -91,7 +108,7 @@ function main() {
             a16_decision, a16_composite, pr_sha, pr_outcome, pr_number, pr_url, reverted_within_7d, hotpatched_within_7d
      FROM briefs WHERE brief_id = ?`,
   ).get(args.briefId!)
-  if (!brief) { console.error(`brief not found: ${args.briefId}`); db.close(); process.exit(1) }
+  if (!brief) { db.close(); return { notFound: true } }
 
   const runs = db.query<RunRow, [string]>(
     `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index,
@@ -145,7 +162,8 @@ function main() {
       judges: j,
       ship_it: ship,
     }, null, 2))
-    process.exit(0)
+    db.close()
+    return { done: isBriefDone(brief, runs) }
   }
 
   // Human-ish text. Note: per ASI-density memory, the JSON shape is the
@@ -209,7 +227,49 @@ function main() {
   } else {
     console.log(`  pr           (none yet — run hasn't shipped a PR)`)
   }
-  process.exit(0)
+  db.close()
+  return { done: isBriefDone(brief, runs) }
+}
+
+function main() {
+  const args = parseArgs(process.argv)
+  if (!process.env.ASICODE_INSTRUMENTATION_DB) { console.error('ASICODE_INSTRUMENTATION_DB must point at a migrated db'); process.exit(2) }
+
+  if (!args.watch) {
+    const r = renderStatusOnce(args)
+    if ('notFound' in r) { console.error(`brief not found: ${args.briefId}`); process.exit(1) }
+    process.exit(0)
+  }
+
+  // REQ-43: --watch loop. Re-render every args.watchIntervalMs until
+  // the brief is done. ANSI cursor-up clears the previous frame's
+  // lines so the user sees a "live" updating panel instead of a
+  // scrolling log. JSON mode in watch just re-emits the same JSON
+  // (no clearing) — that's still useful for shell pipelines.
+  const tick = () => {
+    if (!args.json) {
+      // Capture stdout writes to count lines, then rewrite-in-place.
+      const origWrite = process.stdout.write.bind(process.stdout)
+      let buf = ''
+      ;(process.stdout as { write: (s: string) => boolean }).write = (s: string) => { buf += s; return true }
+      const r = renderStatusOnce(args)
+      ;(process.stdout as { write: (s: string) => boolean }).write = origWrite
+      if ('notFound' in r) { console.error(`brief not found: ${args.briefId}`); process.exit(1) }
+      // Clear previous render: cursor-up + erase-line for each prior line.
+      if (lastRenderLines > 0) {
+        process.stdout.write(`\x1b[${lastRenderLines}A\x1b[J`)
+      }
+      process.stdout.write(buf)
+      lastRenderLines = buf.split('\n').length - 1  // trailing newline
+      if (r.done) process.exit(0)
+    } else {
+      const r = renderStatusOnce(args)
+      if ('notFound' in r) { console.error(`brief not found: ${args.briefId}`); process.exit(1) }
+      if (r.done) process.exit(0)
+    }
+  }
+  tick()
+  setInterval(tick, args.watchIntervalMs)
 }
 
 main()

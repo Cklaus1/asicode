@@ -17,11 +17,11 @@ function applyAll(p: string) {
   db.close()
 }
 
-function run(argv: string[], env: Record<string, string> = {}) {
+function run(argv: string[], env: Record<string, string> = {}, timeoutMs = 5000) {
   const r = spawnSync(BUN, [SCRIPT, ...argv], {
     encoding: 'utf-8',
     env: { ...process.env, ASICODE_INSTRUMENTATION_DB: dbPath, ...env },
-    timeout: 5000,
+    timeout: timeoutMs,
   })
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? -1 }
 }
@@ -525,6 +525,34 @@ describe('REQ-37 stale in-flight detection', () => {
     const j = JSON.parse(run(['brf_url1', '--json']).stdout)
     expect(j.pr.url).toBe('https://github.com/x/y/pull/42')
     expect(j.pr.number).toBe(42)
+  })
+
+  // REQ-43: --watch loop.
+  test('--watch exits 0 when brief already done', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_watch_done', { prSha: 'abc12345', prOutcome: 'merged_no_intervention' })
+    db.close()
+    const r = run(['brf_watch_done', '--watch', '--watch-interval', '1'], {}, 8000)
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('brief brf_watch_done')
+  })
+
+  test('--watch exits 1 when brief not found', () => {
+    const r = run(['brf_NOPE', '--watch'])
+    expect(r.code).toBe(1)
+    expect(r.stderr).toContain('brief not found')
+  })
+
+  test('--watch-interval validation: must be ≥1', () => {
+    const r = run(['brf_x', '--watch', '--watch-interval', '0'])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('--watch-interval')
+  })
+
+  test('--help mentions --watch (REQ-43)', () => {
+    const r = run(['--help'], { ASICODE_INSTRUMENTATION_DB: '' })
+    expect(r.stdout).toContain('--watch')
+    expect(r.stdout).toContain('--watch-interval')
   })
 
   test('REQ-41: pr_url null when not set (no extra cruft)', () => {
