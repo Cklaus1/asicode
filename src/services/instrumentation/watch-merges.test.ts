@@ -286,4 +286,71 @@ describe('reapStaleRuns (REQ-38)', () => {
     const r = await pollMergedPrs(repoDir)
     expect(r.staleRunsReaped).toBe(1)
   })
+
+  // REQ-39: cascade reap to brief pr_outcome=abandoned.
+  test('cascades to pr_outcome=abandoned when all runs crashed + no pr_sha', async () => {
+    const { reapStaleRuns } = await import('./watch-merges.js')
+    seedRun('r_only', 'brf_caskd', 'in_flight', Date.now() - 7 * 60 * 60_000)
+    const { reaped, briefsAbandoned } = reapStaleRuns()
+    expect(reaped).toBe(1)
+    expect(briefsAbandoned).toBe(1)
+    const db = openInstrumentationDb()
+    const row = db.query<{ pr_outcome: string | null; ts_completed: number | null }, [string]>(
+      `SELECT pr_outcome, ts_completed FROM briefs WHERE brief_id = ?`,
+    ).get('brf_caskd')
+    expect(row?.pr_outcome).toBe('abandoned')
+    expect(typeof row?.ts_completed).toBe('number')
+  })
+
+  test('does NOT cascade when ANY run is still in_flight (recent)', async () => {
+    const { reapStaleRuns } = await import('./watch-merges.js')
+    // Two runs on same brief: one old (will reap), one fresh (won't)
+    seedRun('r_old', 'brf_mixed', 'in_flight', Date.now() - 7 * 60 * 60_000)
+    seedRun('r_new', 'brf_mixed', 'in_flight', Date.now() - 5 * 60_000)
+    const { reaped, briefsAbandoned } = reapStaleRuns()
+    expect(reaped).toBe(1)
+    expect(briefsAbandoned).toBe(0)
+    const db = openInstrumentationDb()
+    const row = db.query<{ pr_outcome: string | null }, [string]>(
+      `SELECT pr_outcome FROM briefs WHERE brief_id = ?`,
+    ).get('brf_mixed')
+    expect(row?.pr_outcome).toBeNull()
+  })
+
+  test('does NOT cascade when a completed run exists (success path)', async () => {
+    const { reapStaleRuns } = await import('./watch-merges.js')
+    seedRun('r_done', 'brf_won', 'completed', Date.now() - 1 * 60 * 60_000)
+    seedRun('r_dead', 'brf_won', 'in_flight', Date.now() - 7 * 60 * 60_000)
+    const { briefsAbandoned } = reapStaleRuns()
+    expect(briefsAbandoned).toBe(0)
+  })
+
+  test('does NOT cascade when pr_sha is set (PR opened, race ended differently)', async () => {
+    const { reapStaleRuns } = await import('./watch-merges.js')
+    seedRun('r_sha', 'brf_pr', 'in_flight', Date.now() - 7 * 60 * 60_000)
+    const db = openInstrumentationDb()
+    db.run(`UPDATE briefs SET pr_sha = ? WHERE brief_id = ?`, ['abcdef', 'brf_pr'])
+    const { briefsAbandoned } = reapStaleRuns()
+    expect(briefsAbandoned).toBe(0)
+    const row = db.query<{ pr_outcome: string | null }, [string]>(
+      `SELECT pr_outcome FROM briefs WHERE brief_id = ?`,
+    ).get('brf_pr')
+    expect(row?.pr_outcome).toBeNull()  // not auto-set
+  })
+
+  test('does NOT cascade when brief already has pr_outcome (idempotent)', async () => {
+    const { reapStaleRuns } = await import('./watch-merges.js')
+    seedRun('r_x', 'brf_already', 'in_flight', Date.now() - 7 * 60 * 60_000)
+    const db = openInstrumentationDb()
+    db.run(`UPDATE briefs SET pr_outcome = 'merged_no_intervention' WHERE brief_id = ?`, ['brf_already'])
+    const { briefsAbandoned } = reapStaleRuns()
+    expect(briefsAbandoned).toBe(0)
+  })
+
+  test('pollMergedPrs surfaces briefsAbandoned in result', async () => {
+    seedRun('r_pa', 'brf_pa', 'in_flight', Date.now() - 7 * 60 * 60_000)
+    const { pollMergedPrs } = await import('./watch-merges.js')
+    const r = await pollMergedPrs(repoDir)
+    expect(r.briefsAbandoned).toBe(1)
+  })
 })

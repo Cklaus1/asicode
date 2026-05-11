@@ -108,6 +108,8 @@ export interface PollResult {
   revertsOpened: Array<{ prSha: string; revertPrNumber: number; url: string }>
   /** REQ-38: stale in-flight runs reaped this tick (set outcome=crashed). */
   staleRunsReaped: number
+  /** REQ-39: briefs cascaded to pr_outcome=abandoned this tick. */
+  briefsAbandoned: number
   /** Errors that surfaced. */
   errors: string[]
 }
@@ -118,20 +120,37 @@ export interface PollResult {
 // to leave room for legitimately slow agents).
 const REAP_THRESHOLD_MS_DEFAULT = 6 * 60 * 60_000
 
-export function reapStaleRuns(): { reaped: number } {
+export function reapStaleRuns(): { reaped: number; briefsAbandoned: number } {
   // Soft-fail: if db unreachable, return zero. Caller absorbs into PollResult.
   try {
     const db = openInstrumentationDb()
     const thresh = parseInt(process.env.ASICODE_REAP_THRESHOLD_MS ?? '', 10)
     const limit = Number.isFinite(thresh) && thresh > 0 ? thresh : REAP_THRESHOLD_MS_DEFAULT
     const cutoff = Date.now() - limit
+    const now = Date.now()
     const result = db.run(
       `UPDATE runs SET outcome = 'crashed', abort_reason = 'stale_no_recorder_update', ts_completed = ?
        WHERE outcome = 'in_flight' AND ts_started < ?`,
-      [Date.now(), cutoff],
+      [now, cutoff],
     )
-    return { reaped: result.changes }
-  } catch { return { reaped: 0 } }
+    // REQ-39: cascade — for any brief whose ALL runs are now non-completed
+    // (in_flight reaped + everything else aborted/crashed) AND has no
+    // pr_sha, mark pr_outcome='abandoned'. A brief still has hope if
+    // ANY run is in_flight (recent) or completed, OR pr_sha is set.
+    const cascade = db.run(
+      `UPDATE briefs
+       SET pr_outcome = 'abandoned', ts_completed = ?
+       WHERE pr_outcome IS NULL
+         AND pr_sha IS NULL
+         AND brief_id IN (SELECT brief_id FROM runs)
+         AND brief_id NOT IN (
+           SELECT brief_id FROM runs
+           WHERE outcome IN ('in_flight', 'completed')
+         )`,
+      [now],
+    )
+    return { reaped: result.changes, briefsAbandoned: cascade.changes }
+  } catch { return { reaped: 0, briefsAbandoned: 0 } }
 }
 
 // ─── Pending ship-it tracker (iter 60) ───────────────────────────────
@@ -183,6 +202,7 @@ function shasAlreadyAttached(): Set<string> {
  * process any pending ship-it verdicts whose signals have landed.
  */
 export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
+  const reap = reapStaleRuns()
   const result: PollResult = {
     prsFound: 0,
     alreadyAttached: 0,
@@ -191,7 +211,8 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
     shipItPosted: [],
     shipItPending: 0,
     revertsOpened: [],
-    staleRunsReaped: reapStaleRuns().reaped,
+    staleRunsReaped: reap.reaped,
+    briefsAbandoned: reap.briefsAbandoned,
     errors: [],
   }
 
