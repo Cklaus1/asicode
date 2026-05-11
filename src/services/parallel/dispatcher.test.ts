@@ -252,6 +252,34 @@ describe('raceAgents — failure modes', () => {
   }, 30_000)
 })
 
+// REQ-35: each racer reads its OWN run id + the SHARED brief id.
+describe('raceAgents — env propagation (REQ-35)', () => {
+  test('ASICODE_BRIEF_ID is the brief, ASICODE_RUN_ID is the racer run id', async () => {
+    // Each racer writes its env vars to a file in its worktree, then
+    // commits — we read them out of the winner's diff post-race.
+    process.env.ASICODE_DISPATCH_CMD = `
+      cat > /dev/null
+      printf "BID=%s\\nRID=%s\\n" "$ASICODE_BRIEF_ID" "$ASICODE_RUN_ID" > env.txt
+      git config user.email t@t.t
+      git config user.name T
+      git add env.txt
+      git commit -q --no-gpg-sign -m "env"
+    `
+    const r = await raceAgents({
+      briefId: 'brf_env_check', briefText: 't',
+      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'env',
+      settleMs: 500, maxRaceMs: 15_000,
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.winnerDiff).toContain('BID=brf_env_check')
+      expect(r.winnerDiff).toContain(`RID=${r.winnerRunId}`)
+      // The two values must differ.
+      expect(r.winnerRunId).not.toBe('brf_env_check')
+    }
+  }, 30_000)
+})
+
 // REQ-18: verifier-gated winner selection.
 describe('raceAgents — verifier-gated winner (REQ-18)', () => {
   test('passing racer wins over failing racer (regardless of finish order)', async () => {

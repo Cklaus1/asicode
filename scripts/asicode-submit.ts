@@ -119,6 +119,9 @@ function dispatchAgent(briefId: string, briefText: string, cwd: string, backgrou
   try { logFd = openSync(logPath, 'a') }
   catch (e) { return { ok: false, reason: `open log failed: ${e instanceof Error ? e.message : String(e)}` } }
 
+  // REQ-35: mint the runId before spawn so the agent can read its own
+  // ASICODE_RUN_ID and attribute its work back to the right runs row.
+  const runId = newRunId()
   // Parse cmd via shell so users can write the canonical "bun run ..."
   // form. Risk: shell-quoting in cmd is the user's responsibility — we
   // exec via /bin/sh -c. The dispatch cmd is operator-controlled (env
@@ -127,7 +130,7 @@ function dispatchAgent(briefId: string, briefText: string, cwd: string, backgrou
     cwd,
     stdio: ['pipe', logFd, logFd],
     detached: background,
-    env: { ...process.env, ASICODE_BRIEF_ID: briefId },
+    env: { ...process.env, ASICODE_BRIEF_ID: briefId, ASICODE_RUN_ID: runId },
   })
   if (!child.pid) { return { ok: false, reason: 'spawn returned no pid' } }
   // Pipe the brief on stdin, close.
@@ -137,7 +140,6 @@ function dispatchAgent(briefId: string, briefText: string, cwd: string, backgrou
   // Record a runs row so `asicode-status.ts` shows the spawn happened.
   // outcome='in_flight' until the agent finishes; the agent itself
   // (via the recorder-adapter) updates this when the run completes.
-  const runId = newRunId()
   try {
     recordRun({
       run_id: runId, brief_id: briefId, ts_started: Date.now(),

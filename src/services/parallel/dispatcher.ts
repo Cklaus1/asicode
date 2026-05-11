@@ -137,11 +137,14 @@ async function captureDiff(worktree: ProvisionedWorktree, base: string, repoPath
   })
 }
 
-function spawnRacer(racer: RaceRacer, briefText: string, dispatchCmd: string): ChildProcess {
+function spawnRacer(racer: RaceRacer, briefText: string, dispatchCmd: string, briefId: string): ChildProcess {
   return spawn('/bin/sh', ['-c', dispatchCmd], {
     cwd: racer.path,
     stdio: ['pipe', openSync(racer.logPath, 'a'), openSync(racer.logPath, 'a')],
-    env: { ...process.env, ASICODE_BRIEF_ID: racer.runId, ASICODE_WORKTREE_PATH: racer.path },
+    // REQ-35: BRIEF_ID is the brief (shared across racers), RUN_ID is
+    // the per-racer run id used by the recorder-adapter to attribute
+    // outcomes back to the right runs row.
+    env: { ...process.env, ASICODE_BRIEF_ID: briefId, ASICODE_RUN_ID: racer.runId, ASICODE_WORKTREE_PATH: racer.path },
   })
 }
 
@@ -227,7 +230,7 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
         outcome: 'in_flight',
       })
     } catch { /* db may be unavailable; race continues */ }
-    const child = spawnRacer(racer, input.briefText, dispatchCmd)
+    const child = spawnRacer(racer, input.briefText, dispatchCmd, input.briefId)
     racer.pid = child.pid ?? 0
     children.set(runId, child)
     racers.push(racer)

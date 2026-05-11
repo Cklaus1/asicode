@@ -243,6 +243,34 @@ describe('--start dispatch', () => {
     expect(parsed.run_id).toMatch(/^run_/)
   })
 
+  // REQ-35: dispatched agent reads both BRIEF_ID + RUN_ID via env.
+  test('--start exports ASICODE_BRIEF_ID (the brief) AND ASICODE_RUN_ID (the run)', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const logDir = join(tempDir, 'runlogs-envprop')
+    // Agent script echoes both env vars on its first line — verifying
+    // submit set them and they differ (brief vs run id).
+    const r = run([briefPath, '--cwd', projDir, '--start', '--background', '--json'], {
+      env: {
+        ASICODE_DISPATCH_CMD: 'echo "BID=$ASICODE_BRIEF_ID RID=$ASICODE_RUN_ID"; cat > /dev/null',
+        ASICODE_RUN_LOG_DIR: logDir,
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.brief_id).toMatch(/^brf_/)
+    expect(parsed.run_id).toMatch(/^run_/)
+    // Read the log; agent should have printed both ids.
+    // Use spawnSync to read since the spawn is detached + async.
+    const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+    sleep(200)  // give the child a moment to write
+    const log = readFileSync(join(logDir, `${parsed.brief_id}.log`), 'utf-8')
+    expect(log).toContain(`BID=${parsed.brief_id}`)
+    expect(log).toContain(`RID=${parsed.run_id}`)
+    // The two must differ (one is the brief, the other is the run).
+    expect(parsed.brief_id).not.toBe(parsed.run_id)
+  })
+
   test('text output mentions dispatch when --start used', () => {
     const briefPath = join(tempDir, 'b.md')
     writeFileSync(briefPath, 'b', 'utf-8')
