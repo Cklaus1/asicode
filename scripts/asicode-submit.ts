@@ -16,11 +16,11 @@ import { buildMemdirContext } from '../src/services/memdir-retrieval/consumer'
 import { raceAgents } from '../src/services/parallel/dispatcher'
 import { isAutoPrEnabled, openWinnerPr } from '../src/services/parallel/openWinnerPr'
 
-interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean; race: number; autoPr: boolean }
+interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean; race: number; autoPr: boolean; forcePr: boolean }
 
 function parseArgs(argv: string[]): Args {
   const envRace = parseInt(process.env.ASICODE_RACE_COUNT ?? '', 10)
-  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false, race: Number.isFinite(envRace) && envRace >= 2 ? envRace : 1, autoPr: isAutoPrEnabled() }
+  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false, race: Number.isFinite(envRace) && envRace >= 2 ? envRace : 1, autoPr: isAutoPrEnabled(), forcePr: process.env.ASICODE_AUTO_PR_FORCE === '1' }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--file' || a === '-f') args.file = argv[++i]
@@ -36,6 +36,7 @@ function parseArgs(argv: string[]): Args {
     }
     else if (a === '--auto-pr') args.autoPr = true
     else if (a === '--no-auto-pr') args.autoPr = false
+    else if (a === '--force-pr') args.forcePr = true
     else if (a === '--json') args.json = true
     else if (a === '-h' || a === '--help') {
       console.log('usage: asicode-submit.ts [--file PATH | -] [--cwd PATH] [--start | --no-start] [--race N] [--background] [--json]')
@@ -48,6 +49,8 @@ function parseArgs(argv: string[]): Args {
       console.log('                 ASICODE_RACE_COUNT sets the default. Requires --start (or ASICODE_AUTO_START=1).')
       console.log('  --auto-pr      REQ-15: after a race wins, push the winner branch + `gh pr create` against base.')
       console.log('                 ASICODE_AUTO_PR=1 sets the default. Use --no-auto-pr to override.')
+      console.log('  --force-pr     REQ-20: open PR even when the winner failed the verifier (default: gated when verify_outcome != passed).')
+      console.log('                 ASICODE_AUTO_PR_FORCE=1 sets the default.')
       console.log('  --background   detach the spawned agent and exit immediately (true walk-away; single-spawn only — race is foreground)')
       console.log('  --json         print {brief_id, project_fingerprint, run_id?, pid?, race?} on stdout')
       console.log('')
@@ -203,7 +206,7 @@ async function main() {
   // REQ-14: race mode (best-of-N). When race>=2 and shouldStart, use
   // raceAgents instead of single-spawn. Race is foreground (we need to
   // wait for the winner) — --background is ignored under race.
-  let race: { winnerRunId: string; racerRunIds: string[]; winnerWorktree: string; winnerBranch: string; tiebreak: string | null } | null = null
+  let race: { winnerRunId: string; racerRunIds: string[]; winnerWorktree: string; winnerBranch: string; tiebreak: string | null; winnerVerify: string | null } | null = null
   let raceError: string | null = null
   if (shouldStart && args.race >= 2) {
     // ASICODE_RACE_SETTLE_MS / ASICODE_RACE_MAX_MS let ops + tests tune
@@ -217,7 +220,15 @@ async function main() {
         ...(Number.isFinite(settleMs) && settleMs > 0 ? { settleMs } : {}),
         ...(Number.isFinite(maxMs) && maxMs > 0 ? { maxRaceMs: maxMs } : {}),
       })
-      if (r.ok) race = { winnerRunId: r.winnerRunId, racerRunIds: r.racers.map(x => x.runId), winnerWorktree: r.winnerWorktree, winnerBranch: r.winnerBranch, tiebreak: r.tiebreak?.reason ?? null }
+      if (r.ok) {
+        const winnerRacer = r.racers.find(x => x.runId === r.winnerRunId)
+        race = {
+          winnerRunId: r.winnerRunId, racerRunIds: r.racers.map(x => x.runId),
+          winnerWorktree: r.winnerWorktree, winnerBranch: r.winnerBranch,
+          tiebreak: r.tiebreak?.reason ?? null,
+          winnerVerify: winnerRacer?.verify?.outcome ?? null,
+        }
+      }
       else raceError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
     } catch (e) { raceError = e instanceof Error ? e.message : String(e) }
   } else if (shouldStart) {
@@ -226,9 +237,18 @@ async function main() {
 
   // REQ-15: auto-PR. Only fires when a race won AND --auto-pr (or
   // ASICODE_AUTO_PR=1). Soft-fail — race result stays exposed.
+  // REQ-20: when the verifier ran and the winner did NOT pass, gate
+  // the PR open behind --force-pr / ASICODE_AUTO_PR_FORCE=1. Skip is
+  // reported as pr_gated with the verify outcome that blocked it.
   let pr: { prNumber: number; url: string; branch: string } | null = null
   let prError: string | null = null
+  let prGated: string | null = null
   if (race && args.autoPr) {
+    if (race.winnerVerify !== null && race.winnerVerify !== 'passed' && !args.forcePr) {
+      prGated = `winner verify=${race.winnerVerify}; pass --force-pr or ASICODE_AUTO_PR_FORCE=1 to open anyway`
+    }
+  }
+  if (race && args.autoPr && !prGated) {
     try {
       const r = await openWinnerPr({
         branch: race.winnerBranch, repoPath: args.cwd, worktreePath: race.winnerWorktree,
@@ -249,11 +269,12 @@ async function main() {
     const out: Record<string, unknown> = { brief_id: briefId, project_fingerprint: fp, project_path: args.cwd, ts_submitted: now }
     if (retrievalHitCount > 0) out.retrieval_hits = retrievalHitCount
     if (memdirHitCount > 0) out.memdir_hits = memdirHitCount
-    if (race) Object.assign(out, { race: { count: args.race, winner_run_id: race.winnerRunId, racer_run_ids: race.racerRunIds, winner_worktree: race.winnerWorktree, winner_branch: race.winnerBranch, tiebreak: race.tiebreak } })
+    if (race) Object.assign(out, { race: { count: args.race, winner_run_id: race.winnerRunId, racer_run_ids: race.racerRunIds, winner_worktree: race.winnerWorktree, winner_branch: race.winnerBranch, tiebreak: race.tiebreak, winner_verify: race.winnerVerify } })
     else if (raceError) out.race_error = raceError
     else if (dispatch?.ok) Object.assign(out, { run_id: dispatch.runId, pid: dispatch.pid, log_path: dispatch.logPath })
     else if (dispatch && !dispatch.ok) Object.assign(out, { dispatch_skipped: dispatch.reason })
     if (pr) out.pr = pr
+    else if (prGated) out.pr_gated = prGated
     else if (prError) out.pr_error = prError
     console.log(JSON.stringify(out))
   }
@@ -267,7 +288,9 @@ async function main() {
       console.log(`  worktree:    ${race.winnerWorktree}`)
       console.log(`  branch:      ${race.winnerBranch}`)
       if (race.tiebreak) console.log(`  tiebreak:    ${race.tiebreak}`)
+      if (race.winnerVerify) console.log(`  verify:      ${race.winnerVerify}`)
       if (pr) console.log(`  pr:          #${pr.prNumber} ${pr.url}`)
+      else if (prGated) console.log(`  pr:          GATED — ${prGated}`)
       else if (prError) console.log(`  pr:          FAILED — ${prError}`)
     } else if (raceError) {
       console.log(`  race:        FAILED — ${raceError}`)

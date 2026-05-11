@@ -477,4 +477,100 @@ describe('--race best-of-N (REQ-14)', () => {
     // pr_error mentions no_remote
     expect(parsed.pr_error).toContain('no_remote')
   }, 90_000)
+
+  // REQ-20: gate auto-PR when winner failed the verifier.
+  test('--auto-pr is GATED when winner verify_outcome=failed', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'gate me\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--auto-pr', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo broken > f.txt; git config user.email t@t.t; git config user.name T; git add f.txt; git commit -q --no-gpg-sign -m "broken"',
+        ASICODE_VERIFY_CMD: 'exit 1',  // always fail
+        ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-gate-fail'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race?.winner_verify).toBe('failed')
+    // PR was NOT opened
+    expect(parsed.pr).toBeUndefined()
+    expect(parsed.pr_error).toBeUndefined()
+    // pr_gated reason mentions failed
+    expect(parsed.pr_gated).toContain('failed')
+    expect(parsed.pr_gated).toContain('--force-pr')
+  }, 90_000)
+
+  test('--force-pr overrides the gate (failing verifier still ships)', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'force\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--auto-pr', '--force-pr', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo broken > f.txt; git config user.email t@t.t; git config user.name T; git add f.txt; git commit -q --no-gpg-sign -m "broken"',
+        ASICODE_VERIFY_CMD: 'exit 1',
+        ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-force'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race?.winner_verify).toBe('failed')
+    expect(parsed.pr_gated).toBeUndefined()
+    // PR open will fail later (no remote) but the gate let it try.
+    expect(parsed.pr_error).toBeDefined()
+  }, 90_000)
+
+  test('--auto-pr passes when winner verify_outcome=passed', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'pass\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--auto-pr', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo ok > f.txt; git config user.email t@t.t; git config user.name T; git add f.txt; git commit -q --no-gpg-sign -m "ok"',
+        ASICODE_VERIFY_CMD: 'true',
+        ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-pass'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race?.winner_verify).toBe('passed')
+    // No gate, PR open attempted (fails at no_remote but gate is what we test)
+    expect(parsed.pr_gated).toBeUndefined()
+  }, 90_000)
+
+  test('--help mentions --force-pr + ASICODE_AUTO_PR_FORCE', () => {
+    const r = run(['--help'], { env: { ASICODE_INSTRUMENTATION_DB: '' } })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('--force-pr')
+    expect(r.stdout).toContain('ASICODE_AUTO_PR_FORCE')
+  })
+
+  test('ASICODE_AUTO_PR_FORCE=1 sets force-pr default', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'env-force\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--auto-pr', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_AUTO_PR_FORCE: '1',
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo broken > f.txt; git config user.email t@t.t; git config user.name T; git add f.txt; git commit -q --no-gpg-sign -m "broken"',
+        ASICODE_VERIFY_CMD: 'exit 1',
+        ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-env-force'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.pr_gated).toBeUndefined()  // gate bypassed
+  }, 90_000)
 })
