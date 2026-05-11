@@ -178,13 +178,41 @@ export function densityOnPrMerge(input: DensityTriggerInput): void {
       // Record density regardless of refactor classification — non-refactor
       // PRs get is_refactor=0 and skip the metric, but the row exists for
       // audit. Mirrors the recordDensity contract.
-      await recordDensity({
+      const result = await recordDensity({
         prSha: input.prSha,
         briefId: input.briefId,
         isRefactor: cls.isRefactor,
         repoPath: input.repoPath,
         runner: null, // see "Pre-tests caveat" in the header comment
       })
+      // Iter 56: post density summary to PR if opted in. Soft-fail
+      // (shouldPostDensity already filters non-refactors + null delta).
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { isPrCommentEnabled, postDensitySummary } =
+        require('./density-pr-comment.js') as typeof import('./density-pr-comment')
+      if (isPrCommentEnabled()) {
+        try {
+          const posted = await postDensitySummary({
+            prSha: input.prSha,
+            result,
+            repoPath: input.repoPath,
+          })
+          if (
+            !posted.posted &&
+            posted.reason !== 'opt_out' &&
+            posted.reason !== 'not_a_refactor' &&
+            posted.reason !== 'no_delta'
+          ) {
+            // eslint-disable-next-line no-console
+            console.warn(`[asicode density] pr-comment skipped: ${posted.reason}`)
+          }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[asicode density] pr-comment threw: ${e instanceof Error ? e.message : String(e)}`,
+          )
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       // eslint-disable-next-line no-console
