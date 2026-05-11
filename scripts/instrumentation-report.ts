@@ -208,6 +208,49 @@ function reasonPrefix(reason: string): string {
   return head
 }
 
+// REQ-50: previous-window snapshot for trend deltas. Same metrics as
+// compute() but only the two rates we surface in trend lines (hands-off
+// + regression). Bounded window [fromMs, toMs).
+export interface TrendSnapshot {
+  briefsCompleted: number
+  handsOffRate: number | null
+  merged: number
+  regressionRate: number | null
+}
+export function computeTrend(db: Database, fromMs: number, toMs: number): TrendSnapshot {
+  try {
+    const briefRow = db
+      .query<{ completed: number; hands_off: number }, [number, number]>(
+        `SELECT COUNT(*) AS completed,
+                SUM(CASE WHEN pr_outcome = 'merged_no_intervention' THEN 1 ELSE 0 END) AS hands_off
+         FROM briefs
+         WHERE pr_outcome IS NOT NULL AND pr_outcome <> 'in_flight'
+           AND ts_completed IS NOT NULL
+           AND ts_completed >= ? AND ts_completed < ?`,
+      ).get(fromMs, toMs) ?? { completed: 0, hands_off: 0 }
+    const briefsCompleted = briefRow.completed ?? 0
+    const handsOff = briefRow.hands_off ?? 0
+    const regRow = db
+      .query<{ merged: number; regressed: number }, [number, number]>(
+        `SELECT COUNT(*) AS merged,
+                SUM(reverted_within_7d + hotpatched_within_7d) AS regressed
+         FROM briefs
+         WHERE pr_outcome IN ('merged_no_intervention', 'merged_with_intervention')
+           AND ts_completed IS NOT NULL
+           AND ts_completed >= ? AND ts_completed < ?`,
+      ).get(fromMs, toMs) ?? { merged: 0, regressed: 0 }
+    const merged = regRow.merged ?? 0
+    const regressed = regRow.regressed ?? 0
+    return {
+      briefsCompleted, merged,
+      handsOffRate: briefsCompleted > 0 ? handsOff / briefsCompleted : null,
+      regressionRate: merged > 0 ? regressed / merged : null,
+    }
+  } catch {
+    return { briefsCompleted: 0, merged: 0, handsOffRate: null, regressionRate: null }
+  }
+}
+
 function compute(db: Database, sinceMs: number): Metrics {
   const briefRow = db
     .query<{ completed: number; hands_off: number }, [number]>(
@@ -783,7 +826,17 @@ function fmtIndex(ai: number | null): string {
   return ai.toFixed(2).padStart(4)
 }
 
-function render(m: Metrics, sinceDays: number): string {
+// REQ-50: format a +/- delta in percentage points (pp). Returns ''
+// when prev is null or its sample size is too small to be meaningful.
+function fmtDelta(curr: number | null, prev: number | null, prevN: number, minN = 3): string {
+  if (curr === null || prev === null || prevN < minN) return ''
+  const diffPp = Math.round((curr - prev) * 100)
+  if (diffPp === 0) return '  (flat vs prev W)'
+  const arrow = diffPp > 0 ? '↑' : '↓'
+  return `  (${arrow}${Math.abs(diffPp)}pp from prev W)`
+}
+
+function render(m: Metrics, sinceDays: number, prev?: TrendSnapshot): string {
   const lines: string[] = []
   const sinceLabel = `last ${sinceDays}d`
 
@@ -800,8 +853,10 @@ function render(m: Metrics, sinceDays: number): string {
   lines.push('')
 
   lines.push('Primary metrics')
-  lines.push(`  Hands-off completion    ${fmtPct(m.handsOffRate)}    (${m.handsOff}/${m.briefsCompleted} briefs)`)
-  lines.push(`  Regression rate         ${fmtPct(m.regressionRate)}    (${m.regressed}/${m.merged} merged in W-2)`)
+  const dHO = prev ? fmtDelta(m.handsOffRate, prev.handsOffRate, prev.briefsCompleted) : ''
+  const dRG = prev ? fmtDelta(m.regressionRate, prev.regressionRate, prev.merged) : ''
+  lines.push(`  Hands-off completion    ${fmtPct(m.handsOffRate)}    (${m.handsOff}/${m.briefsCompleted} briefs)${dHO}`)
+  lines.push(`  Regression rate         ${fmtPct(m.regressionRate)}    (${m.regressed}/${m.merged} merged in W-2)${dRG}`)
   lines.push(`  Judge quality (mean)    ${fmtScore(m.judgeQualityMean)}    (${m.judgmentsCount} PRs judged)`)
   lines.push(`  Density on refactors    ${fmtPct(m.densityPositiveRate)}    (${m.densityPositive}/${m.refactorPrs} refactor PRs)`)
   lines.push('')
@@ -1038,7 +1093,10 @@ async function main() {
   db.exec('PRAGMA query_only = ON')
   const sinceMs = Date.now() - args.sinceDays * 24 * 60 * 60 * 1000
   const metrics = compute(db, sinceMs)
-  console.log(render(metrics, args.sinceDays))
+  // REQ-50: previous-window snapshot for trend deltas.
+  const windowMs = args.sinceDays * 24 * 60 * 60 * 1000
+  const prev = computeTrend(db, sinceMs - windowMs, sinceMs)
+  console.log(render(metrics, args.sinceDays, prev))
   db.close()
 }
 

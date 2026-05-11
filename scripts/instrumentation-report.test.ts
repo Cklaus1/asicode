@@ -1110,3 +1110,70 @@ describe('Abandonment reasons section (REQ-49)', () => {
     expect(stdout).not.toContain('Abandonment reasons')
   })
 })
+
+// REQ-50: week-over-week trend deltas on primary metrics.
+describe('Trend deltas (REQ-50)', () => {
+  const ONE_DAY = 24 * 60 * 60 * 1000
+
+  test('shows ↑ when hands-off improved vs prev window', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // Prev window (8-14d ago): 2/4 hands-off = 50%
+    for (let i = 0; i < 4; i++) seedBrief(db, `p${i}`, i < 2 ? 'merged_no_intervention' : 'abandoned', now - 10 * ONE_DAY)
+    // Curr window (0-7d ago): 3/4 hands-off = 75%
+    for (let i = 0; i < 4; i++) seedBrief(db, `c${i}`, i < 3 ? 'merged_no_intervention' : 'abandoned', now - 1 * ONE_DAY)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/Hands-off completion\s+75%/)
+    expect(stdout).toContain('↑25pp from prev W')
+  })
+
+  test('shows ↓ when hands-off regressed', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // Prev: 4/4 = 100%
+    for (let i = 0; i < 4; i++) seedBrief(db, `p${i}`, 'merged_no_intervention', now - 10 * ONE_DAY)
+    // Curr: 1/4 = 25%
+    for (let i = 0; i < 4; i++) seedBrief(db, `c${i}`, i < 1 ? 'merged_no_intervention' : 'abandoned', now - 1 * ONE_DAY)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('↓75pp from prev W')
+  })
+
+  test('omits delta when prev window has too few samples (<3)', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // Prev: 1 brief — below minN
+    seedBrief(db, 'p0', 'merged_no_intervention', now - 10 * ONE_DAY)
+    // Curr: 4 briefs
+    for (let i = 0; i < 4; i++) seedBrief(db, `c${i}`, 'merged_no_intervention', now - 1 * ONE_DAY)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/Hands-off completion\s+100%/)
+    expect(stdout).not.toContain('from prev W')
+  })
+
+  test('flat when no change', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    for (let i = 0; i < 4; i++) seedBrief(db, `p${i}`, 'merged_no_intervention', now - 10 * ONE_DAY)
+    for (let i = 0; i < 4; i++) seedBrief(db, `c${i}`, 'merged_no_intervention', now - 1 * ONE_DAY)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('flat vs prev W')
+  })
+
+  test('empty prev window → no delta even if curr has data', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    for (let i = 0; i < 4; i++) seedBrief(db, `c${i}`, 'merged_no_intervention', now - 1 * ONE_DAY)
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('from prev W')
+  })
+})
