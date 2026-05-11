@@ -36,7 +36,7 @@ import {
   type ToolCallRecord,
 } from './types'
 
-const SCHEMA_VERSION_REQUIRED = 3
+const SCHEMA_VERSION_REQUIRED = 4
 
 let _db: Database | null = null
 
@@ -152,6 +152,7 @@ export const newToolCallId = () => generateId('tc')
 export const newReviewId = () => generateId('rev')
 export const newJudgmentId = () => generateId('jud')
 export const newRevertId = () => generateId('rev_auto')
+export const newDriftId = () => generateId('drift')
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -421,6 +422,39 @@ export function recordAutoRevert(rec: AutoRevertRecord): void {
       rec.branch_name,
       rec.ts_opened,
       JSON.stringify(rec.trigger_reasons),
+    ],
+  )
+}
+
+// REQ-4.2: drift_runs writer.
+export interface DriftRunRecord {
+  drift_id: string
+  ts: number
+  n_samples: number
+  threshold: number
+  mean_abs_delta: number
+  drift_detected: boolean
+  per_dimension: unknown
+  per_tier: unknown
+  panel_mode: 'quality' | 'balanced' | 'fast' | 'shadow'
+}
+
+export function recordDriftRun(rec: DriftRunRecord): void {
+  if (rec.ts <= 0) throw new Error(`invalid ts: ${rec.ts}`)
+  if (rec.n_samples < 0) throw new Error(`invalid n_samples: ${rec.n_samples}`)
+  if (rec.threshold < 0) throw new Error(`invalid threshold: ${rec.threshold}`)
+  if (rec.mean_abs_delta < 0) throw new Error(`invalid mean_abs_delta: ${rec.mean_abs_delta}`)
+  const db = openInstrumentationDb()
+  db.run(
+    `INSERT INTO drift_runs (
+       drift_id, ts, n_samples, threshold, mean_abs_delta,
+       drift_detected, per_dimension_json, per_tier_json, panel_mode
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      rec.drift_id, rec.ts, rec.n_samples, rec.threshold, rec.mean_abs_delta,
+      rec.drift_detected ? 1 : 0,
+      JSON.stringify(rec.per_dimension), JSON.stringify(rec.per_tier),
+      rec.panel_mode,
     ],
   )
 }
