@@ -222,6 +222,14 @@ export const BriefUpdateSchema = z.object({
   pr_sha: z.string().optional(),
   pr_outcome: PrOutcomeSchema.optional(),
   intervention_reason: z.string().optional(),
+  // A16 fields — populated post-hoc by the brief-gate trigger.
+  a16_asi_readiness: ScoreSchema.optional(),
+  a16_well_formedness: ScoreSchema.optional(),
+  a16_verifier_shaped: ScoreSchema.optional(),
+  a16_density_clarity: ScoreSchema.optional(),
+  a16_risk_class: RiskClassSchema.optional(),
+  a16_decision: A16DecisionSchema.optional(),
+  a16_decision_reason: z.string().optional(),
 })
 
 export type BriefUpdate = z.infer<typeof BriefUpdateSchema>

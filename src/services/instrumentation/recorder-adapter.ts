@@ -145,6 +145,16 @@ export function adaptBeginRun(
       briefText: initialPrompt,
       projectPath: cwd,
     })
+
+    // Fire the A16 brief-gate trigger when opted in. Updates the
+    // brief row with the evaluator's verdict asynchronously. Lazy-
+    // require keeps the recorder path lean when the gate is off.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const briefGate = require('../brief-gate/trigger.js') as {
+      evaluateBriefOnSubmit: (input: { briefId: string; briefText: string }) => void
+    }
+    briefGate.evaluateBriefOnSubmit({ briefId, briefText: initialPrompt })
+
     return { briefId, runId }
   })
 }
