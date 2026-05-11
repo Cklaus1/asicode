@@ -234,6 +234,59 @@ function lookupRunIdForBrief(briefId: string): string | null {
   return row?.run_id ?? null
 }
 
+/**
+ * Look up a brief_id by v1 outcome-recorder taskId. Returns null when
+ * no matching brief exists (v1 wasn't opted into v2 at the time, the
+ * row was pruned, etc).
+ *
+ * The v1_task_id column was added in migration 0002. Rows created
+ * before that migration have NULL v1_task_id and can't be looked up
+ * by this path.
+ */
+export function briefIdFromTaskId(taskId: string): string | null {
+  const db = openInstrumentationDb()
+  const row = db
+    .query<{ brief_id: string }, [string]>(
+      'SELECT brief_id FROM briefs WHERE v1_task_id = ? LIMIT 1',
+    )
+    .get(taskId)
+  return row?.brief_id ?? null
+}
+
+/**
+ * Convenience overload for v1 callers. They already have the taskId
+ * from beginOutcomeRun; this looks up the brief_id and forwards to
+ * recordPrLanded. The lookup is db-backed (not the adapter's in-memory
+ * map) so it survives process restarts — important because PRs typically
+ * merge hours after the agent's process exits.
+ *
+ * Returns result.recorded = false with reason 'taskid not mapped' when
+ * no briefs row carries this taskId.
+ */
+export async function recordPrLandedByTaskId(input: {
+  taskId: string
+  prSha: string
+  prOutcome?: PrOutcome
+  diff?: string
+  interventionReason?: string
+}): Promise<PrLandedResult> {
+  const mapped = tryV2(() => briefIdFromTaskId(input.taskId))
+  if (!mapped) {
+    return {
+      recorded: false,
+      fired: [],
+      reason: disabled ? 'instrumentation disabled' : 'taskid not mapped',
+    }
+  }
+  return await recordPrLanded({
+    briefId: mapped,
+    prSha: input.prSha,
+    prOutcome: input.prOutcome,
+    diff: input.diff,
+    interventionReason: input.interventionReason,
+  })
+}
+
 async function fetchDiff(prSha: string, repoPath: string): Promise<string | null> {
   if (!existsSync(repoPath)) return null
   void join // suppress unused-import warning until used elsewhere

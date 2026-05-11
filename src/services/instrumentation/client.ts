@@ -36,7 +36,7 @@ import {
   type ToolCallRecord,
 } from './types'
 
-const SCHEMA_VERSION_REQUIRED = 1
+const SCHEMA_VERSION_REQUIRED = 2
 
 let _db: Database | null = null
 
@@ -168,14 +168,16 @@ export function recordBrief(rec: BriefRecord): void {
        user_text, expanded_brief,
        a16_asi_readiness, a16_well_formedness, a16_verifier_shaped, a16_density_clarity,
        a16_risk_class, a16_decision, a16_decision_reason, a16_clarification_turns,
-       pr_sha, pr_outcome, intervention_reason
+       pr_sha, pr_outcome, intervention_reason,
+       v1_task_id
      ) VALUES (
        $brief_id, $ts_submitted, $ts_accepted, $ts_completed,
        $project_path, $project_fingerprint,
        $user_text, $expanded_brief,
        $a16_asi_readiness, $a16_well_formedness, $a16_verifier_shaped, $a16_density_clarity,
        $a16_risk_class, $a16_decision, $a16_decision_reason, $a16_clarification_turns,
-       $pr_sha, $pr_outcome, $intervention_reason
+       $pr_sha, $pr_outcome, $intervention_reason,
+       $v1_task_id
      )`,
     {
       $brief_id: parsed.brief_id,
@@ -197,6 +199,7 @@ export function recordBrief(rec: BriefRecord): void {
       $pr_sha: parsed.pr_sha ?? null,
       $pr_outcome: parsed.pr_outcome ?? null,
       $intervention_reason: parsed.intervention_reason ?? null,
+      $v1_task_id: parsed.v1_task_id ?? null,
     },
   )
 }

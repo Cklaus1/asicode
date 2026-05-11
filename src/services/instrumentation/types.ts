@@ -98,6 +98,9 @@ export const BriefRecordSchema = z.object({
   pr_outcome: PrOutcomeSchema.optional(),
   intervention_reason: z.string().optional(),
   // reverted_within_7d / hotpatched_within_7d: set by reconcile job, not at insert
+
+  // v1 outcome-recorder taskId (UUID) for cross-process lookup. Migration 0002.
+  v1_task_id: z.string().optional(),
 })
 
 export type BriefRecord = z.infer<typeof BriefRecordSchema>

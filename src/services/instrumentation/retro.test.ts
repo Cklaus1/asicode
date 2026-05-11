@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { readdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -42,7 +42,13 @@ let dbPath: string
 
 function applyMigration(path: string) {
   const db = new Database(path, { create: true })
-  db.exec(readFileSync(MIGRATION_PATH, 'utf-8'))
+  // Apply every migration in sequence to keep tests aligned with the
+  // production migration runner. Was a single 0001 read before iter 42.
+  const migDir = MIGRATION_PATH.replace(/\/[^/]+$/, '')
+  const files = readdirSync(migDir).filter(f => f.endsWith('.sql')).sort()
+  for (const f of files) {
+    db.exec(readFileSync(`${migDir}/${f}`, 'utf-8'))
+  }
   db.close()
 }
 

@@ -131,6 +131,7 @@ export function adaptBeginRun(
       project_fingerprint: projectFingerprint,
       user_text: initialPrompt,
       a16_decision: opts?.a16Decision ?? 'accept',
+      v1_task_id: taskId,
     })
     recordRun({
       run_id: runId,
