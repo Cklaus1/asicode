@@ -226,5 +226,120 @@ describe('--help mentions --add', () => {
     expect(r.stdout).toContain('--tier')
     expect(r.stdout).toContain('--diff')
     expect(r.stdout).toContain('--brief')
+    expect(r.stdout).toContain('--status')
+  })
+})
+
+// REQ-3.3: corpus completeness check. Exit 0 when 10/10/10 reached,
+// 1 when short. JSON output is the machine-readable surface for CI
+// readiness rollups.
+describe('--status', () => {
+  function seedEntries(spec: Array<{ id: string; tier: 'strong' | 'medium' | 'weak' }>) {
+    writeFileSync(
+      join(corpusDir, 'manifest.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          entries: spec.map(s => ({
+            id: s.id,
+            tier: s.tier,
+            diff_path: `${s.id}.diff`,
+            brief: 'b',
+          })),
+        },
+        null,
+        2,
+      ),
+      'utf-8',
+    )
+  }
+
+  test('empty corpus → exit 1, 0/0/0', () => {
+    const r = runCli(['--status', '--corpus', corpusDir])
+    expect(r.code).toBe(1)
+    expect(r.stdout).toMatch(/strong .* 0\/10/)
+    expect(r.stdout).toMatch(/medium .* 0\/10/)
+    expect(r.stdout).toMatch(/weak .* 0\/10/)
+    expect(r.stdout).toContain('need 10 more')
+  })
+
+  test('partial corpus → exit 1, shows remaining', () => {
+    seedEntries([
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `s${i}`, tier: 'strong' as const })),
+      ...Array.from({ length: 3 }, (_, i) => ({ id: `m${i}`, tier: 'medium' as const })),
+    ])
+    const r = runCli(['--status', '--corpus', corpusDir])
+    expect(r.code).toBe(1)
+    expect(r.stdout).toMatch(/strong .* 5\/10.*need 5/)
+    expect(r.stdout).toMatch(/medium .* 3\/10.*need 7/)
+    expect(r.stdout).toMatch(/weak .* 0\/10.*need 10/)
+    expect(r.stdout).toContain('8/30')
+    expect(r.stdout).toContain('22 more entries')
+  })
+
+  test('complete 10/10/10 corpus → exit 0', () => {
+    seedEntries([
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `s${i}`, tier: 'strong' as const })),
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `m${i}`, tier: 'medium' as const })),
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `w${i}`, tier: 'weak' as const })),
+    ])
+    const r = runCli(['--status', '--corpus', corpusDir])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('30/30')
+    expect(r.stdout).toContain('complete')
+    expect(r.stdout).toContain('ready to run')
+  })
+
+  test('over-target counts still report complete', () => {
+    seedEntries([
+      ...Array.from({ length: 12 }, (_, i) => ({ id: `s${i}`, tier: 'strong' as const })),
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `m${i}`, tier: 'medium' as const })),
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `w${i}`, tier: 'weak' as const })),
+    ])
+    const r = runCli(['--status', '--corpus', corpusDir])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('32/30')
+  })
+
+  test('missing manifest → exit 1 with hint to add', () => {
+    const r = runCli(['--status', '--corpus', corpusDir])
+    expect(r.code).toBe(1)
+    expect(r.stdout).toContain('manifest.json not yet created')
+    expect(r.stdout).toContain('--add')
+  })
+
+  test('--json shape includes counts + shortBy + complete', () => {
+    seedEntries([
+      { id: 's1', tier: 'strong' },
+      { id: 'm1', tier: 'medium' },
+    ])
+    const r = runCli(['--status', '--corpus', corpusDir, '--json'])
+    expect(r.code).toBe(1)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.complete).toBe(false)
+    expect(parsed.totalEntries).toBe(2)
+    expect(parsed.counts).toEqual({ strong: 1, medium: 1, weak: 0 })
+    expect(parsed.shortBy).toEqual({ strong: 9, medium: 9, weak: 10 })
+    expect(parsed.target).toBe(10)
+    expect(parsed.manifestExists).toBe(true)
+  })
+
+  test('--json on missing manifest reports manifestExists=false', () => {
+    const r = runCli(['--status', '--corpus', corpusDir, '--json'])
+    expect(r.code).toBe(1)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.manifestExists).toBe(false)
+    expect(parsed.totalEntries).toBe(0)
+  })
+
+  test('malformed manifest → exit 2', () => {
+    writeFileSync(
+      join(corpusDir, 'manifest.json'),
+      JSON.stringify({ version: 99, entries: 'oops' }),
+      'utf-8',
+    )
+    const r = runCli(['--status', '--corpus', corpusDir])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('malformed manifest')
   })
 })
