@@ -514,6 +514,52 @@ describe('REQ-37 stale in-flight detection', () => {
     expect(parsed.runs[0].stale).toBe(false)
   })
 
+  // REQ-44: log_path reconstruction
+  test('log_path: single-spawn (in_process) uses brief_id', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_log1')
+    seedRun(db, 'run_l1', 'brf_log1', { outcome: 'in_flight' })
+    db.close()
+    const r = run(['brf_log1', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.runs[0].log_path).toContain('brf_log1.log')
+  })
+
+  test('log_path: race (worktree isolation) uses run_id', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_log2')
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome)
+       VALUES (?, ?, ?, ?, ?)`,
+      ['run_w_abc', 'brf_log2', Date.now(), 'worktree', 'completed'],
+    )
+    db.close()
+    const r = run(['brf_log2', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.runs[0].log_path).toContain('run_w_abc.log')
+    expect(parsed.runs[0].log_path).not.toContain('brf_log2.log')
+  })
+
+  test('log_path: ASICODE_RUN_LOG_DIR override honored', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_log3')
+    seedRun(db, 'run_l3', 'brf_log3', { outcome: 'in_flight' })
+    db.close()
+    const r = run(['brf_log3', '--json'], { ASICODE_RUN_LOG_DIR: '/custom/logs' })
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.runs[0].log_path).toBe('/custom/logs/brf_log3.log')
+  })
+
+  test('log_path surfaces in text output too', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_log4')
+    seedRun(db, 'run_l4', 'brf_log4', { outcome: 'completed' })
+    db.close()
+    const r = run(['brf_log4'])
+    expect(r.stdout).toContain('log:')
+    expect(r.stdout).toContain('brf_log4.log')
+  })
+
   test('REQ-41: pr_url surfaces in text + JSON when set', () => {
     const db = new Database(dbPath)
     seedBrief(db, 'brf_url1')
