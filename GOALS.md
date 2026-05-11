@@ -54,9 +54,17 @@ Each judge returns a 1–5 score on each dimension. Composite = mean of the 9 sc
 **Why primary:** replaces "cost per PR" — meaningless on local models, secondary even on hosted. Quality of the work IS what we care about; cost is bookkeeping. Three judges, not one, because single-LLM judging is a known-noisy signal. Different judges + majority/average reduce bias; judge disagreement (high variance across panel) is itself a useful signal — high variance = ambiguous case = human review value.
 
 **Implementation notes:**
-- Three judges = three *different* models when possible (e.g., one Sonnet, one Opus, one local Qwen / GPT-OSS). When only one model is available, three different prompts is the fallback — weaker but cheaper.
+
+- **v1 panel composition (pragmatic):** all three judges run **Claude Sonnet 4.6** with three different role prompts — correctness judge, code-review judge, QA-risk judge. One API key, one rate limit, one billing line, predictable latency, no local-model infra. **This is the fallback path, knowingly chosen.** The architectural ideal is family-diverse (one Anthropic, one OpenAI/Google, one local Qwen/DeepSeek) — three different model families means three different training-data biases, three different failure modes, and *uncorrelated* errors that the composite can actually average out. Three Sonnet calls with different prompts are highly correlated; we get noise reduction within Sonnet's blind spots but not across them.
+- **What the v1 panel will be blind to:** anything Sonnet 4.6 systemically over- or under-rates. Notable examples: code styles outside its training distribution, security smells in languages where it has thin coverage, "looks idiomatic for Anthropic-flavored code, isn't idiomatic for this project."
+- **Upgrade trigger.** Move to the family-diverse panel when *any* of:
+  - Inter-judge agreement exceeds **0.9** for two consecutive monthly windows (the three "judges" are effectively one — diversification stops adding value entirely).
+  - A specific bias pattern is documented (e.g. all three over-rate refactors that match the asi-family voice) — at that point the v1 panel is gaming its own metric.
+  - Local-model quality for a 32B-class code-specialized model (Qwen 2.5-Coder or successor) reaches measured parity with Sonnet 4.6 on the code-review judge task — adds family diversity at zero marginal cost.
+  - asicode reaches v2.0 milestone — re-evaluate as part of v2 instrumentation upgrades regardless.
+- **Three role prompts (v1):** each judge sees the same diff + brief, with these stance prompts: **Correctness judge** — "Does this do what the brief asked, with sane edge-case handling? Logic errors, off-by-ones, missing branches." **Code-review judge** — "Would a senior engineer accept this in review? Naming, idioms, error handling, structure, density." **QA-risk judge** — "What could break? Cross-coupling, performance regressions, security smells, hidden state, race conditions." Same model, three explicit stances — same pattern used by Q4 introspection in `PRACTICES.md`.
 - Judges are blind to whether the diff was asicode-authored or human-authored. Periodic blind-mix of human-authored PRs through the same pipeline calibrates the panel and surfaces drift.
-- A judge that consistently outscores others by >0.5 across a month is **rotated out** — it's not judging, it's flattering.
+- A judge-role that consistently outscores others by >0.5 across a month is **rotated out** — it's not judging, it's flattering. With v1's single-model panel, this surfaces as one of the three *prompts* being too easy; rewrite that prompt rather than swap a model.
 
 **How to compute:** new `services/judges/` (or `asicored/src/judges.rs` in v2) reads merged PR diffs from the outcome log, fans out to N model APIs, aggregates. Each judgment is itself a row in the outcome log for audit + drift tracking.
 
