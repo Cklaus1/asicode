@@ -1,8 +1,16 @@
 # asicode 3-panel judge prompts — v1
 
-> v1 implementation: three calls to **Claude Sonnet 4.6**, three different role prompts. Same model, three explicit stances. The architectural ideal (family-diverse panel) is a v2 upgrade; see `GOALS.md` Metric 3.
-
-Each judge receives the same input. The differentiator is the role prompt — what they're asked to *look for*, not what they're asked to *judge*.
+> v1 panel: **Opus 4.x ⊗ Sonnet 4.6 ⊗ local Qwen 2.5-Coder 32B** (or DeepSeek-Coder V3 / Llama 4 — whichever is locally deployed). Subscription pricing means the marginal cost is $0 across all three; the constraint is **rate limits, latency, and signal-to-noise**, not dollars. Each judge receives the same input; the differentiator is the role prompt — what they're asked to *look for*.
+>
+> Initial role-to-model assignment (rotates monthly to surface model-specific biases):
+>
+> | Role | v1 model | Why |
+> |---|---|---|
+> | Correctness | Opus 4.x | strongest reasoning catches logic errors others miss |
+> | Code review | Sonnet 4.6 | idiom + style is a Sonnet strength; lower latency for the highest-volume role |
+> | QA / risk | local Qwen 2.5-Coder 32B (or DeepSeek-Coder V3) | different training corpus catches risk patterns Anthropic-family misses |
+>
+> Fallback if local coder isn't deployed: temporary slot 3 = second Sonnet 4.6 with QA-risk prompt — knowingly correlated until the local model lands.
 
 ---
 
@@ -271,6 +279,9 @@ If the v1 panel can't differentiate these tiers cleanly, the prompts are wrong, 
 ## Operational notes
 
 - **Caching:** judges run against unchanged diffs return identical scores. Cache by `(model_version, role, diff_sha)`. Big win for replay (A11).
+- **Parallelism:** the three judges run in parallel; total latency = max of the three, not sum. The local-model slot is typically slowest in absolute terms (CPU/GPU local inference) but doesn't compete with the Anthropic rate limits — it's a different queue.
 - **Timeouts:** each judge call ≤ 30s. A judge that times out → that role contributes nothing to composite; the other two carry on. Composite quality dimension records "incomplete panel".
 - **Failure mode:** if 2+ judges fail/timeout, the PR is flagged `judge_unavailable` and falls back to L1+L2 verifier signal only. Don't block merges on judge failure; do block confidence in the autonomy metrics.
-- **Drift:** if Sonnet 4.6 silently upgrades behind the API, scores will move. Pin the model version explicitly in calls (`claude-sonnet-4-6` with explicit version when available); record the model snapshot used in the judgment row of the outcome log.
+- **Rate-limit handling:** Anthropic subscription tier caps requests/min. When the panel hits 429, the rate-limited judge call queues with exponential backoff; the other two judges return on schedule and the third lands when capacity frees. Don't fall back to "skip this judge" — the panel composition matters too much. Tradeoff: slower judgments under load, not lower-quality judgments.
+- **Drift:** if any model in the panel silently upgrades behind the API, scores will move. Pin model versions explicitly in calls; record the model snapshot used in the judgment row of the outcome log. Drift detection: when a model upgrade lands, run the calibration corpus before-and-after and report any per-tier score delta > 0.3 as a recalibration event.
+- **Role rotation cadence:** monthly. The same model handles a different role each month (e.g. month 1 Opus = correctness; month 2 Opus = code-review). If a model consistently outscores in *every* role it rotates through, it's flattering — fix the prompts or swap the model. If it consistently outscores in *one* specific role, that role's prompt is too easy — rewrite it.
