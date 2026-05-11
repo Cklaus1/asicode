@@ -286,6 +286,35 @@ describe('--start dispatch', () => {
     expect(r.stdout).toContain('log:')
   })
 
+  // REQ-53: follow hint
+  test('text output prints follow hint with --watch when dispatched', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--background'], {
+      stdin: undefined,
+      env: { ASICODE_DISPATCH_CMD: 'true', ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-hint') },
+    })
+    expect(r.stdout).toMatch(/follow:\s+bun run asicode:status brf_\w+ --watch/)
+  })
+
+  test('text output prints follow hint WITHOUT --watch when not dispatched', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir])  // no --start
+    expect(r.code).toBe(0)
+    expect(r.stdout).toMatch(/follow:\s+bun run asicode:status brf_\w+$/m)
+    expect(r.stdout).not.toContain('--watch')
+  })
+
+  test('--json output does NOT include follow hint (machine consumers)', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--json'])
+    expect(r.stdout).not.toContain('follow')
+    // valid json
+    expect(() => JSON.parse(r.stdout)).not.toThrow()
+  })
+
   test('default (no --start, no AUTO_START) does not dispatch', () => {
     const briefPath = join(tempDir, 'b.md')
     writeFileSync(briefPath, 'b', 'utf-8')

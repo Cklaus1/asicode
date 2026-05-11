@@ -364,6 +364,14 @@ async function main() {
     } else {
       console.log(`  next:        pass --start (or set ASICODE_AUTO_START=1 + ASICODE_DISPATCH_CMD) to spawn the agent`)
     }
+    // REQ-53: tell the user how to follow the brief. --watch suggested
+    // when something is actually running (race or single-spawn); static
+    // status otherwise (no-start path).
+    const isRunning = race !== null || (dispatch?.ok ?? false)
+    const followCmd = isRunning
+      ? `bun run asicode:status ${briefId} --watch`
+      : `bun run asicode:status ${briefId}`
+    console.log(`  follow:      ${followCmd}`)
   }
   process.exit(0)
 }
