@@ -19,9 +19,35 @@
  *     provider registry construction, and failure tolerance.
  */
 
+import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { resolvePanel } from './config'
 import { dispatchJudgments, type DispatchResult, type JudgeInput, type ProviderRegistry } from './dispatcher'
 import { buildProviderRegistry } from './providers/registry'
+
+/**
+ * Fetch the diff for a merged commit lazily. Used when the caller didn't
+ * pass an explicit diff string — we shell out to `git show --format= sha`
+ * which yields the patch without the commit header.
+ *
+ * Returns null on any failure (not a git repo, sha doesn't exist, git not
+ * on PATH). Practice 4 still applies: don't crash the caller; log and skip.
+ */
+export async function fetchDiffForSha(prSha: string, cwd?: string): Promise<string | null> {
+  // Validate the sha shape defensively — never shell out user-controlled
+  // bytes that haven't matched a strict hex pattern.
+  if (!/^[0-9a-f]{4,64}$/i.test(prSha)) return null
+  try {
+    const result = await execFileNoThrowWithCwd(
+      'git',
+      ['show', '--format=', '--no-color', prSha],
+      { cwd: cwd ?? process.cwd(), timeout: 10_000 },
+    )
+    if (result.code !== 0) return null
+    return result.stdout
+  } catch {
+    return null
+  }
+}
 
 // Singleton registry, lazily constructed. The panel + providers are
 // stable for the process lifetime; rebuilding per call would waste
@@ -60,32 +86,61 @@ export function isJudgesEnabled(): boolean {
 }
 
 /**
+ * Trigger-shaped input: like JudgeInput, but diff is optional. When
+ * omitted, the trigger fetches it via `git show <prSha>`. This lets the
+ * recorder-adapter call the trigger without having to plumb diffs from
+ * every merge call site through the v1 outcome lifecycle.
+ */
+export type TriggerInput = Omit<JudgeInput, 'diff'> & { diff?: string; cwd?: string }
+
+async function resolveInput(input: TriggerInput): Promise<JudgeInput | null> {
+  if (input.diff !== undefined) {
+    return { ...input, diff: input.diff }
+  }
+  const diff = await fetchDiffForSha(input.prSha, input.cwd)
+  if (diff === null) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[asicode judges] no diff available for ${input.prSha} — skipping judgment`,
+    )
+    return null
+  }
+  return { ...input, diff }
+}
+
+/**
  * Fire-and-forget judge dispatch on a merged PR. Returns immediately;
  * caller doesn't await the dispatch. Suitable for the recorder-adapter
  * finalizeRun path where we don't want LLM latency in the merge hot path.
  */
-export function judgeOnPrMerge(input: JudgeInput): void {
+export function judgeOnPrMerge(input: TriggerInput): void {
   if (!isJudgesEnabled()) return
   const registry = getRegistry()
   if (!registry) return // already-logged failure; stay quiet
   const panel = resolvePanel()
-  // The promise is intentionally not awaited; we attach a catch handler
-  // so unhandled-rejection warnings don't fire when a judge times out.
-  void dispatchJudgments({ input, panel, providers: registry, writeToDb: true })
-    .then(onDispatchComplete)
-    .catch(onDispatchError)
+  // Resolve diff (sync if provided, async via git if not), then dispatch.
+  // The whole chain is fire-and-forget; caller never blocks.
+  void (async () => {
+    const resolved = await resolveInput(input)
+    if (!resolved) return
+    await dispatchJudgments({ input: resolved, panel, providers: registry, writeToDb: true })
+      .then(onDispatchComplete)
+      .catch(onDispatchError)
+  })()
 }
 
 /**
- * Synchronous variant: caller awaits and gets the result. Suitable for
+ * Synchronous-await variant: caller awaits and gets the result. Suitable for
  * `asicode judge` CLI commands, replay (A11), and tests.
  */
-export async function judgeOnPrMergeAwait(input: JudgeInput): Promise<DispatchResult | null> {
+export async function judgeOnPrMergeAwait(input: TriggerInput): Promise<DispatchResult | null> {
   if (!isJudgesEnabled()) return null
   const registry = getRegistry()
   if (!registry) return null
+  const resolved = await resolveInput(input)
+  if (!resolved) return null
   const panel = resolvePanel()
-  return await dispatchJudgments({ input, panel, providers: registry, writeToDb: true })
+  return await dispatchJudgments({ input: resolved, panel, providers: registry, writeToDb: true })
 }
 
 function onDispatchComplete(r: DispatchResult): void {

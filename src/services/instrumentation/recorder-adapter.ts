@@ -248,14 +248,20 @@ export function adaptFinalizeRun(
   })
 
   // Fire judges if this brief produced a merged PR and the user has
-  // opted into live scoring. Lazy-import to avoid an import cycle and
-  // to keep the recorder path lean when judges are off.
+  // opted into live scoring. The diff is optional — the trigger will
+  // fetch it via `git show <prSha>` when omitted. Lazy-require avoids
+  // an import cycle and keeps the recorder path lean when judges are off.
   const isMerged =
     opts.prOutcome === 'merged_no_intervention' || opts.prOutcome === 'merged_with_intervention'
-  if (isMerged && opts.prSha && opts.diff) {
+  if (isMerged && opts.prSha) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const trigger = require('../judges/trigger.js') as {
-      judgeOnPrMerge: (input: { briefId?: string; prSha: string; briefText: string; diff: string }) => void
+      judgeOnPrMerge: (input: {
+        briefId?: string
+        prSha: string
+        briefText: string
+        diff?: string
+      }) => void
     }
     trigger.judgeOnPrMerge({
       briefId: entry.briefId,

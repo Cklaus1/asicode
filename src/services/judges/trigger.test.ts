@@ -14,8 +14,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import {
   _resetJudgesTriggerForTest,
+  fetchDiffForSha,
   isJudgesEnabled,
   judgeOnPrMerge,
   judgeOnPrMergeAwait,
@@ -56,6 +61,61 @@ describe('judgeOnPrMergeAwait — disabled path', () => {
       diff: '+a',
     })
     expect(r).toBeNull()
+  })
+})
+
+describe('fetchDiffForSha', () => {
+  let repoDir: string
+  let commitSha: string
+
+  beforeEach(() => {
+    repoDir = mkdtempSync(join(tmpdir(), 'asicode-trigger-git-'))
+    // Build a tiny repo with one commit so we can fetch its diff.
+    const run = (cmd: string, args: string[]) =>
+      spawnSync(cmd, args, { cwd: repoDir, encoding: 'utf-8' })
+    run('git', ['init', '-q', '-b', 'main'])
+    run('git', ['config', 'user.email', 'test@test.test'])
+    run('git', ['config', 'user.name', 'Test'])
+    writeFileSync(join(repoDir, 'a.txt'), 'one\ntwo\nthree\n')
+    run('git', ['add', '.'])
+    run('git', ['commit', '-q', '-m', 'initial'])
+    writeFileSync(join(repoDir, 'a.txt'), 'one\ntwo\nthree\nfour\n')
+    run('git', ['commit', '-q', '-am', 'add four'])
+    const sha = run('git', ['rev-parse', 'HEAD']).stdout.trim()
+    commitSha = sha
+  })
+
+  afterEach(() => {
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('returns the patch for a real commit', async () => {
+    const diff = await fetchDiffForSha(commitSha, repoDir)
+    expect(diff).not.toBeNull()
+    expect(diff).toContain('a.txt')
+    expect(diff).toContain('+four')
+  })
+
+  test('returns null for a non-existent sha', async () => {
+    const diff = await fetchDiffForSha('0123456789abcdef0123456789abcdef01234567', repoDir)
+    expect(diff).toBeNull()
+  })
+
+  test('rejects sha-shaped strings that contain non-hex bytes', async () => {
+    const diff = await fetchDiffForSha('abc; rm -rf /', repoDir)
+    expect(diff).toBeNull()
+  })
+
+  test('rejects too-short shas', async () => {
+    const diff = await fetchDiffForSha('abc', repoDir)
+    expect(diff).toBeNull()
+  })
+
+  test('accepts a short-but-valid sha (>=4 hex chars)', async () => {
+    const shortSha = commitSha.slice(0, 8)
+    const diff = await fetchDiffForSha(shortSha, repoDir)
+    expect(diff).not.toBeNull()
+    expect(diff).toContain('+four')
   })
 })
 
