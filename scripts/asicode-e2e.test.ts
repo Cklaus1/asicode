@@ -157,6 +157,108 @@ describe('submit → multiple briefs → status finds each', () => {
   })
 })
 
+// REQ-22: helper for race-mode submit (8s default in bun() is too
+// short for race orchestration; race needs 30-60s).
+function subWithTimeout(briefPath: string, projDir: string, extraArgs: string[], env: Record<string, string>, timeoutMs: number) {
+  const r = spawnSync(BUN, [join(SCRIPTS, 'asicode-submit.ts'), briefPath, '--cwd', projDir, ...extraArgs], {
+    encoding: 'utf-8',
+    env: { ...process.env, ASICODE_INSTRUMENTATION_DB: dbPath, ...env },
+    timeout: timeoutMs,
+  })
+  return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? -1 }
+}
+
+// REQ-22: full northstar walk-away. Composes REQ-14 (race) + REQ-15
+// (auto-PR) + REQ-16 (pr_number persistence) + REQ-17 (status
+// surfacing) + REQ-18 (verifier gate) + REQ-19 (verify persistence)
+// + REQ-20 (PR gate) + REQ-21 (stderr tail) in a single test against
+// a real git repo. Substrate-only: no LLMs, no gh remote — fake the
+// agent with a shell dispatch cmd, fake the verifier with shell
+// exit codes, accept pr_error: no_remote as the "PR open attempted"
+// signal since gh push has no upstream.
+describe('REQ-22 northstar walk-away (race + verifier + gate)', () => {
+  function gitInit(dir: string) {
+    spawnSync('git', ['init', '-q', '-b', 'main', dir])
+    spawnSync('git', ['-C', dir, 'config', 'user.email', 't@t.t'])
+    spawnSync('git', ['-C', dir, 'config', 'user.name', 'T'])
+    writeFileSync(join(dir, 'README.md'), 'init\n')
+    spawnSync('git', ['-C', dir, 'add', '.'])
+    spawnSync('git', ['-C', dir, 'commit', '-q', '--no-gpg-sign', '-m', 'init'])
+  }
+
+  test('race + passing verifier → PR-open attempted (no gate)', () => {
+    const projDir = join(tempDir, 'proj')
+    spawnSync('mkdir', ['-p', projDir])
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'brief.md')
+    writeFileSync(briefPath, 'add a marker file\n', 'utf-8')
+
+    const sub = subWithTimeout(briefPath, projDir, ['--start', '--race', '2', '--auto-pr', '--json'], {
+      ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
+      ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo ok > marker.txt; git config user.email t@t.t; git config user.name T; git add marker.txt; git commit -q --no-gpg-sign -m "racer"',
+      ASICODE_VERIFY_CMD: 'grep -q "ok" marker.txt',
+      ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-pass'),
+    }, 60_000)
+    expect(sub.code).toBe(0)
+    const parsed = JSON.parse(sub.stdout)
+    expect(parsed.brief_id).toMatch(/^brf_/)
+    expect(parsed.race?.count).toBe(2)
+    expect(parsed.race?.winner_verify).toBe('passed')
+    // No gate — auto-pr ran; without a remote, returns pr_error no_remote.
+    expect(parsed.pr_gated).toBeUndefined()
+    expect(parsed.pr_error).toContain('no_remote')
+
+    // Status surfaces the persisted state across all the new schemas.
+    const stat = bun('asicode-status.ts', [parsed.brief_id, '--json'])
+    expect(stat.code).toBe(0)
+    const s = JSON.parse(stat.stdout)
+    expect(s.race?.count).toBe(2)
+    expect(s.race?.winner_run_id).toBe(parsed.race.winner_run_id)
+    const winnerRun = s.runs.find((r: { run_id: string }) => r.run_id === parsed.race.winner_run_id)
+    expect(winnerRun?.verify?.outcome).toBe('passed')
+    expect(winnerRun?.was_race_winner).toBe(true)
+  }, 90_000)
+
+  test('race + failing verifier → PR gated, stderr surfaced, brief recoverable', () => {
+    const projDir = join(tempDir, 'proj')
+    spawnSync('mkdir', ['-p', projDir])
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'brief.md')
+    writeFileSync(briefPath, 'do the broken thing\n', 'utf-8')
+
+    const sub = subWithTimeout(briefPath, projDir, ['--start', '--race', '2', '--auto-pr', '--json'], {
+      ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000',
+      ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo broken > f.txt; git config user.email t@t.t; git config user.name T; git add f.txt; git commit -q --no-gpg-sign -m "broken"',
+      ASICODE_VERIFY_CMD: 'echo "expected fail diagnostic" >&2; exit 1',
+      ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-gate'),
+    }, 60_000)
+    expect(sub.code).toBe(0)
+    const parsed = JSON.parse(sub.stdout)
+    expect(parsed.race?.winner_verify).toBe('failed')
+    // REQ-20: PR was gated, NOT opened
+    expect(parsed.pr).toBeUndefined()
+    expect(parsed.pr_error).toBeUndefined()
+    expect(parsed.pr_gated).toContain('failed')
+
+    // REQ-19+21: status JSON has the verifier signal + stderr tail
+    const stat = bun('asicode-status.ts', [parsed.brief_id, '--json'])
+    const s = JSON.parse(stat.stdout)
+    const winnerRun = s.runs.find((r: { run_id: string }) => r.run_id === parsed.race.winner_run_id)
+    expect(winnerRun?.verify?.outcome).toBe('failed')
+    expect(winnerRun?.verify?.stderr_tail).toContain('expected fail diagnostic')
+
+    // REQ-21: status text surfaces a stderr snippet
+    const statText = bun('asicode-status.ts', [parsed.brief_id])
+    expect(statText.stdout).toContain('verify')
+    expect(statText.stdout).toContain('stderr:')
+    expect(statText.stdout).toContain('expected fail diagnostic')
+
+    // Brief stays recoverable: no pr_sha, no pr_number. User can
+    // inspect winner_worktree or rerun with --force-pr.
+    expect(s.pr).toBeNull()
+  }, 90_000)
+})
+
 describe('docs/scenarios/submit-walk-away.md exists + names the right commands', () => {
   test('scenario doc covers the substrate path', () => {
     const docPath = join(import.meta.dir, '..', 'docs', 'scenarios', 'submit-walk-away.md')
