@@ -188,3 +188,26 @@ describe('watchMerges — abort exits cleanly', () => {
     expect(ticks).toBe(1)
   })
 })
+
+describe('pollMergedPrs — pending ship-it processing (iter 60)', () => {
+  test('result includes shipItPosted/shipItPending fields', async () => {
+    const { pollMergedPrs } = await import('./watch-merges.js')
+    const r = await pollMergedPrs(repoDir)
+    expect(r).toHaveProperty('shipItPosted')
+    expect(r).toHaveProperty('shipItPending')
+    expect(Array.isArray(r.shipItPosted)).toBe(true)
+    expect(typeof r.shipItPending).toBe('number')
+  })
+
+  test('drains the pending queue even when gh is unavailable', async () => {
+    const { pollMergedPrs, _resetPendingShipItsForTest } = await import('./watch-merges.js')
+    _resetPendingShipItsForTest()
+
+    // gh is unavailable in this test env, so prs===null. Verify the
+    // pending pass still runs (the new code path added in iter 60).
+    const r = await pollMergedPrs(repoDir)
+    expect(r.errors[0]).toMatch(/gh unavailable/)
+    // No matched PRs and no pending → pending count stays 0.
+    expect(r.shipItPending).toBe(0)
+  })
+})

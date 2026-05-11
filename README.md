@@ -210,6 +210,7 @@ bun run instrumentation:brief       # manual A12 expand + A16 grade
 bun run instrumentation:replay      # A11 cross-cycle regression check
 bun run instrumentation:pr-landed   # manually notify a brief's PR has merged
 bun run instrumentation:watch-merges # daemon: auto-fire pr-landed on every merge
+bun run instrumentation:ship-it     # compute (and optionally post) ship-it verdict for a sha
 bun run instrumentation:probe       # check which capabilities are live in this env
 ```
 

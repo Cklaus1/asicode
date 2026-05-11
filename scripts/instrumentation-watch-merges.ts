@@ -80,6 +80,13 @@ function formatTickResult(r: Awaited<ReturnType<typeof pollMergedPrs>>): string 
       parts.push(`  → pr#${m.prNumber} → brief=${m.briefId} fired=[${m.fired.join(',')}]`)
     }
   }
+  if (r.shipItPosted.length) {
+    parts.push(`ship-it-posted=${r.shipItPosted.length}`)
+    for (const s of r.shipItPosted) {
+      parts.push(`  ✓ pr#${s.prNumber} → ${s.verdict.toUpperCase()}`)
+    }
+  }
+  if (r.shipItPending) parts.push(`ship-it-pending=${r.shipItPending}`)
   if (r.errors.length) {
     parts.push(`errors=${r.errors.length}`)
     for (const e of r.errors) parts.push(`  ! ${e}`)

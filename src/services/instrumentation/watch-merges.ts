@@ -99,9 +99,42 @@ export interface PollResult {
   matched: Array<{ prNumber: number; prSha: string; briefId: string; fired: string[] }>
   /** PRs that had no candidate brief (project has no in-flight work). */
   unmatchable: number
+  /** Ship-it verdicts that were posted this tick (iter 60). */
+  shipItPosted: Array<{ prSha: string; prNumber: number; verdict: string }>
+  /** Ship-it candidates that were still pending after this tick (iter 60). */
+  shipItPending: number
   /** Errors that surfaced. */
   errors: string[]
 }
+
+// ─── Pending ship-it tracker (iter 60) ───────────────────────────────
+//
+// When watch-merges matches a PR, the merge-time triggers (judges /
+// adversarial / density) run async. The ship-it verdict needs those
+// signals in the db. We track each matched PR and re-check every tick
+// until either: (a) signals available + we post, or (b) we've waited
+// past the deadline and give up.
+
+interface PendingShipIt {
+  prSha: string
+  briefId: string
+  firstSeenMs: number
+  projectPath: string
+}
+
+const pendingShipIts: PendingShipIt[] = []
+
+/** Test/CLI hook: drop all pending ship-its (e.g. between test runs). */
+export function _resetPendingShipItsForTest(): void {
+  pendingShipIts.length = 0
+}
+
+/**
+ * How long after match-time to keep re-checking for signals before
+ * giving up. Judge dispatches typically finish in 20-60s; we keep
+ * 5 minutes of slack for slow models or stuck local Ollama.
+ */
+const SHIP_IT_DEADLINE_MS = 5 * 60 * 1000
 
 /**
  * Look up which PR shas are already recorded against briefs, so we
@@ -119,7 +152,8 @@ function shasAlreadyAttached(): Set<string> {
 
 /**
  * One poll tick. For each merged PR not already attached, find the
- * oldest unmatched brief in the project and fire recordPrLanded.
+ * oldest unmatched brief in the project and fire recordPrLanded. Then
+ * process any pending ship-it verdicts whose signals have landed.
  */
 export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
   const result: PollResult = {
@@ -127,18 +161,25 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
     alreadyAttached: 0,
     matched: [],
     unmatchable: 0,
+    shipItPosted: [],
+    shipItPending: 0,
     errors: [],
   }
 
-  let prs: MergedPr[] | null
+  let prs: MergedPr[] | null = null
   try {
     prs = await fetchRecentMergedPrs(projectPath)
   } catch (e) {
     result.errors.push(`gh fetch failed: ${e instanceof Error ? e.message : String(e)}`)
-    return result
   }
-  if (prs === null) {
+  if (prs === null && result.errors.length === 0) {
     result.errors.push('gh unavailable or repo not connected to GitHub')
+  }
+  // Even when gh is down, still drain the pending ship-it queue —
+  // signals may have landed since the previous tick (judges/density
+  // run async post-merge; gh is only used for new-PR discovery).
+  if (prs === null) {
+    await processPendingShipIts(result)
     return result
   }
 
@@ -187,9 +228,97 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
       briefId: candidate.briefId,
       fired: landed.fired,
     })
+    // Queue for the ship-it second pass (iter 60). Judges/adversarial/
+    // density fired above are async; the verdict needs their signals.
+    pendingShipIts.push({
+      prSha: pr.mergeCommit,
+      briefId: candidate.briefId,
+      firstSeenMs: Date.now(),
+      projectPath,
+    })
   }
 
+  // Process pending ship-it verdicts (iter 60). Each tick re-checks
+  // any unposted match — if signals are now available, compute +
+  // post; otherwise leave it in the queue until the deadline.
+  await processPendingShipIts(result)
+
   return result
+}
+
+/**
+ * Drain any pending ship-its whose signals have arrived. Modifies
+ * pendingShipIts in place; appends to result.shipItPosted /
+ * shipItPending.
+ */
+async function processPendingShipIts(result: PollResult): Promise<void> {
+  if (pendingShipIts.length === 0) return
+  // Defer imports to keep watch-merges importable without the
+  // pr-summary module loaded (and to avoid circular-import risk).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { shipItVerdictFor } =
+    require('../pr-summary/aggregate.js') as typeof import('../pr-summary/aggregate')
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { isPrCommentEnabled, postShipItVerdict } =
+    require('../pr-summary/pr-comment.js') as typeof import('../pr-summary/pr-comment')
+
+  const now = Date.now()
+  const keep: PendingShipIt[] = []
+  for (const p of pendingShipIts) {
+    let verdict
+    try {
+      verdict = shipItVerdictFor(p.prSha)
+    } catch (e) {
+      result.errors.push(
+        `ship-it compute failed for ${p.prSha}: ${e instanceof Error ? e.message : String(e)}`,
+      )
+      // Don't keep — repeated compute failure is unlikely to resolve.
+      continue
+    }
+    // If at least 2 of 3 signals have arrived OR we're past the deadline,
+    // post (or drop). Otherwise keep waiting. 2/3 is the sweet spot:
+    // judges + adversarial usually finish together, density may race in
+    // later but a verdict from 2 signals is meaningful.
+    const pastDeadline = now - p.firstSeenMs > SHIP_IT_DEADLINE_MS
+    if (verdict.signalsAvailable < 2 && !pastDeadline) {
+      keep.push(p)
+      continue
+    }
+    if (isPrCommentEnabled()) {
+      try {
+        const posted = await postShipItVerdict({
+          prSha: p.prSha,
+          result: verdict,
+          repoPath: p.projectPath,
+        })
+        if (posted.posted) {
+          result.shipItPosted.push({
+            prSha: p.prSha,
+            prNumber: posted.prNumber!,
+            verdict: verdict.verdict,
+          })
+        } else if (posted.reason === 'no_pr' || posted.reason === 'no_signals') {
+          // Keep retrying until deadline.
+          if (!pastDeadline) {
+            keep.push(p)
+            continue
+          }
+        } else {
+          result.errors.push(
+            `ship-it post failed for ${p.prSha}: ${posted.reason ?? 'unknown'}`,
+          )
+        }
+      } catch (e) {
+        result.errors.push(
+          `ship-it post threw for ${p.prSha}: ${e instanceof Error ? e.message : String(e)}`,
+        )
+      }
+    }
+    // Posted or past deadline — drop from queue.
+  }
+  pendingShipIts.length = 0
+  pendingShipIts.push(...keep)
+  result.shipItPending = pendingShipIts.length
 }
 
 // ─── Long-running loop ───────────────────────────────────────────────
