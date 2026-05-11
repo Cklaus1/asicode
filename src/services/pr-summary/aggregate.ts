@@ -64,13 +64,29 @@ export interface DensitySignals {
   ran: boolean
 }
 
+export interface BriefSignals {
+  /** A16 decision at submit time. 'pending' = brief-gate didn't run. */
+  a16Decision: 'accept' | 'reject' | 'clarify' | 'pending'
+  /** 1-5 composite — null when A16 didn't run. */
+  a16Composite: number | null
+  /**
+   * A16 said reject but a PR was shipped anyway. The most worth-seeing
+   * disagreement: brief-gate flagged the brief as ill-formed yet asicode
+   * proceeded.
+   */
+  shippedAgainstReject: boolean
+  /** Whether the briefs row exists at all (it should, if we have a pr_sha). */
+  found: boolean
+}
+
 export interface ShipItResult {
   verdict: ShipItVerdict
   reasons: string[]
   judges: JudgeSignals
   adversarial: AdversarialSignals
   density: DensitySignals
-  /** How many of the three signals had data. 0-3. */
+  brief: BriefSignals
+  /** How many of the three quality signals had data. 0-3. */
   signalsAvailable: number
 }
 
@@ -147,6 +163,36 @@ export function readAdversarialSignals(
   }
 }
 
+export function readBriefSignals(prSha: string, db?: Database): BriefSignals {
+  const conn = db ?? openInstrumentationDb()
+  const row = conn
+    .query<
+      { a16_decision: string; a16_composite: number | null },
+      [string]
+    >(
+      `SELECT a16_decision, a16_composite FROM briefs WHERE pr_sha = ? LIMIT 1`,
+    )
+    .get(prSha)
+  if (!row) {
+    return {
+      a16Decision: 'pending',
+      a16Composite: null,
+      shippedAgainstReject: false,
+      found: false,
+    }
+  }
+  const decision = row.a16_decision as 'accept' | 'reject' | 'clarify' | 'pending'
+  return {
+    a16Decision: decision,
+    a16Composite: row.a16_composite,
+    // The disagreement-worth-flagging: A16 said don't ship, asicode shipped.
+    // 'reject' is the most explicit signal; we treat shipped-against-clarify
+    // as a softer flag (user-overridable) and don't downgrade verdict on it.
+    shippedAgainstReject: decision === 'reject',
+    found: true,
+  }
+}
+
 export function readDensitySignals(prSha: string, db?: Database): DensitySignals {
   const conn = db ?? openInstrumentationDb()
   const row = conn
@@ -191,6 +237,7 @@ export function computeVerdict(opts: {
   judges: JudgeSignals
   adversarial: AdversarialSignals
   density: DensitySignals
+  brief?: BriefSignals
 }): { verdict: ShipItVerdict; reasons: string[] } {
   const reasons: string[] = []
 
@@ -236,11 +283,29 @@ export function computeVerdict(opts: {
   ) {
     reasons.push(`refactor bloated by ${Math.abs(opts.density.densityDelta)} LOC`)
   }
+  // A16 disagreement: brief-gate said reject but asicode shipped. Worth
+  // surfacing as hold — the user should know about the upstream skepticism
+  // before merging downstream. Doesn't escalate to rollback because the
+  // judges/adversarial signals are the load-bearing post-merge evidence.
+  if (opts.brief?.shippedAgainstReject) {
+    reasons.push(
+      `brief-gate rejected this brief at submit time${
+        opts.brief.a16Composite !== null
+          ? ` (A16 composite ${opts.brief.a16Composite.toFixed(1)})`
+          : ''
+      }`,
+    )
+  }
   if (reasons.length > 0) {
     return { verdict: 'hold', reasons }
   }
 
   // ship_it
+  if (opts.brief?.a16Decision === 'accept' && opts.brief.a16Composite !== null) {
+    reasons.push(
+      `brief-gate accepted (A16 composite ${opts.brief.a16Composite.toFixed(1)})`,
+    )
+  }
   if (opts.judges.rowsFound > 0) {
     reasons.push(`judges passed (composite ${opts.judges.compositeScore!.toFixed(1)})`)
   }
@@ -275,8 +340,14 @@ export function shipItVerdictFor(prSha: string): ShipItResult {
   const judges = readJudgeSignals(prSha, db)
   const adversarial = readAdversarialSignals(prSha, db)
   const density = readDensitySignals(prSha, db)
-  const { verdict, reasons } = computeVerdict({ judges, adversarial, density })
+  const brief = readBriefSignals(prSha, db)
+  const { verdict, reasons } = computeVerdict({ judges, adversarial, density, brief })
+  // signalsAvailable counts only the 3 post-merge quality signals. The
+  // brief signal exists pre-merge and isn't "available or not" in the
+  // same sense — it's either present (briefs row exists) or there's no
+  // PR for this sha at all. The caller's readiness-to-post threshold
+  // stays at "≥2 of 3 quality signals."
   const signalsAvailable =
     (judges.rowsFound > 0 ? 1 : 0) + (adversarial.ran ? 1 : 0) + (density.ran ? 1 : 0)
-  return { verdict, reasons, judges, adversarial, density, signalsAvailable }
+  return { verdict, reasons, judges, adversarial, density, brief, signalsAvailable }
 }

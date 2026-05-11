@@ -25,6 +25,7 @@ import {
 import {
   computeVerdict,
   readAdversarialSignals,
+  readBriefSignals,
   readDensitySignals,
   readJudgeSignals,
   shipItVerdictFor,
@@ -339,6 +340,158 @@ describe('readDensitySignals', () => {
     expect(r.ran).toBe(true)
     expect(r.isRefactor).toBe(true)
     expect(r.densityDelta).toBe(8)
+  })
+})
+
+describe('computeVerdict — brief gate (iter 62)', () => {
+  test('A16 reject + good post-merge signals → hold (not ship_it)', () => {
+    const r = computeVerdict({
+      judges: judges(4.5),
+      adversarial: adversarial(0, 0, 0),
+      density: density(),
+      brief: {
+        a16Decision: 'reject',
+        a16Composite: 2.0,
+        shippedAgainstReject: true,
+        found: true,
+      },
+    })
+    expect(r.verdict).toBe('hold')
+    expect(r.reasons.some(x => x.includes('brief-gate rejected'))).toBe(true)
+    expect(r.reasons.some(x => x.includes('A16 composite 2.0'))).toBe(true)
+  })
+
+  test('A16 accept → ship_it with brief-gate accept reason listed', () => {
+    const r = computeVerdict({
+      judges: judges(4.5),
+      adversarial: adversarial(0, 0, 0),
+      density: density(),
+      brief: {
+        a16Decision: 'accept',
+        a16Composite: 4.5,
+        shippedAgainstReject: false,
+        found: true,
+      },
+    })
+    expect(r.verdict).toBe('ship_it')
+    expect(r.reasons.some(x => x.includes('brief-gate accepted'))).toBe(true)
+  })
+
+  test('A16 pending → no brief-gate reason in ship_it output', () => {
+    const r = computeVerdict({
+      judges: judges(4.5),
+      adversarial: adversarial(0, 0, 0),
+      density: density(),
+      brief: {
+        a16Decision: 'pending',
+        a16Composite: null,
+        shippedAgainstReject: false,
+        found: true,
+      },
+    })
+    expect(r.verdict).toBe('ship_it')
+    expect(r.reasons.some(x => x.includes('brief-gate'))).toBe(false)
+  })
+
+  test('omitting brief opt entirely → same as pending (back-compat)', () => {
+    const r = computeVerdict({
+      judges: judges(4.5),
+      adversarial: adversarial(0, 0, 0),
+      density: density(),
+    })
+    expect(r.verdict).toBe('ship_it')
+    expect(r.reasons.some(x => x.includes('brief-gate'))).toBe(false)
+  })
+
+  test('A16 reject + judge composite < 2.5 → still rollback (post-merge wins)', () => {
+    const r = computeVerdict({
+      judges: judges(2.0),
+      adversarial: adversarial(0, 0, 0),
+      density: density(),
+      brief: {
+        a16Decision: 'reject',
+        a16Composite: 2.0,
+        shippedAgainstReject: true,
+        found: true,
+      },
+    })
+    expect(r.verdict).toBe('rollback')
+  })
+})
+
+describe('readBriefSignals (iter 62)', () => {
+  test('returns found=false when no brief matches the sha', () => {
+    const r = readBriefSignals('0123456789abcdef')
+    expect(r.found).toBe(false)
+    expect(r.a16Decision).toBe('pending')
+    expect(r.shippedAgainstReject).toBe(false)
+  })
+
+  test('reads accept decision + composite computed by trigger', () => {
+    // a16_composite is auto-computed by trg_a16_composite_compute_insert
+    // when all 4 sub-scores are non-null. Setting them produces a
+    // composite = (sum of 4) / 4.
+    const sha = '0123456789abcdef'
+    const briefId = newBriefId()
+    recordBrief({
+      brief_id: briefId,
+      ts_submitted: Date.now(),
+      project_path: '/proj',
+      project_fingerprint: 'fp',
+      user_text: 'brief',
+      a16_asi_readiness: 5,
+      a16_well_formedness: 4,
+      a16_verifier_shaped: 5,
+      a16_density_clarity: 4,
+      a16_decision: 'accept',
+    })
+    updateBrief({ brief_id: briefId, pr_sha: sha, pr_outcome: 'merged_no_intervention' })
+    const r = readBriefSignals(sha)
+    expect(r.found).toBe(true)
+    expect(r.a16Decision).toBe('accept')
+    // (5+4+5+4)/4 = 4.5
+    expect(r.a16Composite).toBe(4.5)
+    expect(r.shippedAgainstReject).toBe(false)
+  })
+
+  test('shippedAgainstReject is true when decision=reject and a PR exists', () => {
+    const sha = '0123456789abcdef'
+    const briefId = newBriefId()
+    recordBrief({
+      brief_id: briefId,
+      ts_submitted: Date.now(),
+      project_path: '/proj',
+      project_fingerprint: 'fp',
+      user_text: 'brief',
+      a16_asi_readiness: 2,
+      a16_well_formedness: 2,
+      a16_verifier_shaped: 1,
+      a16_density_clarity: 2,
+      a16_decision: 'reject',
+    })
+    updateBrief({ brief_id: briefId, pr_sha: sha, pr_outcome: 'merged_no_intervention' })
+    const r = readBriefSignals(sha)
+    expect(r.found).toBe(true)
+    expect(r.a16Decision).toBe('reject')
+    expect(r.shippedAgainstReject).toBe(true)
+    expect(r.a16Composite).toBe(1.75)
+  })
+
+  test('clarify decision does NOT flag shippedAgainstReject', () => {
+    const sha = '0123456789abcdef'
+    const briefId = newBriefId()
+    recordBrief({
+      brief_id: briefId,
+      ts_submitted: Date.now(),
+      project_path: '/proj',
+      project_fingerprint: 'fp',
+      user_text: 'brief',
+      a16_decision: 'clarify',
+    })
+    updateBrief({ brief_id: briefId, pr_sha: sha, pr_outcome: 'merged_no_intervention' })
+    const r = readBriefSignals(sha)
+    expect(r.a16Decision).toBe('clarify')
+    expect(r.shippedAgainstReject).toBe(false)
   })
 })
 

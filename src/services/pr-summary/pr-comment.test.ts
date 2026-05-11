@@ -19,6 +19,12 @@ function makeResult(overrides: Partial<ShipItResult> = {}): ShipItResult {
       testsRegressed: false,
       ran: true,
     },
+    brief: {
+      a16Decision: 'pending',
+      a16Composite: null,
+      shippedAgainstReject: false,
+      found: false,
+    },
     signalsAvailable: 3,
     ...overrides,
   }
@@ -140,6 +146,64 @@ describe('buildShipItMarkdown', () => {
       }),
     )
     expect(negative).toContain('-3 LOC')
+  })
+})
+
+describe('buildShipItMarkdown — brief-gate row (iter 62)', () => {
+  test('brief row omitted when A16 is pending', () => {
+    const md = buildShipItMarkdown(
+      makeResult({
+        brief: {
+          a16Decision: 'pending',
+          a16Composite: null,
+          shippedAgainstReject: false,
+          found: false,
+        },
+      }),
+    )
+    expect(md).not.toContain('brief-gate')
+  })
+
+  test('brief row appears with ✓ accept + composite', () => {
+    const md = buildShipItMarkdown(
+      makeResult({
+        brief: {
+          a16Decision: 'accept',
+          a16Composite: 4.5,
+          shippedAgainstReject: false,
+          found: true,
+        },
+      }),
+    )
+    expect(md).toContain('| brief-gate | ✓ accept (4.5/5) |')
+  })
+
+  test('brief row shows ✗ reject when A16 rejected', () => {
+    const md = buildShipItMarkdown(
+      makeResult({
+        brief: {
+          a16Decision: 'reject',
+          a16Composite: 2.0,
+          shippedAgainstReject: true,
+          found: true,
+        },
+      }),
+    )
+    expect(md).toContain('| brief-gate | ✗ reject (2.0/5) |')
+  })
+
+  test('clarify renders with ⚠ glyph', () => {
+    const md = buildShipItMarkdown(
+      makeResult({
+        brief: {
+          a16Decision: 'clarify',
+          a16Composite: 3.0,
+          shippedAgainstReject: false,
+          found: true,
+        },
+      }),
+    )
+    expect(md).toContain('| brief-gate | ⚠ clarify (3.0/5) |')
   })
 })
 
