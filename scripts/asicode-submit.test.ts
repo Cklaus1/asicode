@@ -277,3 +277,42 @@ describe('--start dispatch', () => {
     expect(r.stdout).toContain('ASICODE_AUTO_START')
   })
 })
+
+// REQ-9.1: plan-retrieval consumer wired into the submit path
+describe('plan-retrieval consumer', () => {
+  test('default (flag off) → no retrieval_hits in JSON', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'add caching\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--json'])
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.retrieval_hits).toBeUndefined()
+  })
+
+  test('flag on + no backend → still no retrieval_hits (soft-fail)', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'add caching\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--json'], {
+      env: { ASICODE_PLAN_RETRIEVAL_ENABLED: '1' },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.retrieval_hits).toBeUndefined()
+    // Brief still recorded
+    expect(parsed.brief_id).toMatch(/^brf_/)
+  })
+
+  test('submit succeeds even when consumer fails (brief still in db)', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'add caching\n', 'utf-8')
+    // No backend, but flag set — consumer returns null (not an error)
+    const r = run([briefPath, '--cwd', projDir, '--json'], {
+      env: { ASICODE_PLAN_RETRIEVAL_ENABLED: '1' },
+    })
+    expect(r.code).toBe(0)
+    const db = new Database(dbPath)
+    const row = db.query<{ user_text: string }, []>(`SELECT user_text FROM briefs LIMIT 1`).get()
+    db.close()
+    expect(row!.user_text).toBe('add caching')
+  })
+})

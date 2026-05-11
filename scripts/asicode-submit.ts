@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { newBriefId, newRunId, recordBrief, recordRun } from '../src/services/instrumentation/client'
+import { buildRetrievedContext } from '../src/services/plan-retrieval/consumer'
 
 interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean }
 
@@ -152,15 +153,34 @@ async function main() {
     process.exit(2)
   }
 
+  // REQ-9.1: build retrieved context. When ASICODE_PLAN_RETRIEVAL_ENABLED=1
+  // + embedding backend configured, this returns a markdown snippet of
+  // top-K prior attempts that the dispatcher prepends to the agent's
+  // stdin. Soft-fail: returns null when off / no backend / no hits, and
+  // we proceed with the raw brief unchanged.
+  let enrichedBrief = briefText
+  let retrievalHitCount = 0
+  try {
+    const ctx = await buildRetrievedContext({ briefId, briefText, projectFingerprint: fp, k: 5 })
+    if (ctx) {
+      enrichedBrief = `${ctx.markdown}\n---\n\n${briefText}`
+      retrievalHitCount = ctx.hitCount
+    }
+  } catch (e) {
+    // Soft-fail; the agent still gets the raw brief.
+    console.error(`[plan-retrieval] consumer failed (continuing with raw brief): ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   // REQ-13 dispatch. Default off; --start opts in; --no-start always
   // off (overrides ASICODE_AUTO_START=1).
   const autoStart = process.env.ASICODE_AUTO_START === '1'
   const shouldStart = !args.noStart && (args.start || autoStart)
   let dispatch: DispatchResult | DispatchSkip | null = null
-  if (shouldStart) dispatch = dispatchAgent(briefId, briefText, args.cwd, args.background)
+  if (shouldStart) dispatch = dispatchAgent(briefId, enrichedBrief, args.cwd, args.background)
 
   if (args.json) {
     const out: Record<string, unknown> = { brief_id: briefId, project_fingerprint: fp, project_path: args.cwd, ts_submitted: now }
+    if (retrievalHitCount > 0) out.retrieval_hits = retrievalHitCount
     if (dispatch?.ok) Object.assign(out, { run_id: dispatch.runId, pid: dispatch.pid, log_path: dispatch.logPath })
     else if (dispatch && !dispatch.ok) Object.assign(out, { dispatch_skipped: dispatch.reason })
     console.log(JSON.stringify(out))
