@@ -32,6 +32,13 @@ const ENV_KEYS = [
   'ASICODE_AUTO_REVERT_ENABLED',
   'ASICODE_AUTO_START',
   'ASICODE_MEMDIR_RETRIEVAL_ENABLED',
+  // REQ-32: race + verifier knobs.
+  'ASICODE_RACE_COUNT',
+  'ASICODE_AUTO_PR',
+  'ASICODE_VERIFY_CMD',
+  'ASICODE_VERIFY_AUTODETECT',
+  'ASICODE_RACE_MAX_TOTAL_TOKENS',
+  'ASICODE_RACE_MAX_TOTAL_USD',
 ]
 
 let savedEnv: Record<string, string | undefined>
@@ -60,6 +67,9 @@ afterEach(() => {
 
 describe('probeRuntime — empty environment', () => {
   test('reports nothing enabled and all opt-ins unconfigured', async () => {
+    // cwd into tempDir so REQ-24 verifier auto-detect finds no markers
+    // and the empty-env invariant holds.
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'  // belt + suspenders
     const r = await probeRuntime()
     expect(r.enabled).toEqual([])
     expect(r.blocked).toEqual([])
@@ -76,6 +86,11 @@ describe('probeRuntime — empty environment', () => {
     expect(r.unconfigured).toContain('auto-start')
     expect(r.unconfigured).toContain('memdir-retrieval')
     expect(r.unconfigured).toContain('watch-merges')
+    // REQ-32: race + verifier knobs also reported as unconfigured.
+    expect(r.unconfigured).toContain('race')
+    expect(r.unconfigured).toContain('auto-pr')
+    expect(r.unconfigured).toContain('verifier')
+    expect(r.unconfigured).toContain('budget-cap')
   })
 })
 
@@ -459,5 +474,85 @@ describe('renderProbeMarkdown', () => {
     const md = renderProbeMarkdown(r)
     expect(md).toContain('**Blocked**')
     expect(md).toContain('judges')
+  })
+})
+
+// REQ-32: race + verifier walk-away knobs surfaced by probe.
+describe('REQ-32 race + verifier knobs', () => {
+  test('ASICODE_RACE_COUNT≥2 → enabled', async () => {
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'
+    process.env.ASICODE_RACE_COUNT = '4'
+    const r = await probeRuntime()
+    expect(r.enabled).toContain('race')
+    const check = r.checks.find(c => c.name === 'ASICODE_RACE_COUNT')!
+    expect(check.status).toBe('ok')
+    expect(check.detail).toContain('race 4 agents')
+  })
+
+  test('ASICODE_RACE_COUNT=1 → unconfigured (race disabled)', async () => {
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'
+    process.env.ASICODE_RACE_COUNT = '1'
+    const r = await probeRuntime()
+    expect(r.unconfigured).toContain('race')
+    const check = r.checks.find(c => c.name === 'ASICODE_RACE_COUNT')!
+    expect(check.detail).toContain('race is disabled')
+  })
+
+  test('ASICODE_AUTO_PR=1 → enabled', async () => {
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'
+    process.env.ASICODE_AUTO_PR = '1'
+    const r = await probeRuntime()
+    expect(r.enabled).toContain('auto-pr')
+  })
+
+  test('explicit ASICODE_VERIFY_CMD → verifier enabled', async () => {
+    process.env.ASICODE_VERIFY_CMD = 'bun test'
+    const r = await probeRuntime()
+    expect(r.enabled).toContain('verifier')
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    expect(check.detail).toContain('bun test')
+  })
+
+  test('auto-detected verifier in repo cwd → verifier enabled', async () => {
+    // Leave ASICODE_VERIFY_AUTODETECT unset; asicode's own repo has
+    // bun.lock + package.json → auto-detect resolves bun test.
+    const r = await probeRuntime()
+    expect(r.enabled).toContain('verifier')
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    expect(check.detail).toContain('Auto-detected')
+  })
+
+  test('autodetect off + no explicit → verifier unconfigured', async () => {
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'
+    const r = await probeRuntime()
+    expect(r.unconfigured).toContain('verifier')
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    expect(check.detail).toContain('FCFS')
+  })
+
+  test('ASICODE_RACE_MAX_TOTAL_TOKENS set → budget-cap enabled', async () => {
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'
+    process.env.ASICODE_RACE_MAX_TOTAL_TOKENS = '200000'
+    const r = await probeRuntime()
+    expect(r.enabled).toContain('budget-cap')
+    const check = r.checks.find(c => c.name === 'race budget cap')!
+    expect(check.detail).toContain('200000 tokens')
+  })
+
+  test('ASICODE_RACE_MAX_TOTAL_USD set → budget-cap enabled', async () => {
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'
+    process.env.ASICODE_RACE_MAX_TOTAL_USD = '2.50'
+    const r = await probeRuntime()
+    expect(r.enabled).toContain('budget-cap')
+    const check = r.checks.find(c => c.name === 'race budget cap')!
+    expect(check.detail).toContain('$2.50')
+  })
+
+  test('no budget cap set → unconfigured (cost-safety warning)', async () => {
+    process.env.ASICODE_VERIFY_AUTODETECT = '0'
+    const r = await probeRuntime()
+    expect(r.unconfigured).toContain('budget-cap')
+    const check = r.checks.find(c => c.name === 'race budget cap')!
+    expect(check.detail).toContain('Race will spawn regardless')
   })
 })

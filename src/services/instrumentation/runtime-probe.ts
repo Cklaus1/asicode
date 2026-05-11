@@ -464,6 +464,62 @@ export async function probeRuntime(): Promise<ProbeReport> {
     }
   }
 
+  // ── REQ-32: race + verifier walk-away knobs ──
+  // These aren't "opt-in 1" flags — they're tunables with sensible
+  // semantics across set/unset/value. Report them as informational
+  // checks (ok / missing) without blocking readiness.
+  const raceCount = parseInt(process.env.ASICODE_RACE_COUNT ?? '', 10)
+  if (Number.isFinite(raceCount) && raceCount >= 2) {
+    checks.push({ name: 'ASICODE_RACE_COUNT', expectation: 'REQ-14: best-of-N race width', status: 'ok', detail: `Set to ${raceCount}; submit will race ${raceCount} agents.` })
+    enabled.push('race')
+  } else if (Number.isFinite(raceCount) && raceCount === 1) {
+    checks.push({ name: 'ASICODE_RACE_COUNT', expectation: 'REQ-14: best-of-N race width', status: 'missing', detail: 'Set to 1 — race is disabled; submit falls back to single-spawn.' })
+    unconfigured.push('race')
+  } else {
+    checks.push({ name: 'ASICODE_RACE_COUNT', expectation: 'REQ-14: best-of-N race width', status: 'missing', detail: 'Unset. Submit defaults to single-spawn. Set to 2-10 to enable best-of-N (e.g. `export ASICODE_RACE_COUNT=4`).' })
+    unconfigured.push('race')
+  }
+  if (process.env.ASICODE_AUTO_PR === '1') {
+    checks.push({ name: 'ASICODE_AUTO_PR', expectation: 'REQ-15: open PR from race winner', status: 'ok', detail: 'Auto-PR enabled; submit will push winner branch + gh pr create.' })
+    enabled.push('auto-pr')
+  } else {
+    checks.push({ name: 'ASICODE_AUTO_PR', expectation: 'REQ-15: open PR from race winner', status: 'missing', detail: 'Unset. Submit will not open a PR after the race (winner stays on the worktree branch). Set to 1 for full walk-away (`export ASICODE_AUTO_PR=1`).' })
+    unconfigured.push('auto-pr')
+  }
+  // Verifier — REQ-18 + REQ-24
+  const verifyExplicit = process.env.ASICODE_VERIFY_CMD?.trim()
+  const autodetectOff = process.env.ASICODE_VERIFY_AUTODETECT === '0'
+  if (verifyExplicit) {
+    checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18: verifier gates race winner', status: 'ok', detail: `Set explicitly: \`${verifyExplicit}\`. Each racer runs this; passing racers outrank failing.` })
+    enabled.push('verifier')
+  } else if (!autodetectOff) {
+    let detected: { cmd: string; source: string } | null = null
+    try { detected = (await import('../parallel/verifyDetect.js')).detectVerifyCmd(process.cwd()) } catch { /* skip */ }
+    if (detected) {
+      checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18/24: verifier gates race winner', status: 'ok', detail: `Auto-detected (${detected.source}): \`${detected.cmd}\`. Set ASICODE_VERIFY_CMD explicitly to override.` })
+      enabled.push('verifier')
+    } else {
+      checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18: verifier gates race winner', status: 'missing', detail: 'Unset and auto-detect found no markers (bun.lock/Cargo.toml/pyproject.toml/scripts.test). Race winner picked by FCFS. Set ASICODE_VERIFY_CMD or add a project marker file.' })
+      unconfigured.push('verifier')
+    }
+  } else {
+    checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18: verifier gates race winner', status: 'missing', detail: 'Auto-detect disabled (ASICODE_VERIFY_AUTODETECT=0) and no explicit cmd set. Race winner picked by FCFS.' })
+    unconfigured.push('verifier')
+  }
+  // Budget cap — REQ-29
+  const tokenCap = parseInt(process.env.ASICODE_RACE_MAX_TOTAL_TOKENS ?? '', 10)
+  const usdCap = parseFloat(process.env.ASICODE_RACE_MAX_TOTAL_USD ?? '')
+  if ((Number.isFinite(tokenCap) && tokenCap > 0) || (Number.isFinite(usdCap) && usdCap > 0)) {
+    const parts: string[] = []
+    if (Number.isFinite(tokenCap) && tokenCap > 0) parts.push(`${tokenCap} tokens`)
+    if (Number.isFinite(usdCap) && usdCap > 0) parts.push(`$${usdCap.toFixed(2)}`)
+    checks.push({ name: 'race budget cap', expectation: 'REQ-29: refuse race when projected cost > cap', status: 'ok', detail: `Cap: ${parts.join(' or ')}. Race exits with budget_exhausted before spawning if projected > cap.` })
+    enabled.push('budget-cap')
+  } else {
+    checks.push({ name: 'race budget cap', expectation: 'REQ-29: refuse race when projected cost > cap', status: 'missing', detail: 'No ASICODE_RACE_MAX_TOTAL_TOKENS / ASICODE_RACE_MAX_TOTAL_USD set. Race will spawn regardless of projected cost — set at least one (e.g. `export ASICODE_RACE_MAX_TOTAL_TOKENS=200000`).' })
+    unconfigured.push('budget-cap')
+  }
+
   // ── watch-merges daemon ──
   // Without this daemon (or the report --backfill that runs one tick),
   // briefs that ship merged PRs stay at pr_sha=NULL and the merge-time
