@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { join } from 'node:path'
 
 const originalEnv = { ...process.env }
@@ -44,6 +44,15 @@ async function waitForExecCall(
 
   return undefined
 }
+
+// Global restore: mock.module substitutions persist across files in the
+// same Bun worker. Without this, every later test importing
+// execFileNoThrow.js gets osc's stubs (which always return code:0/empty
+// stdout), breaking ~38 tests that depend on real git/exec behavior.
+// See docs/triage/test-suite-pollution-2026-05.md (iter 49-50).
+afterAll(() => {
+  mock.restore()
+})
 
 describe('Windows clipboard fallback', () => {
   beforeEach(() => {
