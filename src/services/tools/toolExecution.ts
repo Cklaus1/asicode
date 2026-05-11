@@ -224,7 +224,7 @@ type RetryAnnotation = {
   strategy: 'retry' | 'replan' | 'escalate' | 'ask' | 'fail_fast'
 }
 
-const RETRY_ANNOTATION = Symbol.for('openclaude.toolRetryAnnotation')
+const RETRY_ANNOTATION = Symbol.for('asicode.toolRetryAnnotation')
 
 function attachRetryAnnotation(err: unknown, ann: RetryAnnotation): void {
   if (err && typeof err === 'object') {

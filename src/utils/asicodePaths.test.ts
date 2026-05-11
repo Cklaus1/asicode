@@ -24,8 +24,8 @@ afterEach(() => {
   mock.restore()
 })
 
-describe('OpenClaude paths', () => {
-  test('defaults user config home to ~/.openclaude', async () => {
+describe('Asicode paths', () => {
+  test('defaults user config home to ~/.asicode', async () => {
     delete process.env.CLAUDE_CONFIG_DIR
     const { resolveClaudeConfigHomeDir } = await importFreshEnvUtils()
 
@@ -35,10 +35,10 @@ describe('OpenClaude paths', () => {
         openClaudeExists: true,
         legacyClaudeExists: false,
       }),
-    ).toBe(join(homedir(), '.openclaude'))
+    ).toBe(join(homedir(), '.asicode'))
   })
 
-  test('falls back to ~/.claude when legacy config exists and ~/.openclaude does not', async () => {
+  test('falls back to ~/.claude when legacy config exists and ~/.asicode does not', async () => {
     delete process.env.CLAUDE_CONFIG_DIR
     const { resolveClaudeConfigHomeDir } = await importFreshEnvUtils()
 
@@ -52,56 +52,56 @@ describe('OpenClaude paths', () => {
   })
 
   test('uses CLAUDE_CONFIG_DIR override when provided', async () => {
-    process.env.CLAUDE_CONFIG_DIR = '/tmp/custom-openclaude'
+    process.env.CLAUDE_CONFIG_DIR = '/tmp/custom-asicode'
     const { getClaudeConfigHomeDir, resolveClaudeConfigHomeDir } =
       await importFreshEnvUtils()
 
-    expect(getClaudeConfigHomeDir()).toBe('/tmp/custom-openclaude')
+    expect(getClaudeConfigHomeDir()).toBe('/tmp/custom-asicode')
     expect(
       resolveClaudeConfigHomeDir({
-        configDirEnv: '/tmp/custom-openclaude',
+        configDirEnv: '/tmp/custom-asicode',
       }),
-    ).toBe('/tmp/custom-openclaude')
+    ).toBe('/tmp/custom-asicode')
   })
 
-  test('project and local settings paths use .openclaude', async () => {
+  test('project and local settings paths use .asicode', async () => {
     const { getRelativeSettingsFilePathForSource } = await importFreshSettings()
 
     expect(getRelativeSettingsFilePathForSource('projectSettings')).toBe(
-      '.openclaude/settings.json',
+      '.asicode/settings.json',
     )
     expect(getRelativeSettingsFilePathForSource('localSettings')).toBe(
-      '.openclaude/settings.local.json',
+      '.asicode/settings.local.json',
     )
   })
 
-  test('local installer uses openclaude wrapper path', async () => {
-    // Force .openclaude config home so the test doesn't fall back to
-    // ~/.claude when ~/.openclaude doesn't exist on this machine.
-    process.env.CLAUDE_CONFIG_DIR = join(homedir(), '.openclaude')
+  test('local installer uses asicode wrapper path', async () => {
+    // Force .asicode config home so the test doesn't fall back to
+    // ~/.claude when ~/.asicode doesn't exist on this machine.
+    process.env.CLAUDE_CONFIG_DIR = join(homedir(), '.asicode')
     const { getLocalClaudePath } = await importFreshLocalInstaller()
 
     expect(getLocalClaudePath()).toBe(
-      join(homedir(), '.openclaude', 'local', 'openclaude'),
+      join(homedir(), '.asicode', 'local', 'asicode'),
     )
   })
 
-  test('local installer exposes asicode wrapper path alongside openclaude (REQ-8.2)', async () => {
-    process.env.CLAUDE_CONFIG_DIR = join(homedir(), '.openclaude')
+  test('local installer exposes asicode wrapper path alongside asicode (REQ-8.2)', async () => {
+    process.env.CLAUDE_CONFIG_DIR = join(homedir(), '.asicode')
     const { getLocalAsicodePath } = await importFreshLocalInstaller()
 
     expect(getLocalAsicodePath()).toBe(
-      join(homedir(), '.openclaude', 'local', 'asicode'),
+      join(homedir(), '.asicode', 'local', 'asicode'),
     )
   })
 
-  test('local installation detection matches .openclaude path', async () => {
+  test('local installation detection matches .asicode path', async () => {
     const { isManagedLocalInstallationPath } =
       await importFreshLocalInstaller()
 
     expect(
       isManagedLocalInstallationPath(
-        `${join(homedir(), '.openclaude', 'local')}/node_modules/.bin/openclaude`,
+        `${join(homedir(), '.asicode', 'local')}/node_modules/.bin/asicode`,
       ),
     ).toBe(true)
   })
@@ -112,21 +112,21 @@ describe('OpenClaude paths', () => {
 
     expect(
       isManagedLocalInstallationPath(
-        `${join(homedir(), '.claude', 'local')}/node_modules/.bin/openclaude`,
+        `${join(homedir(), '.claude', 'local')}/node_modules/.bin/asicode`,
       ),
     ).toBe(true)
   })
 
-  test('candidate local install dirs include both openclaude and legacy claude paths', async () => {
+  test('candidate local install dirs include both asicode and legacy claude paths', async () => {
     const { getCandidateLocalInstallDirs } = await importFreshLocalInstaller()
 
     expect(
       getCandidateLocalInstallDirs({
-        configHomeDir: join(homedir(), '.openclaude'),
+        configHomeDir: join(homedir(), '.asicode'),
         homeDir: homedir(),
       }),
     ).toEqual([
-      join(homedir(), '.openclaude', 'local'),
+      join(homedir(), '.asicode', 'local'),
       join(homedir(), '.claude', 'local'),
     ])
   })

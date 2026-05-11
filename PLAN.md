@@ -50,7 +50,7 @@ src/cli/            12k
 **asimux integration** is *documented* (`docs/asimux-roadmap.md`, AM-0..AM-10) but **none of it is implemented** — it's a roadmap. AM-0 is blocked on a license decision (asimux additions are PolyForm-Noncommercial, asicode is MIT — `Cklaus1/asicode` private fork is the obvious answer).
 
 **Naming load (renames v1→v2):**
-- 225 files contain `openclaude|OpenClaude|OPENCLAUDE` (literal strings flagged for the REQ-8 rename pass)
+- 225 files contain `asicode|Asicode|ASICODE` (literal strings flagged for the REQ-8 rename pass)
 - 400 files contain `claude-code|claude_code|CLAUDE_CODE|claudeCode` (largely Anthropic-CLI compat env vars like `CLAUDE_CODE_USE_OPENAI` — partly intentional, since users have these set)
 
 ---
@@ -212,11 +212,11 @@ Each phase is independently shippable. Reverse order doesn't work; later phases 
 `compute=~30min(225 file rename + npm package republish + proto rename)`
 `wall-clock-floor=~1d(npm propagation, deprecation alias visibility)`
 `bottleneck=registry-propagation`
-- `openclaude` → `asicode` everywhere. 225 files. A blanket `s/openclaude/asicode/g` is wrong — needs care around `CLAUDE_CODE_USE_OPENAI` (keep, that's an Anthropic compat env var users have), URLs/sponsors, and stateful identifiers (npm package name, CLI binary `openclaude`, `OPENCLAUDE_*` env vars) deferred to REQ-8.2/REQ-8.3.
+- `asicode` → `asicode` everywhere. 225 files. A blanket `s/asicode/asicode/g` is wrong — needs care around `CLAUDE_CODE_USE_OPENAI` (keep, that's an Anthropic compat env var users have), URLs/sponsors, and stateful identifiers (npm package name, CLI binary `asicode`, `ASICODE_*` env vars) deferred to REQ-8.2/REQ-8.3.
 - `package.json` → `@cklaus1/asicode`.
 - `bin/asicode` → `bin/asicode`.
 - Repo rename: **done** (GitHub already at `Cklaus1/asicode`).
-- npm package: publish `@cklaus1/asicode@0.8.0` as a deprecation alias of `@cklaus1/openclaude`; final cut at 1.0.
+- npm package: publish `@cklaus1/asicode@0.8.0` as a deprecation alias of `@cklaus1/asicode`; final cut at 1.0.
 - Proto file: `asicode.proto` → `asicode.proto`, `package asicode.v1` → `package asicode.v1`. Servers will be incompatible until clients reroll.
 - **Exit:** `npm i -g @cklaus1/asicode && asicode --version` prints `asicode 0.8.0`.
 

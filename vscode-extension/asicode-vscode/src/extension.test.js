@@ -5,18 +5,18 @@ const { mock } = require('bun:test');
 function createStatus(overrides = {}) {
   return {
     installed: true,
-    executable: 'openclaude',
-    launchCommand: 'openclaude --project-aware',
-    terminalName: 'OpenClaude',
+    executable: 'asicode',
+    launchCommand: 'asicode --project-aware',
+    terminalName: 'Asicode',
     shimEnabled: false,
-    workspaceFolder: '/workspace/openclaude/very/long/path/example-project',
+    workspaceFolder: '/workspace/asicode/very/long/path/example-project',
     workspaceSourceLabel: 'active editor workspace',
-    launchCwd: '/workspace/openclaude/very/long/path/example-project',
-    launchCwdLabel: '/workspace/openclaude/very/long/path/example-project',
+    launchCwd: '/workspace/asicode/very/long/path/example-project',
+    launchCwdLabel: '/workspace/asicode/very/long/path/example-project',
     canLaunchInWorkspaceRoot: true,
     profileStatusLabel: 'Found',
-    profileStatusHint: '/workspace/openclaude/very/long/path/example-project/.openclaude-profile.json',
-    workspaceProfilePath: '/workspace/openclaude/very/long/path/example-project/.openclaude-profile.json',
+    profileStatusHint: '/workspace/asicode/very/long/path/example-project/.asicode-profile.json',
+    workspaceProfilePath: '/workspace/asicode/very/long/path/example-project/.asicode-profile.json',
     providerState: {
       label: 'Codex',
       detail: 'gpt-5.4',
@@ -58,7 +58,7 @@ function loadExtension() {
   return require('./extension');
 }
 
-test('renderControlCenterHtml uses the OpenClaude wordmark, status rail, and warm action hierarchy', () => {
+test('renderControlCenterHtml uses the Asicode wordmark, status rail, and warm action hierarchy', () => {
   const { renderControlCenterHtml } = loadExtension();
   const html = renderControlCenterHtml(createStatus(), { nonce: 'test-nonce', platform: 'win32' });
 
@@ -69,7 +69,7 @@ test('renderControlCenterHtml uses the OpenClaude wordmark, status rail, and war
   assert.match(html, /class="action-button secondary" id="launchRoot"/);
   assert.match(
     html,
-    /title="\/workspace\/openclaude\/very\/long\/path\/example-project"[^>]*>\/workspace\/openclaude\/very\/long\/path\/example-project<\//,
+    /title="\/workspace\/asicode\/very\/long\/path\/example-project"[^>]*>\/workspace\/asicode\/very\/long\/path\/example-project<\//,
   );
 });
 
@@ -98,9 +98,9 @@ test('renderControlCenterHtml shows explicit disabled and empty states when work
   assert.doesNotMatch(html, /id="openProfile"/);
 });
 
-test('OpenClaudeControlCenterProvider.getHtml supplies a nonce to the redesigned renderer', () => {
-  const { OpenClaudeControlCenterProvider } = loadExtension();
-  const provider = new OpenClaudeControlCenterProvider();
+test('AsicodeControlCenterProvider.getHtml supplies a nonce to the redesigned renderer', () => {
+  const { AsicodeControlCenterProvider } = loadExtension();
+  const provider = new AsicodeControlCenterProvider();
 
   assert.doesNotThrow(() => provider.getHtml(createStatus()));
 
@@ -116,16 +116,16 @@ test('resolveLaunchTargets distinguishes project-aware launch from workspace-roo
 
   assert.deepEqual(
     resolveLaunchTargets({
-      activeFilePath: '/workspace/openclaude/src/panels/control-center.js',
-      workspacePath: '/workspace/openclaude',
+      activeFilePath: '/workspace/asicode/src/panels/control-center.js',
+      workspacePath: '/workspace/asicode',
       workspaceSourceLabel: 'active editor workspace',
     }),
     {
-      projectAwareCwd: '/workspace/openclaude/src/panels',
-      projectAwareCwdLabel: '/workspace/openclaude/src/panels',
+      projectAwareCwd: '/workspace/asicode/src/panels',
+      projectAwareCwdLabel: '/workspace/asicode/src/panels',
       projectAwareSourceLabel: 'active file directory',
-      workspaceRootCwd: '/workspace/openclaude',
-      workspaceRootCwdLabel: '/workspace/openclaude',
+      workspaceRootCwd: '/workspace/asicode',
+      workspaceRootCwdLabel: '/workspace/asicode',
       launchActionsShareTarget: false,
       launchActionsShareTargetReason: null,
     },
@@ -137,17 +137,17 @@ test('resolveLaunchTargets anchors relative launch commands to the workspace roo
 
   assert.deepEqual(
     resolveLaunchTargets({
-      executable: './node_modules/.bin/openclaude',
-      activeFilePath: '/workspace/openclaude/src/panels/control-center.js',
-      workspacePath: '/workspace/openclaude',
+      executable: './node_modules/.bin/asicode',
+      activeFilePath: '/workspace/asicode/src/panels/control-center.js',
+      workspacePath: '/workspace/asicode',
       workspaceSourceLabel: 'active editor workspace',
     }),
     {
-      projectAwareCwd: '/workspace/openclaude',
-      projectAwareCwdLabel: '/workspace/openclaude',
+      projectAwareCwd: '/workspace/asicode',
+      projectAwareCwdLabel: '/workspace/asicode',
       projectAwareSourceLabel: 'workspace root (required by relative launch command)',
-      workspaceRootCwd: '/workspace/openclaude',
-      workspaceRootCwdLabel: '/workspace/openclaude',
+      workspaceRootCwd: '/workspace/asicode',
+      workspaceRootCwdLabel: '/workspace/asicode',
       launchActionsShareTarget: true,
       launchActionsShareTargetReason: 'relative-launch-command',
     },
@@ -159,17 +159,17 @@ test('resolveLaunchTargets ignores active files outside the selected workspace',
 
   assert.deepEqual(
     resolveLaunchTargets({
-      executable: 'openclaude',
+      executable: 'asicode',
       activeFilePath: '/tmp/notes/scratch.js',
-      workspacePath: '/workspace/openclaude',
+      workspacePath: '/workspace/asicode',
       workspaceSourceLabel: 'first workspace folder',
     }),
     {
-      projectAwareCwd: '/workspace/openclaude',
-      projectAwareCwdLabel: '/workspace/openclaude',
+      projectAwareCwd: '/workspace/asicode',
+      projectAwareCwdLabel: '/workspace/asicode',
       projectAwareSourceLabel: 'first workspace folder',
-      workspaceRootCwd: '/workspace/openclaude',
-      workspaceRootCwdLabel: '/workspace/openclaude',
+      workspaceRootCwd: '/workspace/asicode',
+      workspaceRootCwdLabel: '/workspace/asicode',
       launchActionsShareTarget: true,
       launchActionsShareTargetReason: null,
     },
@@ -192,36 +192,36 @@ test('renderControlCenterHtml explains distinct launch targets when an active fi
   const { renderControlCenterHtml } = loadExtension();
   const html = renderControlCenterHtml(
     createStatus({
-      launchCwd: '/workspace/openclaude/src/panels',
-      launchCwdLabel: '/workspace/openclaude/src/panels',
+      launchCwd: '/workspace/asicode/src/panels',
+      launchCwdLabel: '/workspace/asicode/src/panels',
       launchCwdSourceLabel: 'active file directory',
-      workspaceRootCwd: '/workspace/openclaude',
-      workspaceRootCwdLabel: '/workspace/openclaude',
+      workspaceRootCwd: '/workspace/asicode',
+      workspaceRootCwdLabel: '/workspace/asicode',
     }),
     { nonce: 'test-nonce', platform: 'linux' },
   );
 
-  assert.match(html, /Starts beside the active file · \/workspace\/openclaude\/src\/panels/);
-  assert.match(html, /Always starts at the workspace root · \/workspace\/openclaude/);
+  assert.match(html, /Starts beside the active file · \/workspace\/asicode\/src\/panels/);
+  assert.match(html, /Always starts at the workspace root · \/workspace\/asicode/);
 });
 
 test('renderControlCenterHtml makes shared workspace-root launches explicit for relative commands', () => {
   const { renderControlCenterHtml } = loadExtension();
   const html = renderControlCenterHtml(
     createStatus({
-      launchCwd: '/workspace/openclaude',
-      launchCwdLabel: '/workspace/openclaude',
+      launchCwd: '/workspace/asicode',
+      launchCwdLabel: '/workspace/asicode',
       launchCwdSourceLabel: 'workspace root (required by relative launch command)',
-      workspaceRootCwd: '/workspace/openclaude',
-      workspaceRootCwdLabel: '/workspace/openclaude',
+      workspaceRootCwd: '/workspace/asicode',
+      workspaceRootCwdLabel: '/workspace/asicode',
       launchActionsShareTarget: true,
       launchActionsShareTargetReason: 'relative-launch-command',
     }),
     { nonce: 'test-nonce', platform: 'linux' },
   );
 
-  assert.match(html, /Project-aware launch is anchored to the workspace root by the relative command · \/workspace\/openclaude/);
-  assert.match(html, /Same workspace-root target as Launch OpenClaude because the relative command resolves from the workspace root · \/workspace\/openclaude/);
+  assert.match(html, /Project-aware launch is anchored to the workspace root by the relative command · \/workspace\/asicode/);
+  assert.match(html, /Same workspace-root target as Launch Asicode because the relative command resolves from the workspace root · \/workspace\/asicode/);
 });
 
 test('renderControlCenterHtml escapes hostile text and title values', () => {

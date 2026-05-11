@@ -61,23 +61,6 @@ describe('isAutoRevertEnabled', () => {
     process.env.ASICODE_AUTO_REVERT_ENABLED = 'true'
     expect(isAutoRevertEnabled()).toBe(false)
   })
-
-  // REQ-33: back-compat — OPENCLAUDE_ prefix still enables via shim.
-  test('OPENCLAUDE_AUTO_REVERT_ENABLED=1 still works via REQ-8.3 shim', () => {
-    delete process.env.ASICODE_AUTO_REVERT_ENABLED
-    process.env.OPENCLAUDE_AUTO_REVERT_ENABLED = '1'
-    try {
-      expect(isAutoRevertEnabled()).toBe(true)
-    } finally { delete process.env.OPENCLAUDE_AUTO_REVERT_ENABLED }
-  })
-
-  test('ASICODE_ wins when both are set', () => {
-    process.env.ASICODE_AUTO_REVERT_ENABLED = '1'
-    process.env.OPENCLAUDE_AUTO_REVERT_ENABLED = '0'
-    try {
-      expect(isAutoRevertEnabled()).toBe(true)
-    } finally { delete process.env.OPENCLAUDE_AUTO_REVERT_ENABLED }
-  })
 })
 
 describe('openRevertPr — soft-fail paths', () => {

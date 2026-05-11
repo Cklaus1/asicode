@@ -18,7 +18,7 @@ function App() {
     document.documentElement.dataset.theme = theme
     document.documentElement.style.colorScheme = theme
     try {
-      localStorage.setItem('openclaude-theme', theme)
+      localStorage.setItem('asicode-theme', theme)
     } catch {
       /* storage unavailable */
     }
@@ -30,9 +30,9 @@ function App() {
     <div className="site-shell">
       <header className="site-header">
         <nav className="nav" aria-label="primary">
-          <a className="brand" href="/" aria-label="openclaude home">
-            <img src="/openclaude.png" alt="" />
-            <span>openclaude</span>
+          <a className="brand" href="/" aria-label="asicode home">
+            <img src="/asicode.png" alt="" />
+            <span>asicode</span>
             <span className="ver">v0.7</span>
           </a>
           <div className="nav-right">
@@ -92,7 +92,7 @@ function App() {
                 <span className="step-num">02</span>
                 <div>
                   <strong>start</strong>
-                  <p>run <code>openclaude</code> in any repo.</p>
+                  <p>run <code>asicode</code> in any repo.</p>
                 </div>
               </li>
               <li>
@@ -110,14 +110,14 @@ function App() {
       <footer className="footer">
         <div className="footer-line">
           <span className="brand">
-            <img src="/openclaude.png" alt="" />
-            <span>openclaude</span>
+            <img src="/asicode.png" alt="" />
+            <span>asicode</span>
             <span className="ver">v0.7.0</span>
           </span>
           <span className="sep">|</span>
           <a href="https://gitlawb.com">gitlawb ↗</a>
           <span className="sep">|</span>
-          <a href="https://github.com/Gitlawb/openclaude/blob/main/LICENSE">license</a>
+          <a href="https://github.com/Gitlawb/asicode/blob/main/LICENSE">license</a>
           <span className="sep">·</span>
           <span>{new Date().getFullYear()}</span>
         </div>
@@ -146,7 +146,7 @@ function Hero() {
 
       <div className="hero-cta">
         <CopyableCommand command={installCommand} variant="hero" />
-        <a className="button button-ghost" href="https://github.com/Gitlawb/openclaude">
+        <a className="button button-ghost" href="https://github.com/Gitlawb/asicode">
           view on github →
         </a>
       </div>

@@ -64,14 +64,14 @@ export CLAUDE_CODE_USE_OPENAI=1
 export OPENAI_BASE_URL=http://localhost:4000
 export OPENAI_API_KEY=<your-master-key-or-placeholder>
 export OPENAI_MODEL=<your-litellm-model-alias>
-openclaude
+asicode
 ```
 
 Replace `<your-litellm-model-alias>` with a model name from your `litellm_config.yaml` (e.g., `gpt-4o`, `claude-sonnet-4`, `gemini-2.5-flash`).
 
 ### Option B: Using /provider
 
-1. Run `openclaude`
+1. Run `asicode`
 2. Type `/provider` to open the provider setup flow
 3. Choose the **OpenAI-compatible** option
 4. When prompted for the API key, enter the key required by your LiteLLM proxy
@@ -117,7 +117,7 @@ export CLAUDE_CODE_USE_OPENAI=1
 export OPENAI_BASE_URL=http://localhost:4000
 export OPENAI_API_KEY=sk-my-master-key
 export OPENAI_MODEL=gpt-4o
-openclaude
+asicode
 ```
 
 ## 4. Notes

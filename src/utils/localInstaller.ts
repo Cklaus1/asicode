@@ -37,12 +37,9 @@ export function getCandidateLocalInstallDirs(options?: {
 }
 
 function getCandidateLocalBinaryPaths(localInstallDir: string): string[] {
-  // REQ-8.2: prefer `asicode` bin if present, fall back to `openclaude`
-  // (back-compat for installs predating the rename) and `claude` (the
-  // upstream-Anthropic shadow).
+  // Prefer asicode binary; fall back to `claude` (the upstream-Anthropic shadow).
   return [
     join(localInstallDir, 'node_modules', '.bin', 'asicode'),
-    join(localInstallDir, 'node_modules', '.bin', 'openclaude'),
     join(localInstallDir, 'node_modules', '.bin', 'claude'),
   ]
 }
@@ -50,20 +47,18 @@ function getCandidateLocalBinaryPaths(localInstallDir: string): string[] {
 export function isManagedLocalInstallationPath(execPath: string): boolean {
   const normalizedExecPath = execPath.replace(/\\+/g, '/')
   return (
-    normalizedExecPath.includes('/.openclaude/local/node_modules/') ||
+    normalizedExecPath.includes('/.asicode/local/node_modules/') ||
     normalizedExecPath.includes('/.claude/local/node_modules/')
   )
 }
 
 export function getLocalClaudePath(): string {
-  return join(getLocalInstallDir(), 'openclaude')
-}
-
-// REQ-8.2: asicode wrapper path alongside the openclaude one. Both
-// resolve to the same node_modules/.bin/<bin> shim.
-export function getLocalAsicodePath(): string {
   return join(getLocalInstallDir(), 'asicode')
 }
+
+// Alias retained for callers that imported it before the REQ-34
+// rename collapsed the two paths into one.
+export const getLocalAsicodePath = getLocalClaudePath
 
 /**
  * Check if we're running from our managed local installation
@@ -105,22 +100,18 @@ export async function ensureLocalPackageEnvironment(): Promise<boolean> {
     await writeIfMissing(
       join(localInstallDir, 'package.json'),
       jsonStringify(
-        { name: 'openclaude-local', version: '0.0.1', private: true },
+        { name: 'asicode-local', version: '0.0.1', private: true },
         null,
         2,
       ),
     )
 
-    // Create the wrapper script(s) if they don't exist. Both `asicode`
-    // and legacy `openclaude` invoke the same package bin shim.
+    // Create the wrapper script. After REQ-34 rename there's a single
+    // `asicode` wrapper pointing at the package bin shim.
     const wrapperPath = getLocalClaudePath()
-    const asicodeWrapperPath = getLocalAsicodePath()
-    const binShim = `${localInstallDir}/node_modules/.bin/openclaude`
-    for (const p of [wrapperPath, asicodeWrapperPath]) {
-      const created = await writeIfMissing(p, `#!/bin/sh\nexec "${binShim}" "$@"`, 0o755)
-      // Mode in writeFile is masked by umask; chmod to ensure exec bit.
-      if (created) await chmod(p, 0o755)
-    }
+    const binShim = `${localInstallDir}/node_modules/.bin/asicode`
+    const created = await writeIfMissing(wrapperPath, `#!/bin/sh\nexec "${binShim}" "$@"`, 0o755)
+    if (created) await chmod(wrapperPath, 0o755)
 
     return true
   } catch (error) {

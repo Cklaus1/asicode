@@ -6,7 +6,7 @@
 
 const vscode = require('vscode');
 
-const SCHEME = 'openclaude-diff';
+const SCHEME = 'asicode-diff';
 let contentStore = new Map();
 
 class DiffContentProvider {
@@ -56,7 +56,7 @@ async function openDiff({ filePath, original, modified, toolUseId }) {
   const originalUri = storeContent(`original-${id}`, original || '');
   const modifiedUri = storeContent(`modified-${id}`, modified || '');
   const shortName = filePath ? filePath.split(/[\\/]/).pop() : 'file';
-  const title = `${shortName} (OpenClaude Diff)`;
+  const title = `${shortName} (Asicode Diff)`;
 
   await vscode.commands.executeCommand('vscode.diff', originalUri, modifiedUri, title);
 }
@@ -74,7 +74,7 @@ async function openFileDiff({ filePath, modified, toolUseId }) {
   const fileUri = vscode.Uri.file(filePath);
   const modifiedUri = storeContent(`modified-${id}`, modified || '');
   const shortName = filePath.split(/[\\/]/).pop() || 'file';
-  const title = `${shortName} (OpenClaude Edit)`;
+  const title = `${shortName} (Asicode Edit)`;
 
   await vscode.commands.executeCommand('vscode.diff', fileUri, modifiedUri, title);
 }

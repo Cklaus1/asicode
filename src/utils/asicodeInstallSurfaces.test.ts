@@ -12,7 +12,7 @@ const originalMacro = (globalThis as Record<string, unknown>).MACRO
 beforeEach(() => {
   // Provide a default MACRO so cleanupNpmInstallations doesn't NPE
   // (MACRO is a build-macro injected at bundle time; tests run uncompiled).
-  ;(globalThis as Record<string, unknown>).MACRO = { PACKAGE_URL: '@gitlawb/openclaude' }
+  ;(globalThis as Record<string, unknown>).MACRO = { PACKAGE_URL: '@gitlawb/asicode' }
 })
 afterEach(() => {
   ;(globalThis as Record<string, unknown>).MACRO = originalMacro
@@ -23,7 +23,7 @@ describe('cleanupNpmInstallations (REQ-10)', () => {
   // via mock.module(). We now inject via the installer's
   // _setRmForTest / _setExecForTest hooks (iter-90 production refactor).
 
-  test('removes both openclaude and legacy claude local install dirs', async () => {
+  test('removes both asicode and legacy claude local install dirs', async () => {
     const removedPaths: string[] = []
     const installer = await import('./nativeInstaller/installer.js')
     installer._setRmForTest(async (path: string | URL) => {
@@ -33,14 +33,14 @@ describe('cleanupNpmInstallations (REQ-10)', () => {
       code: 1, stderr: 'npm ERR! code E404', stdout: '',
     }))
     ;(globalThis as Record<string, unknown>).MACRO = {
-      PACKAGE_URL: '@gitlawb/openclaude',
+      PACKAGE_URL: '@gitlawb/asicode',
     }
     try {
       const r = await installer.cleanupNpmInstallations()
       // Both local dirs should appear in removedPaths
-      // (asicode home defaults to ~/.openclaude unless ASICODE_HOME / CLAUDE_CONFIG_DIR set)
-      // We accept any home-dir-rooted .openclaude/local or .claude/local
-      expect(removedPaths.some(p => p.endsWith(join('.openclaude', 'local')))).toBe(true)
+      // (asicode home defaults to ~/.asicode unless ASICODE_HOME / CLAUDE_CONFIG_DIR set)
+      // We accept any home-dir-rooted .asicode/local or .claude/local
+      expect(removedPaths.some(p => p.endsWith(join('.asicode', 'local')))).toBe(true)
       expect(removedPaths).toContain(join(homedir(), '.claude', 'local'))
       // npm uninstall returned E404 (package not installed); no error.
       expect(r.errors.filter(e => !e.includes('E404'))).toEqual([])

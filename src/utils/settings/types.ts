@@ -828,7 +828,7 @@ export const SettingsSchema = lazySchema(() =>
         })
         .optional()
         .describe(
-          'Per-task budget caps. When any cap is hit, openclaude stops gracefully ' +
+          'Per-task budget caps. When any cap is hit, asicode stops gracefully ' +
             'and asks the model for a final summary. Top-level only in v1 ' +
             '(sub-agents do not propagate budgets).',
         ),

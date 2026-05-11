@@ -1,0 +1,179 @@
+{
+  "name": "asicode-vscode",
+  "displayName": "Asicode",
+  "description": "Practical VS Code companion for Asicode with project-aware launch behavior and a real Control Center.",
+  "version": "0.2.0",
+  "publisher": "devnull-bootloader",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Themes",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:asicode.start",
+    "onCommand:asicode.startInWorkspaceRoot",
+    "onCommand:asicode.openDocs",
+    "onCommand:asicode.openSetupDocs",
+    "onCommand:asicode.openWorkspaceProfile",
+    "onCommand:asicode.openControlCenter",
+    "onCommand:asicode.newChat",
+    "onCommand:asicode.openChat",
+    "onCommand:asicode.resumeSession",
+    "onCommand:asicode.abortChat",
+    "onView:asicode.controlCenter",
+    "onView:asicode.chat"
+  ],
+  "main": "./src/extension.js",
+  "files": [
+    "README.md",
+    "media/**",
+    "src/extension.js",
+    "src/presentation.js",
+    "src/state.js",
+    "src/chat/**",
+    "themes/**"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "asicode.start",
+        "title": "Asicode: Launch in Terminal",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.startInWorkspaceRoot",
+        "title": "Asicode: Launch in Workspace Root",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.openDocs",
+        "title": "Asicode: Open Repository",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.openSetupDocs",
+        "title": "Asicode: Open Setup Guide",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.openWorkspaceProfile",
+        "title": "Asicode: Open Workspace Profile",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.openControlCenter",
+        "title": "Asicode: Open Control Center",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.newChat",
+        "title": "Asicode: New Chat",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.openChat",
+        "title": "Asicode: Open Chat Panel",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.resumeSession",
+        "title": "Asicode: Resume Session",
+        "category": "Asicode"
+      },
+      {
+        "command": "asicode.abortChat",
+        "title": "Asicode: Abort Generation",
+        "category": "Asicode"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "asicode",
+          "title": "Asicode",
+          "icon": "media/asicode.svg"
+        }
+      ]
+    },
+    "views": {
+      "asicode": [
+        {
+          "id": "asicode.chat",
+          "name": "Chat",
+          "type": "webview"
+        },
+        {
+          "id": "asicode.controlCenter",
+          "name": "Control Center",
+          "type": "webview"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "asicode.openChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l"
+      }
+    ],
+    "configuration": {
+      "title": "Asicode",
+      "properties": {
+        "asicode.launchCommand": {
+          "type": "string",
+          "default": "asicode",
+          "description": "Command run in the integrated terminal when launching Asicode."
+        },
+        "asicode.terminalName": {
+          "type": "string",
+          "default": "Asicode",
+          "description": "Integrated terminal tab name for Asicode sessions."
+        },
+        "asicode.useOpenAIShim": {
+          "type": "boolean",
+          "default": false,
+          "description": "Optionally set CLAUDE_CODE_USE_OPENAI=1 in launched Asicode terminals."
+        },
+        "asicode.permissionMode": {
+          "type": "string",
+          "default": "acceptEdits",
+          "enum": ["default", "acceptEdits", "bypassPermissions", "plan"],
+          "enumDescriptions": [
+            "Prompt for permission on each tool use (requires manual approval)",
+            "Auto-approve file edits, prompt for other operations (recommended)",
+            "Auto-approve all operations without prompting",
+            "Read-only mode — no file modifications allowed"
+          ],
+          "description": "Permission mode for chat sessions. Controls which tool operations are auto-approved."
+        }
+      }
+    },
+    "themes": [
+      {
+        "label": "Asicode Terminal Black",
+        "uiTheme": "vs-dark",
+        "path": "./themes/Asicode-Terminal-Black.json"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "node --test ./src/*.test.js",
+    "lint": "node scripts/lint.js",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "keywords": [
+    "asicode",
+    "terminal",
+    "theme",
+    "cli",
+    "llm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Gitlawb/asicode"
+  },
+  "license": "MIT"
+}

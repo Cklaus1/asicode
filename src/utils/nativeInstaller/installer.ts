@@ -46,7 +46,7 @@ import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
 import { execFileNoThrowWithCwd as realExecFileNoThrowWithCwd } from '../execFileNoThrow.js'
 
 // REQ-10 (iter 90): injectable rm + execFileNoThrowWithCwd so the
-// openclaudeInstallSurfaces test's cleanupNpmInstallations test can
+// asicodeInstallSurfaces test's cleanupNpmInstallations test can
 // stub them without mock.module() pollution (iter-50 lesson).
 type RmFn = typeof realRm
 type ExecFn = typeof realExecFileNoThrowWithCwd

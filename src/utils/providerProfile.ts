@@ -35,7 +35,7 @@ import { isEnvTruthy } from './envUtils.ts'
 
 import { PROVIDERS } from './configConstants.js'
 
-export const PROFILE_FILE_NAME = '.openclaude-profile.json'
+export const PROFILE_FILE_NAME = '.asicode-profile.json'
 export const DEFAULT_GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/openai'
 export const DEFAULT_GEMINI_MODEL = 'gemini-2.0-flash'
@@ -1028,7 +1028,7 @@ export async function buildStartupEnvFromProfile(options?: {
 
   const profileManagedEnv = processEnv.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED === '1'
 
-  // The legacy single-profile file (~/.openclaude-profile.json) is a
+  // The legacy single-profile file (~/.asicode-profile.json) is a
   // first-run / fallback mechanism. The newer plural provider-profile
   // system (`/provider` presets + activeProviderProfileId in config) is
   // applied earlier in the bootstrap via applyActiveProviderProfileFromConfig

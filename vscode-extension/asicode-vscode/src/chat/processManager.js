@@ -1,5 +1,5 @@
 /**
- * ProcessManager — spawns OpenClaude in print/SDK mode and manages the
+ * ProcessManager — spawns Asicode in print/SDK mode and manages the
  * NDJSON stdin/stdout lifecycle.
  *
  * Usage:
@@ -21,7 +21,7 @@ const { parseStdoutLine, serializeStdinMessage, buildUserMessage, buildControlRe
 class ProcessManager {
   /**
    * @param {object} opts
-   * @param {string} opts.command - The openclaude binary (e.g. 'openclaude')
+   * @param {string} opts.command - The asicode binary (e.g. 'asicode')
    * @param {string} [opts.cwd] - Working directory
    * @param {Record<string,string>} [opts.env] - Extra env vars
    * @param {string} [opts.sessionId] - Session to resume
@@ -30,7 +30,7 @@ class ProcessManager {
    * @param {string[]} [opts.extraArgs] - Additional CLI flags
    */
   constructor(opts) {
-    this._command = opts.command || 'openclaude';
+    this._command = opts.command || 'asicode';
     this._cwd = opts.cwd || undefined;
     this._env = opts.env || {};
     this._sessionId = opts.sessionId || null;

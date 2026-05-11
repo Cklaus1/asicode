@@ -1,7 +1,7 @@
 # Test-suite pollution — `git`-spawn shape failures
 
 ## Status
-**RESOLVED in iter 50.** Root cause: `src/utils/openclaudeInstallSurfaces.test.ts`
+**RESOLVED in iter 50.** Root cause: `src/utils/asicodeInstallSurfaces.test.ts`
 calls `mock.module('./execFileNoThrow.js', ...)` in one test body (the
 `cleanupNpmInstallations` test). Bun's `mock.restore()` resets individual
 `mock(...)` instances but does NOT undo `mock.module()` substitutions.

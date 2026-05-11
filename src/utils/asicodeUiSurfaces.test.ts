@@ -5,45 +5,45 @@ import { optionForPermissionSaveDestination } from '../components/permissions/ru
 import { isClaudeSettingsPath } from './permissions/filesystem.ts'
 import { getValidationTip } from './settings/validationTips.ts'
 
-describe('OpenClaude settings path surfaces', () => {
-  test('isClaudeSettingsPath recognizes project .openclaude settings files', () => {
+describe('Asicode settings path surfaces', () => {
+  test('isClaudeSettingsPath recognizes project .asicode settings files', () => {
     expect(
       isClaudeSettingsPath(
-        join(process.cwd(), '.openclaude', 'settings.json'),
+        join(process.cwd(), '.asicode', 'settings.json'),
       ),
     ).toBe(true)
 
     expect(
       isClaudeSettingsPath(
-        join(process.cwd(), '.openclaude', 'settings.local.json'),
+        join(process.cwd(), '.asicode', 'settings.local.json'),
       ),
     ).toBe(true)
   })
 
-  test('permission save destinations point user settings to ~/.openclaude', () => {
+  test('permission save destinations point user settings to ~/.asicode', () => {
     expect(optionForPermissionSaveDestination('userSettings')).toEqual({
       label: 'User settings',
-      description: 'Saved in ~/.openclaude/settings.json',
+      description: 'Saved in ~/.asicode/settings.json',
       value: 'userSettings',
     })
   })
 
-  test('permission save destinations point project settings to .openclaude', () => {
+  test('permission save destinations point project settings to .asicode', () => {
     expect(optionForPermissionSaveDestination('projectSettings')).toEqual({
       label: 'Project settings',
-      description: 'Checked in at .openclaude/settings.json',
+      description: 'Checked in at .asicode/settings.json',
       value: 'projectSettings',
     })
 
     expect(optionForPermissionSaveDestination('localSettings')).toEqual({
       label: 'Project settings (local)',
-      description: 'Saved in .openclaude/settings.local.json',
+      description: 'Saved in .asicode/settings.local.json',
       value: 'localSettings',
     })
   })
 })
 
-describe('OpenClaude validation tips', () => {
+describe('Asicode validation tips', () => {
   test('permissions.defaultMode invalid value keeps suggestion but no Claude docs link', () => {
     const tip = getValidationTip({
       path: 'permissions.defaultMode',

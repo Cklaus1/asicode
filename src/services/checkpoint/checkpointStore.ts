@@ -210,13 +210,13 @@ export async function recordCheckpoint(
     // the commit succeeds. We don't override an existing config.
     env: {
       ...process.env,
-      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'OpenClaude Autocheckpoint',
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'Asicode Autocheckpoint',
       GIT_AUTHOR_EMAIL:
-        process.env.GIT_AUTHOR_EMAIL ?? 'autocheckpoint@openclaude.local',
+        process.env.GIT_AUTHOR_EMAIL ?? 'autocheckpoint@asicode.local',
       GIT_COMMITTER_NAME:
-        process.env.GIT_COMMITTER_NAME ?? 'OpenClaude Autocheckpoint',
+        process.env.GIT_COMMITTER_NAME ?? 'Asicode Autocheckpoint',
       GIT_COMMITTER_EMAIL:
-        process.env.GIT_COMMITTER_EMAIL ?? 'autocheckpoint@openclaude.local',
+        process.env.GIT_COMMITTER_EMAIL ?? 'autocheckpoint@asicode.local',
     },
   })
   if (commit.code !== 0) {

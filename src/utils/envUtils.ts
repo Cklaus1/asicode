@@ -14,7 +14,7 @@ export function resolveClaudeConfigHomeDir(options?: {
   }
 
   const homeDir = options?.homeDir ?? homedir()
-  const openClaudeDir = join(homeDir, '.openclaude')
+  const openClaudeDir = join(homeDir, '.asicode')
   const legacyClaudeDir = join(homeDir, '.claude')
   const openClaudeExists =
     options?.openClaudeExists ?? existsSync(openClaudeDir)
@@ -22,7 +22,7 @@ export function resolveClaudeConfigHomeDir(options?: {
     options?.legacyClaudeExists ?? existsSync(legacyClaudeDir)
 
   // Preserve existing user config/install state until we ship an explicit
-  // migration. New installs (neither path exists) use ~/.openclaude.
+  // migration. New installs (neither path exists) use ~/.asicode.
   if (!openClaudeExists && legacyClaudeExists) {
     return legacyClaudeDir.normalize('NFC')
   }

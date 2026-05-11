@@ -1,8 +1,8 @@
 /**
- * OpenClaude startup screen — filled-block text logo with sunset gradient.
+ * Asicode startup screen — filled-block text logo with sunset gradient.
  * Called once at CLI startup before the Ink UI renders.
  *
- * Addresses: https://github.com/Gitlawb/openclaude/issues/55
+ * Addresses: https://github.com/Gitlawb/asicode/issues/55
  */
 
 import { isLocalProviderUrl, resolveProviderRequest } from '../services/api/providerConfig.js'
@@ -238,7 +238,7 @@ export function printStartupScreen(modelOverride?: string): void {
   out.push(boxRow(sRow, W, sLen))
 
   out.push(`${rgb(...BORDER)}\u255a${'\u2550'.repeat(W - 2)}\u255d${RESET}`)
-  out.push(`  ${DIM}${rgb(...DIMCOL)}openclaude ${RESET}${rgb(...ACCENT)}v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}${RESET}`)
+  out.push(`  ${DIM}${rgb(...DIMCOL)}asicode ${RESET}${rgb(...ACCENT)}v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}${RESET}`)
   out.push('')
 
   process.stdout.write(out.join('\n') + '\n')

@@ -63,12 +63,12 @@ test('keeps embedded mode for Bun-compiled standalone executables', () => {
     bundledMode: true,
     builtinCommand: null,
     systemExecutablePath: '/usr/bin/rg',
-    processExecPath: '/opt/openclaude/bin/openclaude',
+    processExecPath: '/opt/asicode/bin/asicode',
   })
 
   expect(config).toMatchObject({
     mode: 'embedded',
-    command: '/opt/openclaude/bin/openclaude',
+    command: '/opt/asicode/bin/asicode',
     args: ['--no-config'],
     argv0: 'rg',
   })

@@ -12,7 +12,7 @@ const originalEnv = {
 let tempDir: string
 
 beforeEach(() => {
-  tempDir = mkdtempSync(join(tmpdir(), 'openclaude-env-test-'))
+  tempDir = mkdtempSync(join(tmpdir(), 'asicode-env-test-'))
   process.env.CLAUDE_CONFIG_DIR = tempDir
   delete process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL
   delete process.env.USER_TYPE
@@ -43,9 +43,9 @@ async function importFreshEnvModule() {
 
 // getGlobalClaudeFile — three migration branches
 
-test('getGlobalClaudeFile: new install returns .openclaude.json when neither file exists', async () => {
+test('getGlobalClaudeFile: new install returns .asicode.json when neither file exists', async () => {
   const { getGlobalClaudeFile } = await importFreshEnvModule()
-  expect(getGlobalClaudeFile()).toBe(join(tempDir, '.openclaude.json'))
+  expect(getGlobalClaudeFile()).toBe(join(tempDir, '.asicode.json'))
 })
 
 test('getGlobalClaudeFile: existing user keeps .claude.json when only legacy file exists', async () => {
@@ -54,9 +54,9 @@ test('getGlobalClaudeFile: existing user keeps .claude.json when only legacy fil
   expect(getGlobalClaudeFile()).toBe(join(tempDir, '.claude.json'))
 })
 
-test('getGlobalClaudeFile: migrated user uses .openclaude.json when both files exist', async () => {
+test('getGlobalClaudeFile: migrated user uses .asicode.json when both files exist', async () => {
   writeFileSync(join(tempDir, '.claude.json'), '{}')
-  writeFileSync(join(tempDir, '.openclaude.json'), '{}')
+  writeFileSync(join(tempDir, '.asicode.json'), '{}')
   const { getGlobalClaudeFile } = await importFreshEnvModule()
-  expect(getGlobalClaudeFile()).toBe(join(tempDir, '.openclaude.json'))
+  expect(getGlobalClaudeFile()).toBe(join(tempDir, '.asicode.json'))
 })

@@ -4,14 +4,14 @@ asicode is an open-source coding-agent CLI for cloud and local model providers.
 
 Use OpenAI-compatible APIs, Gemini, GitHub Models, Codex OAuth, Codex, Ollama, Atomic Chat, and other supported backends while keeping one terminal-first workflow: prompts, tools, agents, MCP, slash commands, and streaming output.
 
-[![PR Checks](https://github.com/Cklaus1/openclaude/actions/workflows/pr-checks.yml/badge.svg?branch=main)](https://github.com/Cklaus1/openclaude/actions/workflows/pr-checks.yml)
-[![Release](https://img.shields.io/github/v/tag/Cklaus1/asicode?label=release&color=0ea5e9)](https://github.com/Cklaus1/openclaude/tags)
-[![Discussions](https://img.shields.io/badge/discussions-open-7c3aed)](https://github.com/Cklaus1/openclaude/discussions)
+[![PR Checks](https://github.com/Cklaus1/asicode/actions/workflows/pr-checks.yml/badge.svg?branch=main)](https://github.com/Cklaus1/asicode/actions/workflows/pr-checks.yml)
+[![Release](https://img.shields.io/github/v/tag/Cklaus1/asicode?label=release&color=0ea5e9)](https://github.com/Cklaus1/asicode/tags)
+[![Discussions](https://img.shields.io/badge/discussions-open-7c3aed)](https://github.com/Cklaus1/asicode/discussions)
 [![Security Policy](https://img.shields.io/badge/security-policy-0f766e)](SECURITY.md)
 [![License](https://img.shields.io/badge/license-MIT-2563eb)](LICENSE)
 
 asicode is also mirrored to GitLawb:
-[gitlawb.com/node/repos/z6MkqDnb/openclaude](https://gitlawb.com/node/repos/z6MkqDnb/openclaude)
+[gitlawb.com/node/repos/z6MkqDnb/asicode](https://gitlawb.com/node/repos/z6MkqDnb/asicode)
 
 [Quick Start](#quick-start) | [Setup Guides](#setup-guides) | [Providers](#supported-providers) | [Source Build](#source-build-and-local-development) | [VS Code Extension](#vs-code-extension) | [Sponsors](#sponsors) | [Community](#community)
 
@@ -41,7 +41,7 @@ asicode is also mirrored to GitLawb:
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Cklaus1/openclaude&type=date&legend=top-left)](https://www.star-history.com/?repos=Cklaus1%2Fopenclaude&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=Cklaus1/asicode&type=date&legend=top-left)](https://www.star-history.com/?repos=Cklaus1%2Fasicode&type=date&legend=top-left)
 
 ## Why asicode
 
@@ -56,7 +56,7 @@ asicode is also mirrored to GitLawb:
 ### Install
 
 ```bash
-npm install -g @cklaus1/openclaude
+npm install -g @cklaus1/asicode
 ```
 
 If the install later reports `ripgrep not found`, install ripgrep system-wide and confirm `rg --version` works in the same terminal before starting asicode.
@@ -64,7 +64,7 @@ If the install later reports `ripgrep not found`, install ripgrep system-wide an
 ### Start
 
 ```bash
-openclaude
+asicode
 ```
 
 Inside asicode:
@@ -81,7 +81,7 @@ export CLAUDE_CODE_USE_OPENAI=1
 export OPENAI_API_KEY=sk-your-key-here
 export OPENAI_MODEL=gpt-4o
 
-openclaude
+asicode
 ```
 
 Windows PowerShell:
@@ -91,7 +91,7 @@ $env:CLAUDE_CODE_USE_OPENAI="1"
 $env:OPENAI_API_KEY="sk-your-key-here"
 $env:OPENAI_MODEL="gpt-4o"
 
-openclaude
+asicode
 ```
 
 ### Fastest local Ollama setup
@@ -103,7 +103,7 @@ export CLAUDE_CODE_USE_OPENAI=1
 export OPENAI_BASE_URL=http://localhost:11434/v1
 export OPENAI_MODEL=qwen2.5-coder:7b
 
-openclaude
+asicode
 ```
 
 Windows PowerShell:
@@ -113,7 +113,7 @@ $env:CLAUDE_CODE_USE_OPENAI="1"
 $env:OPENAI_BASE_URL="http://localhost:11434/v1"
 $env:OPENAI_MODEL="qwen2.5-coder:7b"
 
-openclaude
+asicode
 ```
 
 ### Using Ollama's launch command
@@ -121,7 +121,7 @@ openclaude
 If you have [Ollama](https://ollama.com) installed, you can skip the env var setup entirely:
 
 ```bash
-ollama launch openclaude --model qwen2.5-coder:7b
+ollama launch asicode --model qwen2.5-coder:7b
 ```
 
 This automatically sets `ANTHROPIC_BASE_URL`, model routing, and auth so all API traffic goes through your local Ollama instance. Works with any model you have pulled — local or cloud.
@@ -158,7 +158,7 @@ Advanced and source-build guides:
 - **Streaming responses**: Real-time token output and tool progress
 - **Tool calling**: Multi-step tool loops with model calls, tool execution, and follow-up responses
 - **Images**: URL and base64 image inputs for providers that support vision
-- **Provider profiles**: Guided setup plus saved `.openclaude-profile.json` support
+- **Provider profiles**: Guided setup plus saved `.asicode-profile.json` support
 - **Local and remote model backends**: Cloud APIs, local servers, and Apple Silicon local inference
 
 ## Autonomy substrate (opt-in)
@@ -432,8 +432,8 @@ If you believe you found a security issue, see [SECURITY.md](SECURITY.md).
 
 ## Community
 
-- Use [GitHub Discussions](https://github.com/Cklaus1/openclaude/discussions) for Q&A, ideas, and community conversation
-- Use [GitHub Issues](https://github.com/Cklaus1/openclaude/issues) for confirmed bugs and actionable feature work
+- Use [GitHub Discussions](https://github.com/Cklaus1/asicode/discussions) for Q&A, ideas, and community conversation
+- Use [GitHub Issues](https://github.com/Cklaus1/asicode/issues) for confirmed bugs and actionable feature work
 
 ## Contributing
 

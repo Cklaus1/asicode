@@ -7,7 +7,7 @@ This guide is for users who want source builds, Bun workflows, provider profiles
 ### Option A: npm
 
 ```bash
-npm install -g @gitlawb/openclaude
+npm install -g @gitlawb/asicode
 ```
 
 ### Option B: From source with Bun
@@ -15,8 +15,8 @@ npm install -g @gitlawb/openclaude
 Use Bun `1.3.11` or newer for source builds on Windows. Older Bun versions can fail during `bun run build`.
 
 ```bash
-git clone https://node.gitlawb.com/z6MkqDnb7Siv3Cwj7pGJq4T5EsUisECqR8KpnDLwcaZq5TPr/openclaude.git
-cd openclaude
+git clone https://node.gitlawb.com/z6MkqDnb7Siv3Cwj7pGJq4T5EsUisECqR8KpnDLwcaZq5TPr/asicode.git
+cd asicode
 
 bun install
 bun run build
@@ -26,8 +26,8 @@ npm link
 ### Option C: Run directly with Bun
 
 ```bash
-git clone https://node.gitlawb.com/z6MkqDnb7Siv3Cwj7pGJq4T5EsUisECqR8KpnDLwcaZq5TPr/openclaude.git
-cd openclaude
+git clone https://node.gitlawb.com/z6MkqDnb7Siv3Cwj7pGJq4T5EsUisECqR8KpnDLwcaZq5TPr/asicode.git
+cd asicode
 
 bun install
 bun run dev
@@ -59,7 +59,7 @@ export OPENAI_MODEL=codexplan
 # optional if you do not already have ~/.codex/auth.json
 export CODEX_API_KEY=...
 
-openclaude
+asicode
 ```
 
 ### DeepSeek
@@ -89,7 +89,7 @@ OpenRouter model availability changes over time. If a model stops working, try a
 Using `ollama launch` (recommended if you have Ollama installed):
 
 ```bash
-ollama launch openclaude --model llama3.3:70b
+ollama launch asicode --model llama3.3:70b
 ```
 
 This handles all environment setup automatically — no env vars needed. Works with any local or cloud model available in your Ollama instance.
@@ -176,8 +176,8 @@ export OPENAI_MODEL=gpt-4o
 | `CODEX_API_KEY` | Codex only | Codex or ChatGPT access token override |
 | `CODEX_AUTH_JSON_PATH` | Codex only | Path to a Codex CLI `auth.json` file |
 | `CODEX_HOME` | Codex only | Alternative Codex home directory |
-| `OPENCLAUDE_DISABLE_CO_AUTHORED_BY` | No | Suppress the default `Co-Authored-By` trailer in generated git commits |
-| `OPENCLAUDE_LOG_TOKEN_USAGE` | No | When truthy (e.g. `verbose`), emits one JSON line on stderr per API request with input/output/cache tokens and the resolved provider. **User-facing debug output** — complements the REPL display controlled by `/config showCacheStats`. Distinct from `CLAUDE_CODE_ENABLE_TOKEN_USAGE_ATTACHMENT`, which is **model-facing** (injects context usage info into the prompt itself). Both can run together. |
+| `ASICODE_DISABLE_CO_AUTHORED_BY` | No | Suppress the default `Co-Authored-By` trailer in generated git commits |
+| `ASICODE_LOG_TOKEN_USAGE` | No | When truthy (e.g. `verbose`), emits one JSON line on stderr per API request with input/output/cache tokens and the resolved provider. **User-facing debug output** — complements the REPL display controlled by `/config showCacheStats`. Distinct from `CLAUDE_CODE_ENABLE_TOKEN_USAGE_ATTACHMENT`, which is **model-facing** (injects context usage info into the prompt itself). Both can run together. |
 
 You can also use `ANTHROPIC_MODEL` to override the model name. `OPENAI_MODEL` takes priority.
 
@@ -243,7 +243,7 @@ bun run profile:init -- --provider atomic-chat
 # codex bootstrap with a fast model alias
 bun run profile:init -- --provider codex --model codexspark
 
-# launch using persisted profile (.openclaude-profile.json)
+# launch using persisted profile (.asicode-profile.json)
 bun run dev:profile
 
 # codex profile (uses CODEX_API_KEY or ~/.codex/auth.json)

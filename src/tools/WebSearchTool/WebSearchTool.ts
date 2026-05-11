@@ -197,7 +197,7 @@ function buildCodexWebSearchInput(input: Input): Array<Record<string, unknown>> 
 
 function buildCodexWebSearchInstructions(): string {
   return [
-    'You are the OpenClaude web search tool.',
+    'You are the Asicode web search tool.',
     'Search the web for the user query and return a concise factual answer.',
     'Include source URLs in the response.',
   ].join(' ')
@@ -369,7 +369,7 @@ async function runCodexWebSearch(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${credentials.apiKey}`,
       'chatgpt-account-id': credentials.accountId,
-      originator: 'openclaude',
+      originator: 'asicode',
     },
     body: JSON.stringify(body),
     signal,

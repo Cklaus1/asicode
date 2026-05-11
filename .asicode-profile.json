@@ -1,0 +1,8 @@
+{
+  "profile": "openai",
+  "env": {
+    "OPENAI_BASE_URL": "https://api.example.com/v1",
+    "OPENAI_MODEL": "glm-4.7"
+  },
+  "createdAt": "2026-05-11T14:18:54.204Z"
+}
