@@ -51,6 +51,10 @@ export interface OpenWinnerPrInput {
     racersPassed: number
     /** The shell cmd that ran (so reviewers can reproduce). */
     cmd: string
+    /** REQ-27: baseline outcome on the base branch (run BEFORE the race).
+     *  When baseline=failed AND winner=failed, the PR body explains the
+     *  failure is inherited red, not a regression introduced by this PR. */
+    baselineOutcome?: 'passed' | 'failed' | 'verifier_error' | null
   }
 }
 
@@ -90,13 +94,27 @@ export function buildPrBody(input: {
     const glyph = input.verify.outcome === 'passed' ? '✓' : input.verify.outcome === 'failed' ? '✗' : '⚠'
     const label = input.verify.outcome === 'passed' ? 'PASSED' : input.verify.outcome === 'failed' ? 'FAILED' : 'VERIFIER ERROR'
     const dur = `${(input.verify.durationMs / 1000).toFixed(1)}s`
+    // REQ-27: baseline context. When the winner failed but baseline
+    // was already failing, reassure the reviewer this is inherited
+    // red, not a new regression. When baseline=passed AND winner=
+    // failed → red flag (would have been gated, only here because
+    // --force-pr fired).
+    let baselineLine = ''
+    const bo = input.verify.baselineOutcome
+    if (bo === 'failed' && input.verify.outcome !== 'passed') {
+      baselineLine = `\n\n> ⚠ **Baseline was already failing** — this race's failure is inherited, not a new regression introduced by this PR.`
+    } else if (bo === 'failed' && input.verify.outcome === 'passed') {
+      baselineLine = `\n\n> ✨ **Baseline was failing; this race PASSES** — this PR appears to fix the inherited red.`
+    } else if (bo === 'passed' && input.verify.outcome !== 'passed') {
+      baselineLine = `\n\n> 🚨 **Baseline was clean** — this race introduces a regression. Opened via --force-pr override.`
+    }
     verifySection = `## Verification
 
 ${glyph} ${label} in ${dur} — ${input.verify.racersPassed}/${input.verify.racerCount} racers passed.
 
 \`\`\`
 ${input.verify.cmd}
-\`\`\`
+\`\`\`${baselineLine}
 
 `
   }

@@ -121,6 +121,57 @@ describe('buildPrBody', () => {
     })
     expect(body.indexOf('## Verification')).toBeLessThan(body.indexOf('## Original brief'))
   })
+
+  // REQ-27: baseline context notes
+  test('baseline=failed + winner=failed → "inherited" callout', () => {
+    const body = buildPrBody({
+      briefId: 'b', briefText: 'x',
+      verify: { outcome: 'failed', durationMs: 1000, racerCount: 2, racersPassed: 0, cmd: 'bun test', baselineOutcome: 'failed' },
+    })
+    expect(body).toContain('Baseline was already failing')
+    expect(body).toContain('inherited')
+    // Should not accuse the PR of a new regression — wording matches
+    // "not a new regression" (negation), not "this PR is a regression".
+    expect(body).toContain('not a new regression')
+    expect(body).not.toContain('🚨')
+  })
+
+  test('baseline=failed + winner=passed → "fixes inherited red" callout', () => {
+    const body = buildPrBody({
+      briefId: 'b', briefText: 'x',
+      verify: { outcome: 'passed', durationMs: 1000, racerCount: 2, racersPassed: 2, cmd: 'bun test', baselineOutcome: 'failed' },
+    })
+    expect(body).toContain('Baseline was failing')
+    expect(body).toContain('fix')
+  })
+
+  test('baseline=passed + winner=failed → "regression" callout', () => {
+    const body = buildPrBody({
+      briefId: 'b', briefText: 'x',
+      verify: { outcome: 'failed', durationMs: 1000, racerCount: 2, racersPassed: 0, cmd: 'bun test', baselineOutcome: 'passed' },
+    })
+    expect(body).toContain('Baseline was clean')
+    expect(body).toContain('regression')
+    expect(body).toContain('--force-pr')
+  })
+
+  test('baseline=passed + winner=passed → no callout (normal happy path)', () => {
+    const body = buildPrBody({
+      briefId: 'b', briefText: 'x',
+      verify: { outcome: 'passed', durationMs: 1000, racerCount: 2, racersPassed: 2, cmd: 'bun test', baselineOutcome: 'passed' },
+    })
+    expect(body).not.toContain('Baseline')
+    expect(body).not.toContain('inherited')
+    expect(body).not.toContain('regression')
+  })
+
+  test('baseline=null (REQ-26 disabled) → no callout', () => {
+    const body = buildPrBody({
+      briefId: 'b', briefText: 'x',
+      verify: { outcome: 'failed', durationMs: 1000, racerCount: 1, racersPassed: 0, cmd: 'bun test', baselineOutcome: null },
+    })
+    expect(body).not.toContain('Baseline')
+  })
 })
 
 describe('isAutoPrEnabled', () => {

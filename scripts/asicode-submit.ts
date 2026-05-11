@@ -289,6 +289,8 @@ async function main() {
               racerCount: race.racerCount,
               racersPassed: race.racersPassed,
               cmd: race.verifyCmd,
+              // REQ-27: baseline context for the PR body.
+              baselineOutcome: race.baselineVerify as 'passed' | 'failed' | 'verifier_error' | null,
             } }
           : {}),
       })
