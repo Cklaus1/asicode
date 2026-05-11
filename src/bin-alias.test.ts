@@ -15,6 +15,12 @@ describe('bin/asicode', () => {
     const a = readFileSync(join(ROOT, 'bin', 'asicode'), 'utf-8')
     expect(a).toContain("'cli.mjs'")
   })
+  // REQ-57: dist/cli.mjs uses bun:sqlite (instrumentation) which Node
+  // refuses to resolve. Shim must use bun, not node.
+  test('shebang uses bun (bun:sqlite is bundled in dist)', () => {
+    const a = readFileSync(join(ROOT, 'bin', 'asicode'), 'utf-8')
+    expect(a.split('\n')[0]).toBe('#!/usr/bin/env bun')
+  })
   test('package.json bin map points to it', () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'))
     expect(pkg.bin?.asicode).toBe('./bin/asicode')

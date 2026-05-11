@@ -1,8 +1,8 @@
-#!/usr/bin/env node
-// REQ-8.2: asicode CLI binary. Delegates to the openclaude entrypoint
-// so existing dist/cli.mjs is the single bundle; the alias is just a
-// different bin name on PATH. Both `asicode` and `openclaude` invoke
-// the same compiled CLI until the openclaude alias is retired.
+#!/usr/bin/env bun
+// asicode CLI bin. Bundled dist/cli.mjs contains `import "bun:sqlite"`
+// (instrumentation client), which Node refuses to resolve — so the
+// shim runs under bun. `bun` is already a hard engine requirement per
+// package.json.
 import { existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
