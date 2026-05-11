@@ -122,6 +122,9 @@ export const RunRecordSchema = z.object({
   isolation_mode: IsolationModeSchema,
   worktree_path: z.string().optional(),
   asimux_pane: z.string().optional(),
+  // REQ-45: full log path that the writer used. Persists at spawn time
+  // so the reader doesn't need ASICODE_RUN_LOG_DIR set to find it.
+  log_path: z.string().optional(),
 
   outcome: RunOutcomeSchema,
   abort_reason: z.string().optional(),

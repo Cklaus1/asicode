@@ -43,7 +43,7 @@ interface BriefRow {
   pr_number: number | null; pr_url: string | null;
   reverted_within_7d: number; hotpatched_within_7d: number;
 }
-interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null; race_strategy: string | null }
+interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null; race_strategy: string | null; log_path: string | null }
 interface JudgeSummary { rows: number; composite: number | null }
 type ShipItSummary = { verdict: 'ship_it' | 'hold' | 'rollback'; reasons: string[]; signalsAvailable: number } | null
 
@@ -125,7 +125,7 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
 
   const runs = db.query<RunRow, [string]>(
     `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index,
-            verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail, race_strategy
+            verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail, race_strategy, log_path
      FROM runs WHERE brief_id = ? ORDER BY ts_started DESC`,
   ).all(args.briefId!)
 
@@ -163,8 +163,10 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
         was_race_winner: r.was_race_winner === 1, attempt_index: r.attempt_index,
         // REQ-37: stale=true when in_flight + ts_started exceeds threshold
         stale: isStaleInFlight(r.outcome, r.ts_started),
-        // REQ-44: deterministic log path the user can tail -f.
-        log_path: logPathFor(brief.brief_id, r.run_id, r.isolation_mode),
+        // REQ-44/45: log path the user can tail -f. Prefer the persisted
+        // column (REQ-45) so it matches what the writer used; fall back
+        // to env-based reconstruction for pre-REQ-45 rows.
+        log_path: r.log_path ?? logPathFor(brief.brief_id, r.run_id, r.isolation_mode),
         verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms, stderr_tail: r.verify_stderr_tail } : null,
       })),
       pr: (brief.pr_sha || brief.pr_number !== null) ? {
@@ -195,8 +197,8 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
     const dur = r.wall_clock_ms !== null ? `${(r.wall_clock_ms / 1000).toFixed(1)}s` : '?'
     const stale = isStaleInFlight(r.outcome, r.ts_started) ? ` ⚠ stale (started ${fmtAge(r.ts_started)})` : ''
     console.log(`    ${r.run_id}  ${r.outcome}${stale}  ${r.isolation_mode}  ${dur}${r.tokens_used !== null ? `  ${r.tokens_used}tok` : ''}`)
-    // REQ-44: log path for the latest run (tail -f hint).
-    console.log(`    log:         ${logPathFor(brief.brief_id, r.run_id, r.isolation_mode)}`)
+    // REQ-44/45: log path for the latest run (tail -f hint).
+    console.log(`    log:         ${r.log_path ?? logPathFor(brief.brief_id, r.run_id, r.isolation_mode)}`)
   }
   if (race) {
     console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}${race.strategy ? ` (${race.strategy})` : ''}`)

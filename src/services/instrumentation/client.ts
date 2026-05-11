@@ -36,7 +36,7 @@ import {
   type ToolCallRecord,
 } from './types'
 
-const SCHEMA_VERSION_REQUIRED = 8
+const SCHEMA_VERSION_REQUIRED = 9
 
 let _db: Database | null = null
 
@@ -227,7 +227,7 @@ export function recordRun(rec: RunRecord): void {
     `INSERT INTO runs (
        run_id, brief_id, ts_started, ts_completed,
        attempt_index, race_strategy, was_race_winner,
-       isolation_mode, worktree_path, asimux_pane,
+       isolation_mode, worktree_path, asimux_pane, log_path,
        outcome, abort_reason,
        loc_added, loc_removed, files_touched,
        tokens_used, wall_clock_ms, tool_calls_total,
@@ -235,7 +235,7 @@ export function recordRun(rec: RunRecord): void {
      ) VALUES (
        $run_id, $brief_id, $ts_started, $ts_completed,
        $attempt_index, $race_strategy, $was_race_winner,
-       $isolation_mode, $worktree_path, $asimux_pane,
+       $isolation_mode, $worktree_path, $asimux_pane, $log_path,
        $outcome, $abort_reason,
        $loc_added, $loc_removed, $files_touched,
        $tokens_used, $wall_clock_ms, $tool_calls_total,
@@ -252,6 +252,7 @@ export function recordRun(rec: RunRecord): void {
       $isolation_mode: parsed.isolation_mode,
       $worktree_path: parsed.worktree_path ?? null,
       $asimux_pane: parsed.asimux_pane ?? null,
+      $log_path: parsed.log_path ?? null,
       $outcome: parsed.outcome,
       $abort_reason: parsed.abort_reason ?? null,
       $loc_added: parsed.loc_added ?? null,

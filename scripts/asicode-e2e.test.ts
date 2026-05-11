@@ -208,7 +208,10 @@ describe('REQ-22 northstar walk-away (race + verifier + gate)', () => {
     expect(parsed.pr_gated).toBeUndefined()
     expect(parsed.pr_error).toContain('no_remote')
 
-    // Status surfaces the persisted state across all the new schemas.
+    // REQ-26: baseline ran (verifier passed on bare README, no marker.txt → grep fails → baseline=failed)
+    expect(parsed.race?.baseline_verify).toBe('failed')
+
+    // Status surfaces persisted state across REQ-14..44 chain.
     const stat = bun('asicode-status.ts', [parsed.brief_id, '--json'])
     expect(stat.code).toBe(0)
     const s = JSON.parse(stat.stdout)
@@ -217,6 +220,16 @@ describe('REQ-22 northstar walk-away (race + verifier + gate)', () => {
     const winnerRun = s.runs.find((r: { run_id: string }) => r.run_id === parsed.race.winner_run_id)
     expect(winnerRun?.verify?.outcome).toBe('passed')
     expect(winnerRun?.was_race_winner).toBe(true)
+    // REQ-30: race_strategy recorded (verifier_pick or fcfs; depends on
+    // whether both racers passed — they all run the same dispatch cmd
+    // so likely fcfs, but verifier_pick is also valid).
+    expect(s.race?.strategy).toMatch(/verifier_pick|fcfs|llm_tiebreak/)
+    // REQ-37: winner is no longer in_flight → not stale.
+    expect(winnerRun?.stale).toBe(false)
+    // REQ-44/45: log_path persisted at spawn time, returns the actual
+    // path the writer used (not reconstructed from reader's env).
+    expect(winnerRun?.log_path).toContain(parsed.race.winner_run_id + '.log')
+    expect(winnerRun?.log_path).toContain(join(tempDir, 'runlogs-pass'))
   }, 90_000)
 
   test('race + failing verifier → PR gated, stderr surfaced, brief recoverable', () => {

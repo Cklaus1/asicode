@@ -227,6 +227,7 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
         isolation_mode: 'worktree',
         attempt_index: wt.index,
         worktree_path: wt.path,
+        log_path: logPath,
         outcome: 'in_flight',
       })
     } catch { /* db may be unavailable; race continues */ }

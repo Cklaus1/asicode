@@ -144,6 +144,7 @@ function dispatchAgent(briefId: string, briefText: string, cwd: string, backgrou
     recordRun({
       run_id: runId, brief_id: briefId, ts_started: Date.now(),
       isolation_mode: 'in_process', outcome: 'in_flight',
+      log_path: logPath,
     })
   } catch (e) {
     // Don't kill the child for a bookkeeping miss. Log the failure.
