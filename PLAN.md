@@ -1,5 +1,6 @@
 @asicode v2 plan|2026-05-10|status=design
 northstar: see [GOALS.md](./GOALS.md) — every phase below is in service of "hand a brief, get a correct PR"
+practices: see [PRACTICES.md](./PRACTICES.md) — the engineering loop we bake into the build and the run
 
 # Legend
 - v1 = current asicode (forked openclaude @ 0.7.0; 585k LOC TypeScript)

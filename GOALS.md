@@ -1,6 +1,6 @@
 # asicode — north star, metrics, success criteria
 
-> Persistent across versions. PLAN.md is *how*; this is *why* and *how we know we're winning*.
+> Persistent across versions. PLAN.md is *how*; this is *why* and *how we know we're winning*. See [PRACTICES.md](./PRACTICES.md) for the engineering practices baked into both how we build and how the agent runs.
 
 ---
 
@@ -186,6 +186,31 @@ The primary metrics judge the harness as a whole. Each ASI feature also needs it
 - **Regression rate on adversarial-verified PRs ≤ 50% of baseline** — the whole point. If adversarial review doesn't halve regressions on the PRs it covers, it's not paying for itself.
 - **Cost ceiling ≤ 30% of brief budget** — adversarial verification should run on the same budget envelope as the main agent. If it doubles cost, it's not viable as a default-on.
 
+### A16 — Brief evaluation gate
+
+**Purpose:** garbage in, garbage out. asicode judges its *outputs* (3-panel judge) but doesn't judge its *inputs* — yet bad briefs produce bad PRs even with a perfect agent. A16 grades every incoming brief on five dimensions *before* asicode commits to attempting it, and either accepts, requests clarification, or refuses.
+
+**The five brief dimensions** (each 1–5, single LLM with structured-output schema):
+
+  - **ASI-readiness** — is this achievable autonomously, or does it inherently require human judgment (architectural decision, business call, stakeholder negotiation)?
+  - **Well-formedness** — are success criteria stated? Constraints clear? Scope bounded? Or is it "make it better"?
+  - **Verifier-shaped** — can the result be checked objectively? "Add login" (no) vs "Add OAuth login; these 5 test cases must pass; the existing auth tests must still pass" (yes).
+  - **Density / clarity** — is the brief itself dense and unambiguous, or padded and vague? asi-family aesthetic; predicts whether the agent has anything to anchor on.
+  - **Risk class** — production / experimental / throwaway? Determines which verifier tier (L1 only / L1+L2 / L1+L2+A15 adversarial) is applied.
+
+**Brief score composite:** mean of the first four. ASI-readiness <3 or verifier-shaped <3 are **veto dimensions** — auto-reject regardless of composite. Risk class is metadata, not a score.
+
+**Success criteria:**
+- **Brief acceptance precision ≥ 90%** — of briefs asicode *accepts*, fraction that produce a `merged_no_intervention` outcome. Below 90% means the gate isn't gating; asicode says "yes" to work it can't do.
+- **Brief rejection recall ≥ 80%** — of briefs asicode *should* reject (would have failed if attempted, judged retrospectively), fraction it actually rejected. Below 80% means too much bad work gets through.
+- **Clarification round-trip ≤ 1 turn** — when the gate requests clarification, the user typically replies once and asicode accepts. >1 turn average means the gate is over-asking or asking the wrong questions.
+- **Brief density / verifier-shaped lift over time** — track scores per user; if they trend up (median +0.5 over 30 briefs), the gate is *teaching* better brief-writing. If they don't trend up, the feedback isn't actionable.
+- **Veto false-positive rate ≤ 10%** — of briefs vetoed on ASI-readiness or verifier-shaped, fraction the user successfully appeals (and which then succeed). Above 10%, the gate is overcautious.
+
+**Kill criterion:** if at v2.5 brief acceptance precision is <80% (the gate doesn't gate) AND the brief-quality lift isn't happening (gate doesn't teach), drop it — it's adding latency without adding value.
+
+**Interaction with A12 (brief mode):** A16 is the *gate*; A12 is the *expansion*. Pipeline: incoming paragraph → A16 grades → if accepted, A12 expands → user approves expansion → asicode runs. A16 runs even when the user is using plain plan mode (not brief mode); brief mode just makes A16 visible and editable.
+
 ---
 
 ## Anti-goals (what asicode is NOT)
@@ -238,6 +263,7 @@ If a quarter goes by and the Autonomy Index hasn't moved, **we built the wrong t
 | Best-of-N race speedup | n/a | feature not shipped (P0 #4 / A10 still TODO) |
 | Plan retrieval prior hit rate | n/a | feature not shipped (A8) |
 | Brief acceptance rate | n/a | brief mode not shipped (A12) |
+| Brief evaluation gate metrics | n/a | feature not shipped (A16) |
 
 **Immediate next action: v1.0 metrics instrumentation.** None of the success criteria can be evaluated until:
 
