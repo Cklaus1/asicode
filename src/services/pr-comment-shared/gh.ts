@@ -200,3 +200,127 @@ export async function postPrComment(opts: {
     child.stdin.end(opts.body)
   })
 }
+
+// ─── Pure helpers (testable without gh) ──────────────────────────────
+
+/**
+ * Parse the `gh pr create` stdout. Returns the PR number when the
+ * output contains a github.com/.../pull/<N> URL, null otherwise.
+ * Exported via _testing so tests can exercise it without spawning gh.
+ */
+function parsePrCreateOutput(stdout: string): { prNumber: number; url: string } | null {
+  const trimmed = stdout.trim()
+  const url = trimmed.split('\n').find(line => line.includes('/pull/')) ?? trimmed
+  const m = url.match(/\/pull\/(\d+)/)
+  if (!m) return null
+  return { prNumber: parseInt(m[1], 10), url }
+}
+
+/**
+ * Classify a `gh pr create` failure based on stderr. The "already exists"
+ * case is benign (we re-attempted the same branch); other failures are
+ * real errors. Exported via _testing for unit coverage.
+ */
+function classifyPrCreateFailure(stderr: string): 'already_exists' | 'gh_failed' {
+  return /already exists/i.test(stderr) ? 'already_exists' : 'gh_failed'
+}
+
+export const _testing = {
+  parsePrCreateOutput,
+  classifyPrCreateFailure,
+}
+
+// ─── PR creation (iter 68, REQ-2.2) ──────────────────────────────────
+//
+// Used by auto-revert (REQ-2.3) to open a revert PR from a local
+// branch. Soft-fails like the rest of this module — returns a
+// structured result so the caller decides whether to retry, queue,
+// or surface the failure to the user.
+
+export interface CreatePrInput {
+  branch: string
+  base: string
+  title: string
+  body: string
+  repoPath: string
+  timeoutMs?: number
+  /** Optional draft flag — passed through as `--draft` to gh. */
+  draft?: boolean
+}
+
+export type CreatePrOutcome =
+  | { ok: true; prNumber: number; url: string }
+  | { ok: false; reason: 'gh_failed' | 'already_exists' | 'parse_error'; stderr?: string }
+
+/**
+ * Spawn `gh pr create --base <base> --head <branch> --title <title>
+ * --body-file -`. Body is piped via stdin so multi-line markdown
+ * doesn't need argv-escaping (same pattern as postPrComment).
+ *
+ * Idempotency: if gh reports "a pull request for branch X already
+ * exists", returns ok:false reason:'already_exists' (caller treats
+ * as success — the PR is already there).
+ */
+export async function createPrFromBranch(opts: CreatePrInput): Promise<CreatePrOutcome> {
+  const timeoutMs = opts.timeoutMs ?? 20_000
+  return new Promise<CreatePrOutcome>(resolve => {
+    let out = ''
+    let err = ''
+    let settled = false
+    const args = [
+      'pr',
+      'create',
+      '--base', opts.base,
+      '--head', opts.branch,
+      '--title', opts.title,
+      '--body-file', '-',
+    ]
+    if (opts.draft) args.push('--draft')
+
+    const child = spawn('gh', args, {
+      cwd: opts.repoPath,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const timer = setTimeout(() => {
+      child.kill()
+      if (!settled) {
+        settled = true
+        resolve({ ok: false, reason: 'gh_failed', stderr: 'timeout' })
+      }
+    }, timeoutMs)
+    child.stdout.on('data', (chunk: Buffer) => {
+      out += chunk.toString('utf-8')
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      err += chunk.toString('utf-8')
+    })
+    child.on('error', e => {
+      clearTimeout(timer)
+      if (!settled) {
+        settled = true
+        resolve({ ok: false, reason: 'gh_failed', stderr: e.message })
+      }
+    })
+    child.on('close', code => {
+      clearTimeout(timer)
+      if (settled) return
+      settled = true
+      if (code !== 0) {
+        // gh prints "a pull request for branch X already exists" when
+        // we re-attempt. That's expected; treat as already_exists.
+        const reason = classifyPrCreateFailure(err)
+        resolve({ ok: false, reason, stderr: err.trim() })
+        return
+      }
+      // gh prints the PR URL on stdout, e.g.
+      //   https://github.com/Cklaus1/asicode/pull/42
+      const parsed = parsePrCreateOutput(out)
+      if (!parsed) {
+        resolve({ ok: false, reason: 'parse_error', stderr: out.trim() })
+        return
+      }
+      resolve({ ok: true, prNumber: parsed.prNumber, url: parsed.url })
+    })
+    child.stdin.end(opts.body)
+  })
+}

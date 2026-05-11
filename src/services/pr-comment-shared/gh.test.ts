@@ -253,3 +253,8 @@ describe('postPrComment — idempotency marker', () => {
     expect(outcome).toBe('failed')
   })
 })
+
+// Pure-helper tests for createPrFromBranch (parsePrCreateOutput,
+// classifyPrCreateFailure) live in gh-helpers.test.ts — keeping them
+// out of this file avoids running the spawn-monkey-patch beforeEach
+// for tests that don't need it.
