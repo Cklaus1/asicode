@@ -99,6 +99,46 @@ export function _resetAdapterForTest() {
   tsCounter = 0
 }
 
+// ─── Veto gate (iter 63) ─────────────────────────────────────────────
+//
+// V1 callers invoke this after adaptBeginRun and before dispatching
+// the first tool. When ASICODE_BRIEF_VETO_ENABLED=1 and A16 grades
+// the brief 'reject', returns vetoed=true so the caller aborts the
+// run. Default behavior (flag unset): always vetoed=false. Detailed
+// gate logic + override path live in brief-gate/veto.ts.
+
+export interface AdapterVetoResult {
+  vetoed: boolean
+  reason: string
+  /** When vetoed, the A16 composite at gate time. */
+  composite?: number | null
+  /** When vetoed, the A16 reason text (if any). */
+  reasonText?: string
+}
+
+/**
+ * Synchronous veto check at run-start. The v1 caller awaits this
+ * between adaptBeginRun and the first tool dispatch. When vetoed,
+ * the caller should call adaptFinalizeRun with outcome='aborted'.
+ */
+export async function checkVetoForRun(
+  briefId: string,
+  briefText: string,
+): Promise<AdapterVetoResult> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const veto = require('../brief-gate/veto.js') as typeof import('../brief-gate/veto')
+  const result = await veto.checkBriefVeto({ briefId, briefText })
+  if (result.vetoed) {
+    return {
+      vetoed: true,
+      reason: 'a16_reject',
+      composite: result.composite,
+      reasonText: result.reasonText,
+    }
+  }
+  return { vetoed: false, reason: result.reason }
+}
+
 // ─── Lifecycle hooks ──────────────────────────────────────────────────
 
 /**
