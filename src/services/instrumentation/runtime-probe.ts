@@ -21,9 +21,28 @@
  */
 
 import { Database } from 'bun:sqlite'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { SCHEMA_VERSION_REQUIRED } from './client'
+
+// REQ-58: validate the first executable token of a verify cmd exists
+// on PATH. Catches stale binaries (`pytestt`, `bun` not installed) so
+// the probe surfaces the gap before the first race hits verifier_error.
+// Returns the token when missing, null when found / unparseable.
+function findMissingBinary(cmd: string): string | null {
+  // Strip leading env-var assignments (FOO=bar baz) then take the first
+  // whitespace-delimited token.
+  const tokens = cmd.trim().split(/\s+/).filter(t => !/^[A-Z_][A-Z0-9_]*=/i.test(t))
+  const first = tokens[0]
+  if (!first || first.startsWith('!') || first.includes('/')) return null  // bash builtin / absolute path → skip
+  // Shell builtins / control words — skip.
+  if (['if', 'while', 'for', 'true', 'false', 'echo', 'test', '[', ':'].includes(first)) return null
+  const r = spawnSync('command', ['-v', first])
+  if (r.status === 0) return null
+  // command -v not portable across all shells; try `which` as fallback.
+  const w = spawnSync('which', [first])
+  return w.status === 0 ? null : first
+}
 
 function readDbSchemaVersion(dbPath: string): number | null {
   try {
@@ -531,14 +550,28 @@ export async function probeRuntime(): Promise<ProbeReport> {
   const verifyExplicit = process.env.ASICODE_VERIFY_CMD?.trim()
   const autodetectOff = process.env.ASICODE_VERIFY_AUTODETECT === '0'
   if (verifyExplicit) {
-    checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18: verifier gates race winner', status: 'ok', detail: `Set explicitly: \`${verifyExplicit}\`. Each racer runs this; passing racers outrank failing.` })
-    enabled.push('verifier')
+    // REQ-58: validate first token is on PATH so the user catches stale
+    // binaries before the first race hits verifier_error.
+    const missing = findMissingBinary(verifyExplicit)
+    if (missing) {
+      checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18: verifier gates race winner', status: 'misconfigured', detail: `Set to \`${verifyExplicit}\` but binary \`${missing}\` is not on $PATH. Every racer will hit verifier_error. Install \`${missing}\` or fix the cmd.` })
+      blocked.push({ capability: 'verifier', reason: `binary missing: ${missing}` })
+    } else {
+      checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18: verifier gates race winner', status: 'ok', detail: `Set explicitly: \`${verifyExplicit}\`. Each racer runs this; passing racers outrank failing.` })
+      enabled.push('verifier')
+    }
   } else if (!autodetectOff) {
     let detected: { cmd: string; source: string } | null = null
     try { detected = (await import('../parallel/verifyDetect.js')).detectVerifyCmd(process.cwd()) } catch { /* skip */ }
     if (detected) {
-      checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18/24: verifier gates race winner', status: 'ok', detail: `Auto-detected (${detected.source}): \`${detected.cmd}\`. Set ASICODE_VERIFY_CMD explicitly to override.` })
-      enabled.push('verifier')
+      const missing = findMissingBinary(detected.cmd)
+      if (missing) {
+        checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18/24: verifier gates race winner', status: 'misconfigured', detail: `Auto-detected (${detected.source}): \`${detected.cmd}\` — but \`${missing}\` is not on $PATH. Install it or set ASICODE_VERIFY_CMD explicitly.` })
+        blocked.push({ capability: 'verifier', reason: `auto-detected binary missing: ${missing}` })
+      } else {
+        checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18/24: verifier gates race winner', status: 'ok', detail: `Auto-detected (${detected.source}): \`${detected.cmd}\`. Set ASICODE_VERIFY_CMD explicitly to override.` })
+        enabled.push('verifier')
+      }
     } else {
       checks.push({ name: 'ASICODE_VERIFY_CMD', expectation: 'REQ-18: verifier gates race winner', status: 'missing', detail: 'Unset and auto-detect found no markers (bun.lock/Cargo.toml/pyproject.toml/scripts.test). Race winner picked by FCFS. Set ASICODE_VERIFY_CMD or add a project marker file.' })
       unconfigured.push('verifier')

@@ -643,3 +643,53 @@ describe('REQ-55 schema version check', () => {
     expect(check.detail).toContain('requires v')
   })
 })
+
+// REQ-58: probe validates VERIFY_CMD binary on PATH.
+describe('REQ-58 VERIFY_CMD binary check', () => {
+  test('valid binary (`true`) → ok', async () => {
+    process.env.ASICODE_VERIFY_CMD = 'true'
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    expect(check.status).toBe('ok')
+    expect(r.enabled).toContain('verifier')
+  })
+
+  test('missing binary → misconfigured + blocked', async () => {
+    process.env.ASICODE_VERIFY_CMD = 'definitely-not-a-real-binary-xyzzy123 --foo'
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    expect(check.status).toBe('misconfigured')
+    expect(check.detail).toContain('definitely-not-a-real-binary-xyzzy123')
+    expect(check.detail).toContain('not on $PATH')
+    expect(r.blocked.some(b => b.capability === 'verifier')).toBe(true)
+  })
+
+  test('skips validation for shell builtins (echo, true, test)', async () => {
+    process.env.ASICODE_VERIFY_CMD = 'echo "ok"'
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    expect(check.status).toBe('ok')
+  })
+
+  test('skips validation for absolute paths (/bin/true)', async () => {
+    process.env.ASICODE_VERIFY_CMD = '/bin/true'
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    expect(check.status).toBe('ok')
+  })
+
+  test('handles env-var prefix (FOO=bar bun test)', async () => {
+    process.env.ASICODE_VERIFY_CMD = 'NODE_ENV=test bun test'
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    // bun is on PATH in this test env
+    expect(check.status).toBe('ok')
+  })
+
+  test('compound shell (! test -f foo) skipped', async () => {
+    process.env.ASICODE_VERIFY_CMD = '! test -f marker.txt'
+    const r = await probeRuntime()
+    const check = r.checks.find(c => c.name === 'ASICODE_VERIFY_CMD')!
+    expect(check.status).toBe('ok')
+  })
+})
