@@ -53,6 +53,8 @@ type AdapterEntry = {
   briefText: string
   /** Cached so the density trigger has the repoPath at finalize. */
   projectPath: string
+  /** Cached so the plan-retrieval trigger has the fingerprint at finalize. */
+  projectFingerprint: string
 }
 
 const map = new Map<string, AdapterEntry>()
@@ -144,6 +146,7 @@ export function adaptBeginRun(
       toolCallCount: 0,
       briefText: initialPrompt,
       projectPath: cwd,
+      projectFingerprint,
     })
 
     // Fire the A12 expander trigger first when opted in — its async
@@ -162,6 +165,24 @@ export function adaptBeginRun(
       evaluateBriefOnSubmit: (input: { briefId: string; briefText: string }) => void
     }
     briefGate.evaluateBriefOnSubmit({ briefId, briefText: initialPrompt })
+
+    // A8 plan-retrieval: at brief-submit, embed + query the index.
+    // Fire-and-forget; hits land in the retrievals table for later
+    // inspection. The planner wire-up (handing hits back into the
+    // agent's context) is a separate seam — this just collects data.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const planTrigger = require('../plan-retrieval/trigger.js') as {
+      retrievePriorAttemptsAsync: (input: {
+        briefId: string
+        briefText: string
+        projectFingerprint: string
+      }) => void
+    }
+    planTrigger.retrievePriorAttemptsAsync({
+      briefId,
+      briefText: initialPrompt,
+      projectFingerprint,
+    })
 
     return { briefId, runId }
   })
@@ -306,7 +327,56 @@ export function adaptFinalizeRun(
     })
   }
 
+  // A8 plan-retrieval: record this attempt's outcome into the corpus
+  // so future briefs benefit. Maps v1 run outcomes onto the plan-index's
+  // outcome_signal enum: completed/merged → success; aborted → aborted;
+  // crashed → failure; budget_exhausted → budget_exhausted; else → unknown.
+  const runOutcomeForCorpus = mapRunOutcomeToCorpusSignal(opts.runOutcome, opts.prOutcome)
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const planTrigger = require('../plan-retrieval/trigger.js') as {
+    recordOutcomeToCorpusAsync: (input: {
+      briefId: string
+      briefText: string
+      projectFingerprint: string
+      outcomeSignal: 'success' | 'failure' | 'aborted' | 'budget_exhausted' | 'unknown'
+    }) => void
+  }
+  planTrigger.recordOutcomeToCorpusAsync({
+    briefId: entry.briefId,
+    briefText: entry.briefText,
+    projectFingerprint: entry.projectFingerprint,
+    outcomeSignal: runOutcomeForCorpus,
+  })
+
   map.delete(taskId)
+}
+
+function mapRunOutcomeToCorpusSignal(
+  runOutcome: RunOutcome | undefined,
+  prOutcome: PrOutcome | undefined,
+): 'success' | 'failure' | 'aborted' | 'budget_exhausted' | 'unknown' {
+  // PR outcome is the brief-level truth; prefer it when present.
+  if (prOutcome === 'merged_no_intervention' || prOutcome === 'merged_with_intervention') {
+    return 'success'
+  }
+  if (prOutcome === 'reverted' || prOutcome === 'abandoned') {
+    return 'failure'
+  }
+  // Fallback to run outcome
+  switch (runOutcome) {
+    case 'completed':
+      return 'success'
+    case 'crashed':
+      return 'failure'
+    case 'aborted':
+      return 'aborted'
+    case 'budget_exhausted':
+      return 'budget_exhausted'
+    case 'killed':
+      return 'aborted'
+    default:
+      return 'unknown'
+  }
 }
 
 // ─── Suppression to keep the v1 taskId param "unused" lint quiet ─────
