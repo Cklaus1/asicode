@@ -51,6 +51,8 @@ type AdapterEntry = {
   toolCallCount: number
   /** Cached at beginRun so the trigger has it at finalize time. */
   briefText: string
+  /** Cached so the density trigger has the repoPath at finalize. */
+  projectPath: string
 }
 
 const map = new Map<string, AdapterEntry>()
@@ -141,6 +143,7 @@ export function adaptBeginRun(
       startedAtMs: now,
       toolCallCount: 0,
       briefText: initialPrompt,
+      projectPath: cwd,
     })
     return { briefId, runId }
   })
@@ -247,15 +250,17 @@ export function adaptFinalizeRun(
     })
   })
 
-  // Fire judges if this brief produced a merged PR and the user has
-  // opted into live scoring. The diff is optional — the trigger will
-  // fetch it via `git show <prSha>` when omitted. Lazy-require avoids
-  // an import cycle and keeps the recorder path lean when judges are off.
+  // Fire judges + density on a merged PR. The diff is optional — judge
+  // trigger fetches it via `git show <prSha>` when omitted. Both triggers
+  // are independently opt-in (ASICODE_JUDGES_ENABLED, ASICODE_DENSITY_ENABLED)
+  // so the recorder path stays lean when either is off.
+  // Lazy-require avoids import cycles and ensures the modules aren't
+  // even loaded when the env flags are unset.
   const isMerged =
     opts.prOutcome === 'merged_no_intervention' || opts.prOutcome === 'merged_with_intervention'
   if (isMerged && opts.prSha) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const trigger = require('../judges/trigger.js') as {
+    const judgeTrigger = require('../judges/trigger.js') as {
       judgeOnPrMerge: (input: {
         briefId?: string
         prSha: string
@@ -263,11 +268,23 @@ export function adaptFinalizeRun(
         diff?: string
       }) => void
     }
-    trigger.judgeOnPrMerge({
+    judgeTrigger.judgeOnPrMerge({
       briefId: entry.briefId,
       prSha: opts.prSha,
       briefText: entry.briefText,
       diff: opts.diff,
+    })
+
+    // Density needs a repo path. The brief's project_path is what we have
+    // on hand from beginRun's cwd argument — use that.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const densityTrigger = require('./density-trigger.js') as {
+      densityOnPrMerge: (input: { prSha: string; briefId?: string; repoPath: string }) => void
+    }
+    densityTrigger.densityOnPrMerge({
+      prSha: opts.prSha,
+      briefId: entry.briefId,
+      repoPath: entry.projectPath,
     })
   }
 
