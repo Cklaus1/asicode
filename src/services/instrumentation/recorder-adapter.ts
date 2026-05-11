@@ -49,6 +49,8 @@ type AdapterEntry = {
   runId: string
   startedAtMs: number
   toolCallCount: number
+  /** Cached at beginRun so the trigger has it at finalize time. */
+  briefText: string
 }
 
 const map = new Map<string, AdapterEntry>()
@@ -138,6 +140,7 @@ export function adaptBeginRun(
       runId,
       startedAtMs: now,
       toolCallCount: 0,
+      briefText: initialPrompt,
     })
     return { briefId, runId }
   })
@@ -214,6 +217,9 @@ export function adaptFinalizeRun(
     filesTouched?: number
     tokensUsed?: number
     abortReason?: string
+    /** Unified diff of the merged PR. If present + prOutcome is a merge,
+     *  the judge trigger fires (subject to ASICODE_JUDGES_ENABLED). */
+    diff?: string
   } = {},
 ): void {
   if (!taskId) return
@@ -240,6 +246,25 @@ export function adaptFinalizeRun(
       pr_outcome: opts.prOutcome,
     })
   })
+
+  // Fire judges if this brief produced a merged PR and the user has
+  // opted into live scoring. Lazy-import to avoid an import cycle and
+  // to keep the recorder path lean when judges are off.
+  const isMerged =
+    opts.prOutcome === 'merged_no_intervention' || opts.prOutcome === 'merged_with_intervention'
+  if (isMerged && opts.prSha && opts.diff) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const trigger = require('../judges/trigger.js') as {
+      judgeOnPrMerge: (input: { briefId?: string; prSha: string; briefText: string; diff: string }) => void
+    }
+    trigger.judgeOnPrMerge({
+      briefId: entry.briefId,
+      prSha: opts.prSha,
+      briefText: entry.briefText,
+      diff: opts.diff,
+    })
+  }
+
   map.delete(taskId)
 }
 
