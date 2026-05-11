@@ -69,7 +69,7 @@ function parseArgs(argv: string[]): Args {
   return args
 }
 
-function formatTickResult(r: Awaited<ReturnType<typeof pollMergedPrs>>): string {
+export function formatTickResult(r: Awaited<ReturnType<typeof pollMergedPrs>>): string {
   const parts: string[] = []
   parts.push(`prs=${r.prsFound}`)
   if (r.alreadyAttached) parts.push(`already-attached=${r.alreadyAttached}`)
@@ -87,6 +87,10 @@ function formatTickResult(r: Awaited<ReturnType<typeof pollMergedPrs>>): string 
     }
   }
   if (r.shipItPending) parts.push(`ship-it-pending=${r.shipItPending}`)
+  // REQ-40: self-healing visibility — REQ-38/39 silently fix dead rows;
+  // surface the counts so operators see what the daemon did.
+  if (r.staleRunsReaped) parts.push(`reaped=${r.staleRunsReaped}`)
+  if (r.briefsAbandoned) parts.push(`abandoned=${r.briefsAbandoned}`)
   if (r.revertsOpened.length) {
     parts.push(`auto-reverts=${r.revertsOpened.length}`)
     for (const rv of r.revertsOpened) {
@@ -144,7 +148,11 @@ async function main() {
   process.exit(0)
 }
 
-main().catch(e => {
-  console.error(e instanceof Error ? e.stack : String(e))
-  process.exit(1)
-})
+// Only run main() when this script is the entry point (not when
+// imported by a test for the formatter).
+if (import.meta.main) {
+  main().catch(e => {
+    console.error(e instanceof Error ? e.stack : String(e))
+    process.exit(1)
+  })
+}
