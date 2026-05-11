@@ -56,6 +56,7 @@
     "instrumentation:calibrate": "bun run scripts/instrumentation-calibrate.ts",
     "instrumentation:reconcile": "bun run scripts/instrumentation-reconcile.ts",
     "instrumentation:retro": "bun run scripts/instrumentation-retro.ts",
+    "instrumentation:brief": "bun run scripts/instrumentation-brief.ts",
     "setup:trainloop": "bun run scripts/setup-trainloop.ts",
     "hardening:check": "bun run smoke && bun run doctor:runtime",
     "hardening:strict": "bun run typecheck && bun run hardening:check",
