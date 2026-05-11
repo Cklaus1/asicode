@@ -325,6 +325,34 @@ export function adaptFinalizeRun(
       briefId: entry.briefId,
       repoPath: entry.projectPath,
     })
+
+    // A15 adversarial verifier. The trigger reads the brief's
+    // a16_risk_class internally and skips experimental/throwaway
+    // (per GOALS.md cost ceiling). Diff is optional from the caller;
+    // when omitted, we don't fire — adversarial review without a
+    // diff to attack is nothing.
+    if (opts.diff) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const adversarialTrigger = require('../adversarial/trigger.js') as {
+        adversarialVerifyOnPrMerge: (input: {
+          briefId: string
+          runId: string
+          briefText: string
+          diff: string
+          riskClass?: 'production' | 'experimental' | 'throwaway' | 'security'
+        }) => void
+        lookupRiskClass: (briefId: string) => string | undefined
+      }
+      const riskClass = adversarialTrigger.lookupRiskClass(entry.briefId) as
+        | 'production' | 'experimental' | 'throwaway' | 'security' | undefined
+      adversarialTrigger.adversarialVerifyOnPrMerge({
+        briefId: entry.briefId,
+        runId: entry.runId,
+        briefText: entry.briefText,
+        diff: opts.diff,
+        riskClass,
+      })
+    }
   }
 
   // A8 plan-retrieval: record this attempt's outcome into the corpus
