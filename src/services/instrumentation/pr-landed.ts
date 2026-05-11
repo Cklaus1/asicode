@@ -287,6 +287,51 @@ export async function recordPrLandedByTaskId(input: {
   })
 }
 
+/**
+ * Find the most-recently-submitted brief in `projectPath` that still has
+ * no pr_sha. Used by the auto-discovery path in the pr-landed CLI so the
+ * user can paste a merge sha without remembering which brief_id it belongs
+ * to — for the common single-brief-per-project workflow.
+ *
+ * Returns null when:
+ *   - no eligible brief (no submitted briefs in this project, or all are
+ *     already attached to a PR)
+ *   - the db isn't reachable (caller surfaces this)
+ *
+ * Ambiguity guard: when multiple unmatched briefs exist in the same project,
+ * the caller is expected to disambiguate by passing --brief explicitly.
+ * This function picks the most recent and lets the caller check
+ * .ambiguous to decide whether to warn.
+ */
+export function findLatestUnmatchedBrief(projectPath: string): {
+  briefId: string
+  userText: string
+  tsSubmitted: number
+  ambiguous: boolean
+} | null {
+  const db = openInstrumentationDb()
+  const rows = db
+    .query<
+      { brief_id: string; user_text: string; ts_submitted: number },
+      [string]
+    >(
+      `SELECT brief_id, user_text, ts_submitted
+       FROM briefs
+       WHERE project_path = ?
+         AND pr_sha IS NULL
+       ORDER BY ts_submitted DESC
+       LIMIT 2`,
+    )
+    .all(projectPath)
+  if (rows.length === 0) return null
+  return {
+    briefId: rows[0].brief_id,
+    userText: rows[0].user_text,
+    tsSubmitted: rows[0].ts_submitted,
+    ambiguous: rows.length > 1,
+  }
+}
+
 async function fetchDiff(prSha: string, repoPath: string): Promise<string | null> {
   if (!existsSync(repoPath)) return null
   void join // suppress unused-import warning until used elsewhere

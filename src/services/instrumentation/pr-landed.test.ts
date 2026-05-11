@@ -17,7 +17,11 @@ import {
   recordBrief,
   recordRun,
 } from './client'
-import { _resetPrLandedForTest, recordPrLanded } from './pr-landed'
+import {
+  _resetPrLandedForTest,
+  findLatestUnmatchedBrief,
+  recordPrLanded,
+} from './pr-landed'
 
 const MIGRATION_PATH = join(
   import.meta.dir,
@@ -270,5 +274,65 @@ describe('recordPrLanded — trigger fan-out', () => {
     expect(r.fired).toContain('judges') // judges trigger tolerates missing diff
     expect(r.fired).not.toContain('density')
     expect(r.fired).not.toContain('adversarial')
+  })
+})
+
+describe('findLatestUnmatchedBrief', () => {
+  function seedAt(briefId: string, projectPath: string, tsSubmitted: number, prSha: string | null = null) {
+    recordBrief({
+      brief_id: briefId,
+      ts_submitted: tsSubmitted,
+      project_path: projectPath,
+      project_fingerprint: 'fp',
+      user_text: `text for ${briefId}`,
+      a16_decision: 'accept',
+    })
+    if (prSha) {
+      const db = openInstrumentationDb()
+      db.run('UPDATE briefs SET pr_sha = ? WHERE brief_id = ?', [prSha, briefId])
+    }
+  }
+
+  test('returns null when no briefs exist for project', () => {
+    expect(findLatestUnmatchedBrief('/nonexistent/path')).toBeNull()
+  })
+
+  test('returns null when all briefs already have pr_sha', () => {
+    seedAt('b1', '/proj-a', 1000, 'sha1')
+    seedAt('b2', '/proj-a', 2000, 'sha2')
+    expect(findLatestUnmatchedBrief('/proj-a')).toBeNull()
+  })
+
+  test('picks the single unmatched brief', () => {
+    seedAt('b1', '/proj-a', 1000)
+    const r = findLatestUnmatchedBrief('/proj-a')
+    expect(r).not.toBeNull()
+    expect(r!.briefId).toBe('b1')
+    expect(r!.ambiguous).toBe(false)
+  })
+
+  test('picks the most recent when multiple exist, flags ambiguous', () => {
+    seedAt('older', '/proj-a', 1000)
+    seedAt('newer', '/proj-a', 2000)
+    const r = findLatestUnmatchedBrief('/proj-a')
+    expect(r!.briefId).toBe('newer')
+    expect(r!.ambiguous).toBe(true)
+  })
+
+  test('skips briefs that already have pr_sha', () => {
+    seedAt('attached', '/proj-a', 2000, 'sha-attached')
+    seedAt('open', '/proj-a', 1000)
+    const r = findLatestUnmatchedBrief('/proj-a')
+    expect(r!.briefId).toBe('open')
+    expect(r!.ambiguous).toBe(false)
+  })
+
+  test('respects project_path scope', () => {
+    seedAt('a-brief', '/proj-a', 2000)
+    seedAt('b-brief', '/proj-b', 1000)
+    const ra = findLatestUnmatchedBrief('/proj-a')
+    const rb = findLatestUnmatchedBrief('/proj-b')
+    expect(ra!.briefId).toBe('a-brief')
+    expect(rb!.briefId).toBe('b-brief')
   })
 })

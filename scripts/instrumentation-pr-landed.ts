@@ -4,8 +4,14 @@
  *
  * Usage:
  *   bun run instrumentation:pr-landed --brief brf_XXX --sha abc1234
- *   bun run instrumentation:pr-landed --brief brf_XXX --sha abc1234 --outcome merged_with_intervention --reason "reviewer caught a typo"
- *   bun run instrumentation:pr-landed --brief brf_XXX --sha abc1234 --json
+ *   bun run instrumentation:pr-landed --sha abc1234                     # auto-discover brief from cwd
+ *   bun run instrumentation:pr-landed --sha abc1234 --outcome merged_with_intervention --reason "..."
+ *   bun run instrumentation:pr-landed --sha abc1234 --json
+ *
+ * Auto-discovery: when --brief is omitted, the CLI looks at the current
+ * working directory and picks the most recent in-flight brief (pr_sha IS
+ * NULL) for that project. Refuses when multiple unmatched briefs exist
+ * — pass --brief explicitly to disambiguate.
  *
  * Triggers the merge-time fan-out: judges + density + adversarial.
  * Each is independently env-gated; this CLI just records the event
@@ -13,11 +19,15 @@
  *
  * Exit codes:
  *   0  recorded successfully (regardless of which downstream triggers fired)
- *   1  not recorded (brief not found, invalid sha, db unreachable)
+ *   1  not recorded (brief not found, invalid sha, db unreachable, ambiguous)
  *   2  argument or environment error
  */
 
-import { recordPrLanded, type PrLandedResult } from '../src/services/instrumentation/pr-landed'
+import {
+  findLatestUnmatchedBrief,
+  recordPrLanded,
+  type PrLandedResult,
+} from '../src/services/instrumentation/pr-landed'
 import type { PrOutcome } from '../src/services/instrumentation/types'
 
 interface Args {
@@ -76,14 +86,11 @@ function parseArgs(argv: string[]): Args {
     console.error(`argument error: ${e instanceof Error ? e.message : String(e)}`)
     process.exit(2)
   }
-  if (!args.briefId) {
-    console.error('--brief BRIEF_ID required')
-    process.exit(2)
-  }
   if (!args.prSha) {
     console.error('--sha PR_SHA required')
     process.exit(2)
   }
+  // brief_id can be omitted; auto-discovery happens in main()
   return args
 }
 
@@ -93,6 +100,35 @@ async function main() {
   if (!process.env.ASICODE_INSTRUMENTATION_DB) {
     console.error('ASICODE_INSTRUMENTATION_DB must point at a migrated db')
     process.exit(2)
+  }
+
+  // Auto-discovery: when --brief omitted, look up the most recent
+  // unmatched brief for cwd. Refuses on ambiguity (multiple unmatched
+  // briefs in the same project) — user passes --brief explicitly then.
+  if (!args.briefId) {
+    let candidate
+    try {
+      candidate = findLatestUnmatchedBrief(process.cwd())
+    } catch (e) {
+      console.error(`auto-discovery failed: ${e instanceof Error ? e.message : String(e)}`)
+      process.exit(2)
+    }
+    if (!candidate) {
+      console.error(
+        `--brief omitted and no unmatched briefs found in ${process.cwd()}. Pass --brief BRIEF_ID explicitly.`,
+      )
+      process.exit(1)
+    }
+    if (candidate.ambiguous) {
+      console.error(
+        `--brief omitted but multiple unmatched briefs exist in ${process.cwd()}. Pass --brief BRIEF_ID explicitly. Most recent: ${candidate.briefId} ("${candidate.userText.slice(0, 50)}")`,
+      )
+      process.exit(1)
+    }
+    args.briefId = candidate.briefId
+    if (!args.json) {
+      console.error(`auto-discovered brief=${candidate.briefId} "${candidate.userText.slice(0, 50)}"`)
+    }
   }
 
   let result: PrLandedResult
