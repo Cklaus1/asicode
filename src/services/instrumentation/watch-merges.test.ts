@@ -220,3 +220,70 @@ describe('pollMergedPrs — pending ship-it processing (iter 60)', () => {
     expect(r.revertsOpened).toEqual([])
   })
 })
+
+// REQ-38: reap stale in_flight runs each poll tick.
+describe('reapStaleRuns (REQ-38)', () => {
+  function seedRun(runId: string, briefId: string, outcome: string, tsStarted: number) {
+    const db = openInstrumentationDb()
+    db.run(
+      `INSERT OR IGNORE INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [briefId, tsStarted, repoDir, 'fp', 't', 'accept'],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome)
+       VALUES (?, ?, ?, ?, ?)`,
+      [runId, briefId, tsStarted, 'in_process', outcome],
+    )
+  }
+
+  test('updates in_flight + old → crashed + stale_no_recorder_update', async () => {
+    const { reapStaleRuns } = await import('./watch-merges.js')
+    seedRun('run_old', 'brf_r1', 'in_flight', Date.now() - 7 * 60 * 60_000)  // 7h ago, > 6h default
+    const { reaped } = reapStaleRuns()
+    expect(reaped).toBe(1)
+    const db = openInstrumentationDb()
+    const row = db.query<{ outcome: string; abort_reason: string | null; ts_completed: number | null }, [string]>(
+      `SELECT outcome, abort_reason, ts_completed FROM runs WHERE run_id = ?`,
+    ).get('run_old')
+    expect(row?.outcome).toBe('crashed')
+    expect(row?.abort_reason).toBe('stale_no_recorder_update')
+    expect(typeof row?.ts_completed).toBe('number')
+  })
+
+  test('leaves fresh in_flight alone (<6h)', async () => {
+    const { reapStaleRuns } = await import('./watch-merges.js')
+    seedRun('run_fresh', 'brf_r2', 'in_flight', Date.now() - 30 * 60_000)  // 30m ago
+    const { reaped } = reapStaleRuns()
+    expect(reaped).toBe(0)
+    const db = openInstrumentationDb()
+    const row = db.query<{ outcome: string }, [string]>(
+      `SELECT outcome FROM runs WHERE run_id = ?`,
+    ).get('run_fresh')
+    expect(row?.outcome).toBe('in_flight')
+  })
+
+  test('leaves completed runs alone (regardless of age)', async () => {
+    const { reapStaleRuns } = await import('./watch-merges.js')
+    seedRun('run_done', 'brf_r3', 'completed', Date.now() - 7 * 24 * 60 * 60_000)  // 7d ago
+    const { reaped } = reapStaleRuns()
+    expect(reaped).toBe(0)
+  })
+
+  test('ASICODE_REAP_THRESHOLD_MS tightens the threshold', async () => {
+    process.env.ASICODE_REAP_THRESHOLD_MS = '60000'  // 1min
+    try {
+      const { reapStaleRuns } = await import('./watch-merges.js')
+      seedRun('run_2m', 'brf_r4', 'in_flight', Date.now() - 2 * 60_000)  // 2m ago
+      const { reaped } = reapStaleRuns()
+      expect(reaped).toBe(1)
+    } finally { delete process.env.ASICODE_REAP_THRESHOLD_MS }
+  })
+
+  test('pollMergedPrs surfaces staleRunsReaped in result', async () => {
+    seedRun('run_old_poll', 'brf_rp', 'in_flight', Date.now() - 7 * 60 * 60_000)
+    const { pollMergedPrs } = await import('./watch-merges.js')
+    const r = await pollMergedPrs(repoDir)
+    expect(r.staleRunsReaped).toBe(1)
+  })
+})

@@ -106,8 +106,32 @@ export interface PollResult {
   shipItPending: number
   /** Auto-revert PRs opened this tick (iter 69, REQ-2.3). */
   revertsOpened: Array<{ prSha: string; revertPrNumber: number; url: string }>
+  /** REQ-38: stale in-flight runs reaped this tick (set outcome=crashed). */
+  staleRunsReaped: number
   /** Errors that surfaced. */
   errors: string[]
+}
+
+// REQ-38: a run is reapable when it has been in_flight past the daemon
+// threshold AND the recorder-adapter never wrote a terminal outcome.
+// Default 6h (vs status's 30min staleness flag — daemon is conservative
+// to leave room for legitimately slow agents).
+const REAP_THRESHOLD_MS_DEFAULT = 6 * 60 * 60_000
+
+export function reapStaleRuns(): { reaped: number } {
+  // Soft-fail: if db unreachable, return zero. Caller absorbs into PollResult.
+  try {
+    const db = openInstrumentationDb()
+    const thresh = parseInt(process.env.ASICODE_REAP_THRESHOLD_MS ?? '', 10)
+    const limit = Number.isFinite(thresh) && thresh > 0 ? thresh : REAP_THRESHOLD_MS_DEFAULT
+    const cutoff = Date.now() - limit
+    const result = db.run(
+      `UPDATE runs SET outcome = 'crashed', abort_reason = 'stale_no_recorder_update', ts_completed = ?
+       WHERE outcome = 'in_flight' AND ts_started < ?`,
+      [Date.now(), cutoff],
+    )
+    return { reaped: result.changes }
+  } catch { return { reaped: 0 } }
 }
 
 // ─── Pending ship-it tracker (iter 60) ───────────────────────────────
@@ -167,6 +191,7 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
     shipItPosted: [],
     shipItPending: 0,
     revertsOpened: [],
+    staleRunsReaped: reapStaleRuns().reaped,
     errors: [],
   }
 
