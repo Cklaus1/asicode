@@ -60,6 +60,7 @@
     "instrumentation:replay": "bun run scripts/instrumentation-replay.ts",
     "instrumentation:pr-landed": "bun run scripts/instrumentation-pr-landed.ts",
     "instrumentation:probe": "bun run scripts/instrumentation-probe.ts",
+    "instrumentation:watch-merges": "bun run scripts/instrumentation-watch-merges.ts",
     "setup:trainloop": "bun run scripts/setup-trainloop.ts",
     "hardening:check": "bun run smoke && bun run doctor:runtime",
     "hardening:strict": "bun run typecheck && bun run hardening:check",

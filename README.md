@@ -207,12 +207,19 @@ bun run instrumentation:calibrate   # judge panel calibration corpus
 bun run instrumentation:retro       # Practice 9 introspection cycle
 bun run instrumentation:brief       # manual A12 expand + A16 grade
 bun run instrumentation:replay      # A11 cross-cycle regression check
-bun run instrumentation:pr-landed   # notify a brief's PR has merged
+bun run instrumentation:pr-landed   # manually notify a brief's PR has merged
+bun run instrumentation:watch-merges # daemon: auto-fire pr-landed on every merge
 bun run instrumentation:probe       # check which capabilities are live in this env
 ```
 
 Before opt-in, run `instrumentation:probe` to see which env flags and
 providers are configured and which capabilities would actually fire.
+
+The `watch-merges` daemon closes the manual-pr-landed loop: run it in
+the background (`nohup ... &`, tmux pane, or systemd) and the user can
+submit a brief, walk away, merge the PR via the GitHub UI, and the
+merge-time triggers (judges + density + adversarial) fire automatically.
+Default poll interval is 60s; pass `--interval N` to tighten or loosen.
 
 Recommended cron-shaped operational loop:
 
