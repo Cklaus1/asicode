@@ -21,7 +21,7 @@ import {
   readlink,
   realpath,
   rename,
-  rm,
+  rm as realRm,
   rmdir,
   stat,
   symlink,
@@ -43,7 +43,22 @@ import { env } from '../env.js'
 import { envDynamic } from '../envDynamic.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../envUtils.js'
 import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
-import { execFileNoThrowWithCwd } from '../execFileNoThrow.js'
+import { execFileNoThrowWithCwd as realExecFileNoThrowWithCwd } from '../execFileNoThrow.js'
+
+// REQ-10 (iter 90): injectable rm + execFileNoThrowWithCwd so the
+// openclaudeInstallSurfaces test's cleanupNpmInstallations test can
+// stub them without mock.module() pollution (iter-50 lesson).
+type RmFn = typeof realRm
+type ExecFn = typeof realExecFileNoThrowWithCwd
+let rm: RmFn = realRm
+let execFileNoThrowWithCwd: ExecFn = realExecFileNoThrowWithCwd
+
+export function _setRmForTest(stub: RmFn): void { rm = stub }
+export function _setExecForTest(stub: ExecFn): void { execFileNoThrowWithCwd = stub }
+export function _resetInstallerDepsForTest(): void {
+  rm = realRm
+  execFileNoThrowWithCwd = realExecFileNoThrowWithCwd
+}
 import { getShellType } from '../localInstaller.js'
 import * as lockfile from '../lockfile.js'
 import { logError } from '../log.js'
