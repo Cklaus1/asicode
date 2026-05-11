@@ -67,7 +67,17 @@ export type RaceFailure =
   | 'no_finishers'             // race timed out with no finishers
 
 export type RaceResult =
-  | { ok: true; winnerRunId: string; winnerDiff: string; winnerWorktree: string; winnerBranch: string; racers: RaceRacer[]; tiebreak: TiebreakResult | null }
+  | {
+      ok: true
+      winnerRunId: string
+      winnerDiff: string
+      winnerWorktree: string
+      winnerBranch: string
+      racers: RaceRacer[]
+      tiebreak: TiebreakResult | null
+      /** REQ-25: which verifier ran on the racers (null = none). */
+      verifyCmd: string | null
+    }
   | { ok: false; reason: RaceFailure; detail?: string; racers?: RaceRacer[] }
 
 const DEFAULT_SETTLE_MS = 30_000
@@ -325,6 +335,7 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
     winnerBranch: winner.branch,
     racers,
     tiebreak,
+    verifyCmd: verifyCmd === '' ? null : verifyCmd,
   }
 }
 

@@ -212,7 +212,15 @@ async function main() {
   // REQ-14: race mode (best-of-N). When race>=2 and shouldStart, use
   // raceAgents instead of single-spawn. Race is foreground (we need to
   // wait for the winner) — --background is ignored under race.
-  let race: { winnerRunId: string; racerRunIds: string[]; winnerWorktree: string; winnerBranch: string; tiebreak: string | null; winnerVerify: string | null } | null = null
+  let race: {
+    winnerRunId: string; racerRunIds: string[]; winnerWorktree: string; winnerBranch: string;
+    tiebreak: string | null; winnerVerify: string | null;
+    // REQ-25: extras needed for PR body
+    winnerVerifyDurationMs: number | null
+    racersPassed: number
+    racerCount: number
+    verifyCmd: string | null
+  } | null = null
   let raceError: string | null = null
   if (shouldStart && args.race >= 2) {
     // ASICODE_RACE_SETTLE_MS / ASICODE_RACE_MAX_MS let ops + tests tune
@@ -233,6 +241,10 @@ async function main() {
           winnerWorktree: r.winnerWorktree, winnerBranch: r.winnerBranch,
           tiebreak: r.tiebreak?.reason ?? null,
           winnerVerify: winnerRacer?.verify?.outcome ?? null,
+          winnerVerifyDurationMs: winnerRacer?.verify?.durationMs ?? null,
+          racersPassed: r.racers.filter(x => x.verify?.outcome === 'passed').length,
+          racerCount: r.racers.length,
+          verifyCmd: r.verifyCmd,
         }
       }
       else raceError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
@@ -259,6 +271,17 @@ async function main() {
       const r = await openWinnerPr({
         branch: race.winnerBranch, repoPath: args.cwd, worktreePath: race.winnerWorktree,
         briefText, briefId, racerRunIds: race.racerRunIds,
+        // REQ-25: surface the verifier signal in the PR body when we
+        // ran one + know the winner's outcome.
+        ...(race.verifyCmd && race.winnerVerify && race.winnerVerifyDurationMs !== null
+          ? { verify: {
+              outcome: race.winnerVerify as 'passed' | 'failed' | 'verifier_error',
+              durationMs: race.winnerVerifyDurationMs,
+              racerCount: race.racerCount,
+              racersPassed: race.racersPassed,
+              cmd: race.verifyCmd,
+            } }
+          : {}),
       })
       if (r.ok) {
         pr = { prNumber: r.prNumber, url: r.url, branch: r.branch }

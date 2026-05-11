@@ -37,6 +37,21 @@ export interface OpenWinnerPrInput {
   racerRunIds?: string[]
   /** Hard caps on subprocess wall-clock. */
   timeoutMs?: number
+  /** REQ-25: verifier signal for the PR body — strongest correctness
+   *  signal we have, surfaces inline so reviewers (and merge-gate bots)
+   *  see it without digging into status output. */
+  verify?: {
+    /** Outcome on the winner racer. */
+    outcome: 'passed' | 'failed' | 'verifier_error'
+    /** Verifier wall-clock for the winner. */
+    durationMs: number
+    /** Number of racers in this race. */
+    racerCount: number
+    /** How many of them passed the verifier. */
+    racersPassed: number
+    /** The shell cmd that ran (so reviewers can reproduce). */
+    cmd: string
+  }
 }
 
 export function isAutoPrEnabled(): boolean {
@@ -61,12 +76,34 @@ export function buildPrTitle(briefText: string): string {
   return first.length > 72 ? `${first.slice(0, 69)}…` : first
 }
 
-export function buildPrBody(input: { briefId: string; briefText: string; racerRunIds?: string[] }): string {
+export function buildPrBody(input: {
+  briefId: string
+  briefText: string
+  racerRunIds?: string[]
+  verify?: OpenWinnerPrInput['verify']
+}): string {
   const head = input.briefText.split('\n').slice(0, 20).join('\n')
+  // REQ-25: verifier section. Renders first when present — reviewers
+  // see the correctness signal up front.
+  let verifySection = ''
+  if (input.verify) {
+    const glyph = input.verify.outcome === 'passed' ? '✓' : input.verify.outcome === 'failed' ? '✗' : '⚠'
+    const label = input.verify.outcome === 'passed' ? 'PASSED' : input.verify.outcome === 'failed' ? 'FAILED' : 'VERIFIER ERROR'
+    const dur = `${(input.verify.durationMs / 1000).toFixed(1)}s`
+    verifySection = `## Verification
+
+${glyph} ${label} in ${dur} — ${input.verify.racersPassed}/${input.verify.racerCount} racers passed.
+
+\`\`\`
+${input.verify.cmd}
+\`\`\`
+
+`
+  }
   const racers = input.racerRunIds && input.racerRunIds.length > 0
-    ? `\n\n## Race\n\n${input.racerRunIds.length} racers, winner picked by tiebreak/FCFS.\nRacer run ids: ${input.racerRunIds.join(', ')}`
+    ? `\n\n## Race\n\n${input.racerRunIds.length} racers, winner picked by verifier rank (REQ-18) → tiebreak/FCFS.\nRacer run ids: ${input.racerRunIds.join(', ')}`
     : ''
-  return `Brief: \`${input.briefId}\`\n\n## Original brief\n\n${head}${racers}\n\n---\n\n🤖 Opened by asicode (REQ-15 auto-PR).`
+  return `Brief: \`${input.briefId}\`\n\n${verifySection}## Original brief\n\n${head}${racers}\n\n---\n\n🤖 Opened by asicode (REQ-15 auto-PR).`
 }
 
 export async function openWinnerPr(input: OpenWinnerPrInput): Promise<OpenWinnerPrResult> {
@@ -83,7 +120,7 @@ export async function openWinnerPr(input: OpenWinnerPrInput): Promise<OpenWinner
   // 3. Open the PR via gh.
   const base = input.base ?? 'main'
   const title = buildPrTitle(input.briefText)
-  const body = buildPrBody({ briefId: input.briefId, briefText: input.briefText, racerRunIds: input.racerRunIds })
+  const body = buildPrBody({ briefId: input.briefId, briefText: input.briefText, racerRunIds: input.racerRunIds, verify: input.verify })
   const r = await createPrFromBranch({ branch: input.branch, base, title, body, repoPath: input.repoPath, timeoutMs })
   if (!r.ok) {
     if (r.reason === 'already_exists') return { ok: false, reason: 'gh_failed', detail: 'pr already exists for branch', branch: input.branch }

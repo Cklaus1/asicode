@@ -85,6 +85,42 @@ describe('buildPrBody', () => {
     const body = buildPrBody({ briefId: 'b', briefText: 'x' })
     expect(body).not.toContain('## Race')
   })
+
+  // REQ-25: verifier section
+  test('renders Verification section when verify provided (passed)', () => {
+    const body = buildPrBody({
+      briefId: 'b', briefText: 'fix it',
+      verify: { outcome: 'passed', durationMs: 12_400, racerCount: 4, racersPassed: 3, cmd: 'bun test' },
+    })
+    expect(body).toContain('## Verification')
+    expect(body).toContain('✓ PASSED')
+    expect(body).toContain('12.4s')
+    expect(body).toContain('3/4 racers passed')
+    expect(body).toContain('bun test')
+  })
+
+  test('Verification section renders ✗ FAILED for failed outcome', () => {
+    const body = buildPrBody({
+      briefId: 'b', briefText: 'fix',
+      verify: { outcome: 'failed', durationMs: 8_000, racerCount: 2, racersPassed: 0, cmd: 'pytest -q' },
+    })
+    expect(body).toContain('✗ FAILED')
+    expect(body).toContain('0/2 racers passed')
+    expect(body).toContain('pytest -q')
+  })
+
+  test('Verification section omitted when verify undefined', () => {
+    const body = buildPrBody({ briefId: 'b', briefText: 'x' })
+    expect(body).not.toContain('## Verification')
+  })
+
+  test('Verifier section appears before Original brief', () => {
+    const body = buildPrBody({
+      briefId: 'b', briefText: 'do x',
+      verify: { outcome: 'passed', durationMs: 1000, racerCount: 1, racersPassed: 1, cmd: 'true' },
+    })
+    expect(body.indexOf('## Verification')).toBeLessThan(body.indexOf('## Original brief'))
+  })
 })
 
 describe('isAutoPrEnabled', () => {
