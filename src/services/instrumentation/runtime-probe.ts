@@ -92,6 +92,7 @@ const NORTHSTAR_ENRICHMENT: readonly string[] = [
   'pr-comment',
   'brief-veto',
   'auto-revert',
+  'auto-start',
 ]
 
 /**
@@ -174,6 +175,13 @@ function fixFor(capability: string, observedReason?: string): ReadinessBlocker {
         capability,
         reason: observedReason ?? 'auto-revert on rollback off',
         fix: 'export ASICODE_AUTO_REVERT_ENABLED=1',
+      }
+    case 'auto-start':
+      return {
+        capability,
+        reason: observedReason ?? 'submit does not auto-spawn the agent',
+        // Chain the two flags — AUTO_START is useless without DISPATCH_CMD.
+        fix: 'export ASICODE_DISPATCH_CMD="bun run dev:profile" && export ASICODE_AUTO_START=1',
       }
     default:
       return {
@@ -400,6 +408,7 @@ export async function probeRuntime(): Promise<ProbeReport> {
     { flag: 'ASICODE_PR_COMMENT_ENABLED', capability: 'pr-comment', needsProvider: false, expectation: 'iter 54: post judge verdict as GitHub PR comment' },
     { flag: 'ASICODE_BRIEF_VETO_ENABLED', capability: 'brief-veto', needsProvider: false, expectation: 'iter 63: enforce A16 reject decisions — abort runs on bad briefs' },
     { flag: 'ASICODE_AUTO_REVERT_ENABLED', capability: 'auto-revert', needsProvider: false, expectation: 'iter 69: auto-open a revert PR when ship-it verdict is rollback' },
+    { flag: 'ASICODE_AUTO_START', capability: 'auto-start', needsProvider: false, expectation: 'iter 80: asicode:submit spawns the agent automatically (requires ASICODE_DISPATCH_CMD)' },
   ]
 
   for (const f of optInFlags) {

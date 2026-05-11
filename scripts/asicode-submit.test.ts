@@ -171,3 +171,109 @@ describe('briefs accumulate', () => {
     expect(n).toBe(2)
   })
 })
+
+// REQ-13: dispatch glue
+describe('--start dispatch', () => {
+  test('--start without ASICODE_DISPATCH_CMD → skipped with reason', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--json'])
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.brief_id).toMatch(/^brf_/)
+    expect(parsed.dispatch_skipped).toContain('ASICODE_DISPATCH_CMD')
+    expect(parsed.run_id).toBeUndefined()
+  })
+
+  test('--no-start overrides ASICODE_AUTO_START=1', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--no-start', '--json'], { stdin: undefined, env: { ASICODE_AUTO_START: '1', ASICODE_DISPATCH_CMD: 'sleep 0' } })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.dispatch_skipped).toBeUndefined()
+    expect(parsed.run_id).toBeUndefined()
+    expect(parsed.pid).toBeUndefined()
+  })
+
+  test('--start with a real dispatch command spawns + records a run', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'brief text\n', 'utf-8')
+    const logDir = join(tempDir, 'runlogs')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--background', '--json'], {
+      stdin: undefined,
+      env: {
+        ASICODE_DISPATCH_CMD: '/bin/sh -c "cat > /dev/null; echo done"',
+        ASICODE_RUN_LOG_DIR: logDir,
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.brief_id).toMatch(/^brf_/)
+    expect(parsed.run_id).toMatch(/^run_/)
+    expect(typeof parsed.pid).toBe('number')
+    expect(parsed.pid).toBeGreaterThan(0)
+    expect(parsed.log_path).toContain(parsed.brief_id)
+
+    // runs row exists
+    const db = new Database(dbPath)
+    const runRow = db.query<{ run_id: string; outcome: string; brief_id: string }, [string]>(
+      `SELECT run_id, outcome, brief_id FROM runs WHERE run_id = ?`,
+    ).get(parsed.run_id)
+    db.close()
+    expect(runRow).not.toBeNull()
+    expect(runRow!.outcome).toBe('in_flight')
+    expect(runRow!.brief_id).toBe(parsed.brief_id)
+  })
+
+  test('ASICODE_AUTO_START=1 implicitly starts (no --start needed)', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const logDir = join(tempDir, 'runlogs2')
+    const r = run([briefPath, '--cwd', projDir, '--background', '--json'], {
+      stdin: undefined,
+      env: {
+        ASICODE_AUTO_START: '1',
+        ASICODE_DISPATCH_CMD: 'true',
+        ASICODE_RUN_LOG_DIR: logDir,
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.run_id).toMatch(/^run_/)
+  })
+
+  test('text output mentions dispatch when --start used', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--background'], {
+      stdin: undefined,
+      env: {
+        ASICODE_DISPATCH_CMD: 'true',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs3'),
+      },
+    })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toMatch(/dispatched:\s+pid=\d+ run=run_/)
+    expect(r.stdout).toContain('log:')
+  })
+
+  test('default (no --start, no AUTO_START) does not dispatch', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--json'])
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.dispatch_skipped).toBeUndefined()
+    expect(parsed.run_id).toBeUndefined()
+  })
+
+  test('--help mentions REQ-13 dispatch knobs', () => {
+    const r = run(['--help'], { env: { ASICODE_INSTRUMENTATION_DB: '' } })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('--start')
+    expect(r.stdout).toContain('--no-start')
+    expect(r.stdout).toContain('ASICODE_DISPATCH_CMD')
+    expect(r.stdout).toContain('ASICODE_AUTO_START')
+  })
+})

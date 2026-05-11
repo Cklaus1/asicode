@@ -171,7 +171,7 @@ describe('docs/scenarios/submit-walk-away.md exists + names the right commands',
     // Calls out the opt-in flags users need to set.
     expect(doc).toContain('ASICODE_BRIEF_GATE_ENABLED')
     expect(doc).toContain('ASICODE_JUDGES_ENABLED')
-    // Names the limitation honestly.
-    expect(doc).toMatch(/not yet wired|dispatch glue/i)
+    // Names the dispatch knob.
+    expect(doc).toContain('ASICODE_DISPATCH_CMD')
   })
 })

@@ -131,15 +131,26 @@ count, calibration drift.
 | Brief rejected by A16 but user wants it| Submit with `ASICODE_BRIEF_VETO_OVERRIDE=1 bun run ...`       |
 | Drift not running                      | Run `bun run instrumentation:drift --baseline` once           |
 
-## What's not yet wired (REQ-5.3 limitations)
+## Auto-start the agent (REQ-13)
 
-The actual v1 agent run (asicode picking up the brief from
-`briefs.a16_decision='pending'` and starting work) requires wiring
-into v1's QueryEngine entrypoint, which is a separate seam. Today
-the brief lands in the db; the user invokes asicode-the-CLI
-(`asicode --task "$(cat /tmp/brief.md)"`) to start the run.
+To make step 4 *truly* start the run without a second command, set:
 
-The integration that makes step 4 *truly* start the run without a
-second command is its own iteration. The substrate from REQ-5.1 +
-REQ-5.2 + this scenario + the daemon flow is complete; the dispatch
-glue is the one piece between today and "exactly the northstar wording."
+```bash
+export ASICODE_DISPATCH_CMD="bun run dev:profile"   # or your launcher
+export ASICODE_AUTO_START=1                          # or pass --start each time
+```
+
+Now:
+
+```bash
+bun run asicode:submit /tmp/brief.md --background
+# brief recorded, agent spawned with the brief piped on stdin,
+# log at ~/.asicode/runs/<brief_id>.log, runs row created
+```
+
+`asicode-status BRIEF_ID` will show the running pid via the runs row.
+The agent itself updates the row's outcome when the run completes
+(via the recorder-adapter).
+
+Use `--no-start` when you want to record a brief without spawning
+(e.g. for later batch-running).

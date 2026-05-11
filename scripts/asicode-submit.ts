@@ -1,34 +1,45 @@
 #!/usr/bin/env bun
-// REQ-5.1: brief-submit entrypoint. Read brief from --file or stdin,
-// record into briefs (a16_decision='pending' until A16 grades async),
-// kick off the run via the existing v1 dispatch path. Returns brief_id.
-// Northstar use: `asicode submit brief.md && walk-away`.
+// REQ-5.1 + REQ-13: brief-submit entrypoint. Read brief from --file or
+// stdin, record into briefs, optionally spawn the agent run via the
+// ASICODE_DISPATCH_CMD (REQ-13). Returns brief_id.
+// Northstar use: `asicode-submit.ts brief.md && walk-away`.
 // Exit: 0 ok, 1 brief unreadable, 2 setup/env error.
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { resolve } from 'node:path'
-import { newBriefId, recordBrief } from '../src/services/instrumentation/client'
+import { newBriefId, newRunId, recordBrief, recordRun } from '../src/services/instrumentation/client'
 
-interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean }
+interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false }
+  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--file' || a === '-f') args.file = argv[++i]
     else if (a === '-') args.stdin = true
     else if (a === '--cwd') args.cwd = resolve(argv[++i])
     else if (a === '--background' || a === '--bg') args.background = true
+    else if (a === '--start') args.start = true
+    else if (a === '--no-start') args.noStart = true
     else if (a === '--json') args.json = true
     else if (a === '-h' || a === '--help') {
-      console.log('usage: asicode-submit.ts [--file PATH | -] [--cwd PATH] [--background] [--json]')
-      console.log('  --file PATH    read brief from file')
+      console.log('usage: asicode-submit.ts [--file PATH | -] [--cwd PATH] [--start | --no-start] [--background] [--json]')
+      console.log('  --file PATH    read brief from file (or pass path positionally)')
       console.log('  -              read brief from stdin')
       console.log('  --cwd PATH     project root (default: cwd)')
-      console.log('  --background   detach and exit immediately (true walk-away)')
-      console.log('  --json         print {brief_id, project_fingerprint} on stdout')
+      console.log('  --start        spawn the agent via $ASICODE_DISPATCH_CMD with the brief on stdin (REQ-13)')
+      console.log('  --no-start     record the brief only; do not spawn the agent')
+      console.log('  --background   detach the spawned agent and exit immediately (true walk-away)')
+      console.log('  --json         print {brief_id, project_fingerprint, run_id?, pid?} on stdout')
+      console.log('')
+      console.log('Dispatch (REQ-13): when --start is given OR ASICODE_AUTO_START=1, this CLI')
+      console.log('spawns the user-configured agent. Set ASICODE_DISPATCH_CMD to the command line')
+      console.log('that starts the agent (the brief text is piped on stdin). Examples:')
+      console.log('  export ASICODE_DISPATCH_CMD="bun run dev:profile"')
+      console.log('  export ASICODE_DISPATCH_CMD="node dist/cli.mjs --print"')
       process.exit(0)
     }
     else if (a.startsWith('-')) { console.error(`unknown arg: ${a}`); process.exit(2) }
@@ -51,6 +62,58 @@ function readBrief(args: Args): string {
   const text = raw.trim()
   if (!text) { console.error('brief is empty after trim'); process.exit(1) }
   return text
+}
+
+// REQ-13: dispatch the agent. Returns {runId, pid, logPath} on success,
+// or {reason} when skipped/failed. Soft-fail: never bubble up to the
+// caller; the brief is already recorded.
+interface DispatchResult { ok: true; runId: string; pid: number; logPath: string }
+interface DispatchSkip { ok: false; reason: string }
+
+function dispatchAgent(briefId: string, briefText: string, cwd: string, background: boolean): DispatchResult | DispatchSkip {
+  const cmd = process.env.ASICODE_DISPATCH_CMD
+  if (!cmd || cmd.trim() === '') return { ok: false, reason: 'ASICODE_DISPATCH_CMD not set' }
+
+  // Log dir + file. ~/.asicode/runs/<brief_id>.log keeps logs out of
+  // the project and groups them by brief for `asicode-status.ts` to
+  // surface later.
+  const logDir = process.env.ASICODE_RUN_LOG_DIR ?? resolve(homedir(), '.asicode', 'runs')
+  try { mkdirSync(logDir, { recursive: true }) }
+  catch (e) { return { ok: false, reason: `mkdir log dir failed: ${e instanceof Error ? e.message : String(e)}` } }
+  const logPath = resolve(logDir, `${briefId}.log`)
+  let logFd: number
+  try { logFd = openSync(logPath, 'a') }
+  catch (e) { return { ok: false, reason: `open log failed: ${e instanceof Error ? e.message : String(e)}` } }
+
+  // Parse cmd via shell so users can write the canonical "bun run ..."
+  // form. Risk: shell-quoting in cmd is the user's responsibility — we
+  // exec via /bin/sh -c. The dispatch cmd is operator-controlled (env
+  // var on the user's machine), not user-input, so this is fine.
+  const child = spawn('/bin/sh', ['-c', cmd], {
+    cwd,
+    stdio: ['pipe', logFd, logFd],
+    detached: background,
+    env: { ...process.env, ASICODE_BRIEF_ID: briefId },
+  })
+  if (!child.pid) { return { ok: false, reason: 'spawn returned no pid' } }
+  // Pipe the brief on stdin, close.
+  if (child.stdin) { child.stdin.end(briefText) }
+  if (background) { child.unref() }
+
+  // Record a runs row so `asicode-status.ts` shows the spawn happened.
+  // outcome='in_flight' until the agent finishes; the agent itself
+  // (via the recorder-adapter) updates this when the run completes.
+  const runId = newRunId()
+  try {
+    recordRun({
+      run_id: runId, brief_id: briefId, ts_started: Date.now(),
+      isolation_mode: 'in_process', outcome: 'in_flight',
+    })
+  } catch (e) {
+    // Don't kill the child for a bookkeeping miss. Log the failure.
+    return { ok: false, reason: `recordRun failed (agent is running, pid=${child.pid}): ${e instanceof Error ? e.message : String(e)}` }
+  }
+  return { ok: true, runId, pid: child.pid, logPath }
 }
 
 // Deterministic project fingerprint: git remote.origin.url + initial-commit
@@ -89,20 +152,34 @@ async function main() {
     process.exit(2)
   }
 
-  if (args.json) console.log(JSON.stringify({ brief_id: briefId, project_fingerprint: fp, project_path: args.cwd, ts_submitted: now }))
+  // REQ-13 dispatch. Default off; --start opts in; --no-start always
+  // off (overrides ASICODE_AUTO_START=1).
+  const autoStart = process.env.ASICODE_AUTO_START === '1'
+  const shouldStart = !args.noStart && (args.start || autoStart)
+  let dispatch: DispatchResult | DispatchSkip | null = null
+  if (shouldStart) dispatch = dispatchAgent(briefId, briefText, args.cwd, args.background)
+
+  if (args.json) {
+    const out: Record<string, unknown> = { brief_id: briefId, project_fingerprint: fp, project_path: args.cwd, ts_submitted: now }
+    if (dispatch?.ok) Object.assign(out, { run_id: dispatch.runId, pid: dispatch.pid, log_path: dispatch.logPath })
+    else if (dispatch && !dispatch.ok) Object.assign(out, { dispatch_skipped: dispatch.reason })
+    console.log(JSON.stringify(out))
+  }
   else {
     console.log(`submitted: ${briefId}`)
     console.log(`  project:     ${args.cwd}`)
     console.log(`  fingerprint: ${fp}`)
     console.log(`  bytes:       ${briefText.length}`)
-    if (args.background) console.log(`  mode:        background (use \`asicode status ${briefId}\` to check)`)
-    else console.log(`  next:        a v1 agent run hasn't been wired into this CLI yet — invoke asicode-the-CLI with the brief text to start the run, or use --background once REQ-5.3's e2e harness lands`)
+    if (dispatch?.ok) {
+      console.log(`  dispatched:  pid=${dispatch.pid} run=${dispatch.runId}`)
+      console.log(`  log:         ${dispatch.logPath}`)
+      if (args.background) console.log(`  mode:        background (detached)`)
+    } else if (dispatch && !dispatch.ok) {
+      console.log(`  dispatch:    skipped — ${dispatch.reason}`)
+    } else {
+      console.log(`  next:        pass --start (or set ASICODE_AUTO_START=1 + ASICODE_DISPATCH_CMD) to spawn the agent`)
+    }
   }
-  // NOTE: the actual v1 agent dispatch (starting the autonomous run)
-  // requires wiring into the v1 QueryEngine entrypoint, which is its
-  // own seam. REQ-5.1 ships the record-brief substrate so REQ-5.2's
-  // status CLI can look up briefs by id. REQ-5.3's e2e smoke + the
-  // v1 dispatch wire-up is the follow-on iter.
   process.exit(0)
 }
 
