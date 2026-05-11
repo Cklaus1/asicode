@@ -370,8 +370,19 @@ export function shouldForceRetro(opts: {
  * Render a retro as the markdown template from PRACTICES.md. Used by
  * the CLI to drop docs/retros/<version>.md alongside the structured
  * row.
+ *
+ * `includePathWalk` (default true) runs the path-walker from iter 45
+ * and embeds its output between cycle-metrics and Q1. The walker is
+ * a pure-function static check — calling it costs ~10ms and produces
+ * the integrated-path Q3 rubric the iter-44 retro flagged as missing.
+ * Pass false only for tests that want a deterministic markdown shape
+ * without the walker section.
  */
-export function renderRetroMarkdown(rec: RetroRecord, metrics?: CycleMetrics): string {
+export function renderRetroMarkdown(
+  rec: RetroRecord,
+  metrics?: CycleMetrics,
+  opts: { includePathWalk?: boolean } = {},
+): string {
   const lines: string[] = []
   lines.push(`# Retro: asicode ${rec.version_tag} — ${new Date(rec.ts).toISOString().slice(0, 10)}`)
   lines.push('')
@@ -388,6 +399,21 @@ export function renderRetroMarkdown(rec: RetroRecord, metrics?: CycleMetrics): s
     lines.push(`- L1 auto-approve: ${fmtPct(metrics.l1AutoApproveRate)}`)
     lines.push(`- Density on refactors: ${metrics.densityPositive}/${metrics.refactorPrs}`)
     lines.push('')
+  }
+
+  // Integrated-path walk (iter 45 mechanism for iter 44 retro Q5).
+  // Wraps a try/catch — if the walker module or its dependencies can't
+  // load in some constrained runtime, the retro still ships without it.
+  if (opts.includePathWalk !== false) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { walkAllMetricPaths, renderPathWalkMarkdown } =
+        require('./path-walker.js') as typeof import('./path-walker')
+      lines.push(renderPathWalkMarkdown(walkAllMetricPaths()))
+    } catch (e) {
+      void e
+      // Silently skip — the retro's other sections still render.
+    }
   }
 
   lines.push('## Q1 — kept right')

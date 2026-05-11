@@ -302,6 +302,8 @@ describe('shouldForceRetro', () => {
 
 describe('markdown render', () => {
   test('contains all five Q sections', () => {
+    // Path-walk requires src files that exist in the repo; include
+    // here too so the assertion exercises the wire-in path.
     const md = renderRetroMarkdown(makeRetro())
     expect(md).toContain('# Retro: asicode v0.1.0')
     expect(md).toContain('## Q1 — kept right')
@@ -309,6 +311,22 @@ describe('markdown render', () => {
     expect(md).toContain('## Q3 — didn\'t notice')
     expect(md).toContain('## Q4 — questions we missed asking')
     expect(md).toContain('## Q5 — smallest change this cycle')
+  })
+
+  test('includes path-walk section by default', () => {
+    const md = renderRetroMarkdown(makeRetro())
+    expect(md).toContain('## Integrated-path walk')
+    // The walker runs against current repo state; in this test env
+    // all paths should walk ok.
+    expect(md).toContain('hands_off_completion_rate')
+    expect(md).toContain('regression_rate')
+  })
+
+  test('path-walk can be suppressed with includePathWalk=false', () => {
+    const md = renderRetroMarkdown(makeRetro(), undefined, { includePathWalk: false })
+    expect(md).not.toContain('## Integrated-path walk')
+    // Other sections still render
+    expect(md).toContain('## Q1 — kept right')
   })
 
   test('cycle metrics block included when supplied', () => {
