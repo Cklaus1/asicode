@@ -1,4 +1,4 @@
-@asicode v2 plan|2026-05-10|status=design
+@asicode v2 plan|2026-05-11|status=design
 northstar: see [GOALS.md](./GOALS.md) — every phase below is in service of "hand a brief, get a correct PR"
 practices: see [PRACTICES.md](./PRACTICES.md) — the engineering loop we bake into the build and the run
 parallelism: see [docs/PARALLELISM.md](./docs/PARALLELISM.md) — per-seam rules for where to parallelize and where not
@@ -69,9 +69,9 @@ Rename in place: `openclaude → asicode`, fix imports, retag npm as `@cklaus1/a
 ### Option B — **Rust rewrite from scratch** (highest risk)
 New Rust binary, gRPC-streaming protocol, all 40 tools reimplemented, all 7 providers reimplemented, Ink → ratatui.
 
-- **Cost:** ~3–6 months wall, easily 200+ agent-hr.
+- **Effort:** `compute=8-16h(40 tools × ~15min each generation; ~3h for Codex OAuth reimplementation alone)`; `wall-clock-floor=4-8wk(Ink-to-ratatui design-partner feedback + 200+ models worth of provider quirks must be re-soaked against real provider APIs)`; `bottleneck=validation-loop(provider compat, not generation)`.
 - **Result:** asicode v2 — fast, statically linked, no Node.
-- **Why not:** the LLM loop is not the bottleneck. Network round-trip dominates. You'd spend months reimplementing Ink and the Codex OAuth flow for ~10% perf win on the agent loop and ~90% perf win on cold start (which the user pays once). Worst — you lose the test suite, the provider compatibility matrix, and the existing ASI machinery; ship date is "next year" instead of "next week."
+- **Why not:** the LLM loop is not the bottleneck. Network round-trip dominates. The compute is bounded (~16h to generate) but the wall-clock floor is real — you'd burn weeks on provider compat re-soaking and Ink replacement for ~10% perf win on the agent loop. Worst — you lose the test suite, the provider compatibility matrix, and the existing ASI machinery; you're rebuilding a working surface for a marginal perf number.
 
 ### Option C — **Rust core + TS shell (recommended)**
 Keep the 585k TS as the user-facing harness for v2.0; extract the **hot path** to a single Rust process that the TS shell talks to over a typed IPC (stdin/stdout NDJSON or a Unix socket). Rust owns: tool execution (Bash/Read/Write/Edit/Grep/Glob/LSP), pty multiplexing, file I/O, budget accounting, the asimux client. TS owns: provider HTTP, MCP, Ink TUI, slash commands, plan/replan, self-review LLM calls.
@@ -207,7 +207,11 @@ For high-stakes briefs, an "adversary" subagent tries to break the patch (write 
 
 Each phase is independently shippable. Reverse order doesn't work; later phases assume earlier ones.
 
-### P0 — Rename & re-tag (1 day)
+### P0 — Rename & re-tag
+
+`compute=~30min(225 file rename + npm package republish + proto rename)`
+`wall-clock-floor=~1d(npm propagation, deprecation alias visibility)`
+`bottleneck=registry-propagation`
 - `openclaude` → `asicode` everywhere. 225 files. `s/openclaude/asicode/g` is wrong — needs care around `CLAUDE_CODE_USE_OPENAI` (keep, that's an Anthropic compat env var users have) and around URLs/sponsors.
 - `package.json` → `@cklaus1/asicode`.
 - `bin/openclaude` → `bin/asicode`.
@@ -216,19 +220,31 @@ Each phase is independently shippable. Reverse order doesn't work; later phases 
 - Proto file: `openclaude.proto` → `asicode.proto`, `package openclaude.v1` → `package asicode.v1`. Servers will be incompatible until clients reroll.
 - **Exit:** `npm i -g @cklaus1/asicode && asicode --version` prints `asicode 0.8.0`.
 
-### P1 — Cut the dead weight (3–4 days)
+### P1 — Cut the dead weight
+
+`compute=~2-4h(buddy/native-ts/vim/web/vscode/python deletes are mechanical; utils audit is the long pole at ~1-2h)`
+`wall-clock-floor=~3-5d(test-suite-gated long-running branch validates each delete; can't be rushed)`
+`bottleneck=test-suite-soak per delete batch`
 - Delete `buddy/`, `native-ts/`, `vim/`, `upstreamproxy/`, `web/`, `vscode-extension/`, `python/` (move scripts to TS), `ANDROID_INSTALL.md`.
 - Audit `utils/`: every file with <2 importers gets inlined.
 - Drop the GitLawb / Atomic Chat / Bankr.bot sponsor sections — they don't fit the asi-family voice.
 - **Exit:** `wc -l src/**/*.{ts,tsx}` is under 60k. Tests still green. Surface still works.
 
-### P2 — Asimux integration (1 week)
+### P2 — Asimux integration
+
+`compute=~4-6h(AM-1 probe ~30min; AM-3 isolation mode ~2h; AM-4/5/6 substrate handoff ~2-3h)`
+`wall-clock-floor=~1-2wk(real-consumer validation across multiple project types; race-mode soak; safety-hook latency p99 across actual workloads)`
+`bottleneck=validation-loop(asimux substrate behavior under real briefs)`
 - Implement `docs/asimux-roadmap.md` AM-1..AM-6 directly. AM-1 is opt-in detection (defaults to current in-process spawn), AM-3 wires `isolation: 'asimux'` into AgentTool, AM-4/5/6 are the substrate-hand-off wins.
 - Skip AM-2 ("TS port of Python client") — write the Rust client in P3 and drive AM-1..AM-6 from P3 onwards.
 - *Order:* do P3's Rust bootstrap **before** AM-3 if you can; otherwise write a temporary TS asimux client and replace it in P4.
 - **Exit:** `asicode` with `--asimux` runs sub-agents in asimux panes; outcome log captures asimux's `pane.cmd.completed`; best-of-N (A10) works end-to-end on a 4-attempt race.
 
-### P3 — Rust bootstrap (asicored, 1–2 weeks)
+### P3 — Rust bootstrap (asicored)
+
+`compute=~3-5h(cargo scaffold ~30min; NDJSON IPC contract ~1h; BashTool port ~2h; dual-run feature flag ~1h)`
+`wall-clock-floor=~2wk(pty corner cases on Linux + macOS + WSL only surface under real interactive workloads; dual-run gates each tool migration on at least one green week)`
+`bottleneck=pty-corner-cases(Rust nix::pty vs Node child_process behavior differences)`
 - New crate `asicored/` in the asicode repo. `cargo new --bin`.
 - Implement the IPC contract (NDJSON over stdin/stdout to start; Unix socket for daemon mode later).
 - Port one tool: **BashTool** first (highest call volume, highest pty complexity). TS shell still owns all other tools.
@@ -236,7 +252,11 @@ Each phase is independently shippable. Reverse order doesn't work; later phases 
 - Provider HTTP, Ink TUI, planner — all untouched.
 - **Exit:** `bash echo hello` round-trips through the Rust core; both paths pass the same test suite.
 
-### P4 — Tool migration (2–3 weeks)
+### P4 — Tool migration
+
+`compute=~6-10h(Read/Write/Edit ~1h each; Glob/Grep ~1h; LSP ~2h; Monitor ~1h; budget/outcome-log migration ~2h)`
+`wall-clock-floor=~3-4wk(seven tools × at least one green week per flag flip; per-tool dual-run measurement; rollback windows kept open one release each)`
+`bottleneck=dual-run-validation per tool`
 - Port Read/Write/Edit/Glob/Grep/LSP/Monitor to Rust, one per week.
 - For each: ship behind a flag, dual-run in tests, flip default after a green week.
 - Budget accounting (utils/budget.ts) moves to asicored — sourced via IPC query.
@@ -244,17 +264,24 @@ Each phase is independently shippable. Reverse order doesn't work; later phases 
 - asimux client lives in asicored from day one (replaces TS client from P2 if any).
 - **Exit:** all tools dispatch through asicored; TS `tools/` directory is ~5k LOC of bridges, not 55k of implementations.
 
-### P5 — ASI v2 features (A8–A15, 2–4 weeks)
+### P5 — ASI v2 features (A8, A10–A13, A15, A16)
 - A8 (embedding-indexed plan retrieval) — biggest plan-quality win.
 - A12 (brief mode) — biggest UX win.
 - A10 (early-termination best-of-N) — biggest speed win.
 - Then A11/A13/A15 as bandwidth allows.
 - **Exit:** asicode hands a brief, runs four parallel attempts, kills laggards, recovers on failure, ships a PR — all on a budget the user set up-front.
 
+`compute=~10-15h(A8 embedding index + retrieval ~3h; A10 race orchestrator ~2h; A12 brief expansion ~2h; A13 memdir query ~1h; A15 adversarial prompt ~1h; A16 gate ~2h; A11 replay harness ~2h)`
+`wall-clock-floor=~6-10wk(every A-feature has its own success criteria that take 2 release cycles to falsify; ≥50 PRs per arm needed for any stratified comparison; A16 needs ≥30 briefs to measure precision/recall; A8 needs corpus growth to ≥50 entries before retrieval is even meaningful)`
+`bottleneck=primary-metric-stabilization(can't accelerate "did the Autonomy Index move")`
+
 ### Total
-- **Wall:** ~7–9 weeks for the whole stack
-- **Single-agent ASI time:** ~80–120 agent-hours
-- **Token cost:** ~$300–600 across the build at Sonnet/Opus rates
+
+`compute=~25-45h across all phases(P0+P1+P2+P3+P4+P5 generation)`
+`wall-clock-floor=~12-18wk(metric stabilization is the long pole; P5's success criteria need real briefs to falsify, not generated briefs)`
+`bottleneck=primary-metric-validation across release cycles`
+
+The compute number is small (a single agent running fanout could generate the code in ~2-3 days of wall-clock if nothing else changed). The wall-clock floor is large because the **falsifiability of every claim in `GOALS.md` and `PLAN.md §5`** requires real briefs flowing through the system and being judged across enough samples to see the Autonomy Index move. There is no shortcut to "did this work actually improve hands-off completion rate" except running enough briefs to know.
 
 ---
 
@@ -316,4 +343,10 @@ The answer most engineers give ("rewrite it in Rust!") is wrong if you take it t
 
 ## [11] One-line summary
 
-**v2 = rebrand + cut 90% of TS + extract a Rust hot-path that speaks asimux protocol + finish the unshipped ASI roadmap + ship asimux integration end-to-end + add brief mode and best-of-N with early termination.** Ship in 7–9 weeks; **token cost ≈ $0 when run against a local model** (Ollama / vLLM), or $300–600 at Sonnet/Opus rates. Result: a coding-agent harness shaped for the asi-family, with the smallest maintained codebase that can drive an autonomous fleet against any provider.
+**v2 = rebrand + cut 90% of TS + extract a Rust hot-path that speaks asimux protocol + finish the unshipped ASI roadmap + ship asimux integration end-to-end + add brief mode and best-of-N with early termination.**
+
+`compute=~25-45h(generation across all phases)`
+`wall-clock-floor=~12-18wk(primary-metric stabilization across enough briefs to falsify each A-feature's criteria; provider compat re-soak; tool-migration dual-run windows)`
+`bottleneck=validation-loop(briefs flowing through real system, judged across enough samples to see Autonomy Index move) NOT generation`
+
+Under subscription pricing the dollar cost is $0; the binding constraint is wall-clock-floor — and the lever is `shorten-validation-loop > any-generation-speedup`. Result: a coding-agent harness shaped for the asi-family, with the smallest maintained codebase that can drive an autonomous fleet against any provider.

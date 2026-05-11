@@ -439,20 +439,24 @@ If a primary metric can't be answered by a query against this schema, **the sche
 
 Same six-phase shape as PLAN.md, but specifically for the instrumentation work:
 
-| Phase | What | Why | Wall-clock |
-|---|---|---|---|
-| **I0** | Schema migration `0001-instrumentation-v2.sql` lands | Foundation for everything | ~half day |
-| **I1** | Synchronous event writers from existing v1 code paths (briefs, runs, tool_calls, reviews) | Brings v1 data into v2 shape | 2-3 days |
-| **I2** | `services/judges/` ships, writes to `judgments` | A16 + Metric 3 unblocked | 3-4 days |
-| **I3** | `asicode report` CLI: primary metrics + leading indicators | Makes everything visible | 2 days |
-| **I4** | Density A/B harness writes to `density_ab` | Refactor metric goes live | 2-3 days |
-| **I5** | Retro pipeline writes to `retros`, reads its own history | Practice 9 mechanism shipped | 3 days |
-| **I6** | A-feature writers (retrievals, bus_events) as features land | Each feature comes with its own instrumentation | per-feature |
-| **I7** | Daily reconciliation job, drift detection, calibration replay | The infrastructure that makes the metrics trustworthy over time | 3-4 days |
+| Phase | What | Why | Compute | Wall-clock-floor |
+|---|---|---|---|---|
+| **I0** | Schema migration `0001-instrumentation-v2.sql` lands | Foundation for everything | ~30min | none — pure generation |
+| **I1** | Synchronous event writers from existing v1 code paths (briefs, runs, tool_calls, reviews) | Brings v1 data into v2 shape | ~2-3h | ~3d (test-suite soak across existing v1 code paths to confirm no write-path regressions) |
+| **I2** | `services/judges/` ships, writes to `judgments` | A16 + Metric 3 unblocked | ~3-4h | ~1wk (calibration corpus must score the 30 known-tier human PRs cleanly before declaring v1 panel shipped) |
+| **I3** | `asicode report` CLI: primary metrics + leading indicators | Makes everything visible | ~2h | ~2d (output-format iteration with real data is the long pole) |
+| **I4** | Density A/B harness writes to `density_ab` | Refactor metric goes live | ~2-3h | ~1wk (needs real refactor PRs to flow through; can't synthesize) |
+| **I5** | Retro pipeline writes to `retros`, reads its own history | Practice 9 mechanism shipped | ~2-3h | ~2 release cycles (first retro generates baseline; second tests Q4 cross-cycle question-evolution) |
+| **I6** | A-feature writers (retrievals, bus_events) as features land | Each feature comes with its own instrumentation | per-feature, ~30min each | follows each A-feature's wall-clock-floor |
+| **I7** | Daily reconciliation job, drift detection, calibration replay | The infrastructure that makes the metrics trustworthy over time | ~2-3h | ~2wk (drift detection threshold tuning requires observing real model snapshot changes) |
 
-Total: **~2-3 weeks wall**, ~25-35 agent-hours. The cost is small relative to PLAN.md P5 (~2-4 weeks for the A-feature suite), and **all of P5 assumes this instrumentation exists** — A8 retrieval can't measure its own hit rate without a `retrievals` table, A11 replay can't surface regressions without prior-version data, etc.
+`compute=~12-18h(total across I0-I7 generation)`
+`wall-clock-floor=~4-6wk(calibration corpus validation, real refactor PR flow, drift threshold tuning all gate-on real briefs)`
+`bottleneck=calibration-corpus(I2) + real-brief-flow(I4, I7)`
 
-So: **I0-I3 ships before any work on P3 (Rust bootstrap) starts.** Without the metrics, P3-P5 has no way to prove its wins.
+The compute is small. The wall-clock-floor is the gate: **I2 cannot ship until the calibration corpus clears**, and **I4/I7 cannot stabilize until real PRs flow through**. All of `PLAN.md` P5 assumes this instrumentation exists — A8 retrieval can't measure its own hit rate without a `retrievals` table, A11 replay can't surface regressions without prior-version data, etc.
+
+So: **I0-I3 must complete generation before any work on `PLAN.md` P3 (Rust bootstrap) starts**, and **I2's calibration-corpus soak must clear before P5 (ASI features) ships**. Without the metrics, P3-P5 has no way to prove its wins.
 
 ---
 
