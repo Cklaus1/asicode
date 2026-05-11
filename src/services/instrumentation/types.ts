@@ -105,6 +105,8 @@ export const BriefRecordSchema = z.object({
   // REQ-16 (migration 0005): PR number persisted at auto-PR open time
   // so watch-merges links brief↔PR deterministically.
   pr_number: z.number().int().positive().optional(),
+  // REQ-41 (migration 0008): full PR URL — surfaces in status output.
+  pr_url: z.string().optional(),
 })
 
 export type BriefRecord = z.infer<typeof BriefRecordSchema>
@@ -231,6 +233,8 @@ export const BriefUpdateSchema = z.object({
   intervention_reason: z.string().optional(),
   // REQ-16: auto-PR number persisted at open time.
   pr_number: z.number().int().positive().optional(),
+  // REQ-41: full PR URL.
+  pr_url: z.string().optional(),
   // A12 — populated post-hoc by the brief-mode expander trigger.
   expanded_brief: z.string().optional(),
   // A16 fields — populated post-hoc by the brief-gate trigger.

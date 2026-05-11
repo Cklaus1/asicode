@@ -30,7 +30,7 @@ interface BriefRow {
   project_path: string; user_text: string;
   a16_decision: string; a16_composite: number | null;
   pr_sha: string | null; pr_outcome: string | null;
-  pr_number: number | null;
+  pr_number: number | null; pr_url: string | null;
   reverted_within_7d: number; hotpatched_within_7d: number;
 }
 interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null; race_strategy: string | null }
@@ -88,7 +88,7 @@ function main() {
 
   const brief = db.query<BriefRow, [string]>(
     `SELECT brief_id, ts_submitted, ts_completed, project_path, user_text,
-            a16_decision, a16_composite, pr_sha, pr_outcome, pr_number, reverted_within_7d, hotpatched_within_7d
+            a16_decision, a16_composite, pr_sha, pr_outcome, pr_number, pr_url, reverted_within_7d, hotpatched_within_7d
      FROM briefs WHERE brief_id = ?`,
   ).get(args.briefId!)
   if (!brief) { console.error(`brief not found: ${args.briefId}`); db.close(); process.exit(1) }
@@ -137,7 +137,7 @@ function main() {
       })),
       pr: (brief.pr_sha || brief.pr_number !== null) ? {
         sha: brief.pr_sha, outcome: brief.pr_outcome,
-        number: brief.pr_number,
+        number: brief.pr_number, url: brief.pr_url,
         reverted_within_7d: brief.reverted_within_7d === 1,
         hotpatched_within_7d: brief.hotpatched_within_7d === 1,
       } : null,
@@ -190,14 +190,14 @@ function main() {
     }
   }
   if (brief.pr_number !== null && !brief.pr_sha) {
-    // Auto-PR opened (REQ-15) but not yet merged — surface the number.
-    console.log(`  pr           #${brief.pr_number}  (open; merge will populate sha)`)
+    // Auto-PR opened (REQ-15) but not yet merged — surface the number + url.
+    console.log(`  pr           #${brief.pr_number}${brief.pr_url ? `  ${brief.pr_url}` : ''}  (open; merge will populate sha)`)
   }
   if (brief.pr_sha) {
     const flags: string[] = []
     if (brief.reverted_within_7d) flags.push('reverted')
     if (brief.hotpatched_within_7d) flags.push('hotpatched')
-    console.log(`  pr           ${brief.pr_sha.slice(0, 12)}${brief.pr_number !== null ? `  #${brief.pr_number}` : ''}  outcome=${brief.pr_outcome ?? '?'}${flags.length ? `  flags=[${flags.join(',')}]` : ''}`)
+    console.log(`  pr           ${brief.pr_sha.slice(0, 12)}${brief.pr_number !== null ? `  #${brief.pr_number}` : ''}${brief.pr_url ? `  ${brief.pr_url}` : ''}  outcome=${brief.pr_outcome ?? '?'}${flags.length ? `  flags=[${flags.join(',')}]` : ''}`)
     if (j.rows > 0) console.log(`  judges       ${j.rows} rows  composite=${j.composite !== null ? j.composite.toFixed(2) : '?'}/5`)
     else console.log(`  judges       (none yet — gate ASICODE_JUDGES_ENABLED on a merged PR)`)
     if (ship) {

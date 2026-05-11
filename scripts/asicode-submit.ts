@@ -307,8 +307,8 @@ async function main() {
         // REQ-16: persist pr_number on the brief row so watch-merges
         // links the merge sha back deterministically. Soft-fail: a db
         // hiccup must not undo the actual PR that's already open.
-        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber }) }
-        catch (e) { console.error(`[auto-pr] updateBrief(pr_number) failed (PR still open at ${r.url}): ${e instanceof Error ? e.message : String(e)}`) }
+        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber, pr_url: r.url }) }
+        catch (e) { console.error(`[auto-pr] updateBrief(pr_number/url) failed (PR still open at ${r.url}): ${e instanceof Error ? e.message : String(e)}`) }
       } else prError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
     } catch (e) { prError = e instanceof Error ? e.message : String(e) }
   }

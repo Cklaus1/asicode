@@ -514,6 +514,28 @@ describe('REQ-37 stale in-flight detection', () => {
     expect(parsed.runs[0].stale).toBe(false)
   })
 
+  test('REQ-41: pr_url surfaces in text + JSON when set', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_url1')
+    db.run(`UPDATE briefs SET pr_number = ?, pr_url = ? WHERE brief_id = ?`,
+      [42, 'https://github.com/x/y/pull/42', 'brf_url1'])
+    db.close()
+    const r = run(['brf_url1'])
+    expect(r.stdout).toContain('https://github.com/x/y/pull/42')
+    const j = JSON.parse(run(['brf_url1', '--json']).stdout)
+    expect(j.pr.url).toBe('https://github.com/x/y/pull/42')
+    expect(j.pr.number).toBe(42)
+  })
+
+  test('REQ-41: pr_url null when not set (no extra cruft)', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_url2')
+    db.run(`UPDATE briefs SET pr_number = ? WHERE brief_id = ?`, [99, 'brf_url2'])
+    db.close()
+    const j = JSON.parse(run(['brf_url2', '--json']).stdout)
+    expect(j.pr.url).toBeNull()
+  })
+
   test('ASICODE_STALE_THRESHOLD_MS overrides default threshold', () => {
     const db = new Database(dbPath)
     seedBrief(db, 'brf_tight')
