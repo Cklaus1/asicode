@@ -1,4 +1,4 @@
-# OpenClaude — ASI Roadmap (PM brief)
+# asicode — ASI Roadmap (PM brief)
 
 Reading "ASI" as **autonomous / self-improving super-agent** capabilities — moving the product from "great single-shot CLI agent" to "agent fleet you can hand a goal to and walk away from."
 
@@ -49,7 +49,7 @@ The instinct is "stop asking the human." The actual objective is **"produce veri
 - ✅ **#7 → 1C** (`284fbfd`): `recordToolCall` accepts `errorKind`; toolExecution catch path reads `RetryAnnotation` and forwards classification.
 - ✅ **1.5 shim replacement** (`b32ab31`): `reviewBudget.ts` now bumps both per-task and session-global counters; `outcomeLogAdapter.ts` adds `OutcomeRecorderLogSink` that delegates to `outcomeRecorder.attachReviewSignal`. `utils/budget.ts` gained `reviewIters` cap.
 - ✅ **Analytics enum check** (`b32ab31`): no central registration needed — `tengu_tool_use_granted_by_verifier` follows the precedent of sibling permission-grant events (logEvent only, not in `DATADOG_ALLOWED_EVENTS`). Inline comment notes the decision.
-- ⏳ **1.5 brief-completion wire-in:** seam exists at `runAgent.ts`, but the production reviewer/fixer invokers are a real build — openclaude lacks a clean `queryWithModel({systemPrompt, userPrompt, model})` primitive easy to call from a service module. Estimate: ~30–60 min when prioritized.
+- ⏳ **1.5 brief-completion wire-in:** seam exists at `runAgent.ts`, but the production reviewer/fixer invokers are a real build — asicode lacks a clean `queryWithModel({systemPrompt, userPrompt, model})` primitive easy to call from a service module. Estimate: ~30–60 min when prioritized.
 
 **Stack total: ~16–22 agent-hours single-threaded, ~4–5 hr fanout. Token cost ~$40–100 at current Sonnet/Opus rates; less if L1 racer and #2/#3 run on Haiku.**
 
@@ -101,5 +101,5 @@ After this stack: agent runs unattended in a sandbox, gated by **two-layer verif
 - **Verifier reliability is the critical path.** If tests are flaky or coverage is thin, items #1 and #4 regress to human-speed because the agent can't trust its own signal. Audit the verifier before scaling autonomy.
 - **Self-review convergence is not free.** A miscalibrated reviewer can churn forever on the same finding, or whack-a-mole into new bugs of equal severity. The convergence guard (#1.5) is non-negotiable; pre-set the severity bar by project, and treat the iter cap as a real ceiling, not a suggestion.
 - **Privacy.** Outcome log (#5) stores task content. Lean on `utils/privacyLevel.ts` and the team-memory secret scanner from day one.
-- **Provider lock-in.** OpenClaude's wedge is "any LLM." Every ASI feature must work on OpenAI/Gemini/Ollama/etc. — no Claude-only paths.
+- **Provider lock-in.** asicode's wedge is "any LLM." Every ASI feature must work on OpenAI/Gemini/Ollama/etc. — no Claude-only paths.
 - **Rollback story.** Items #3 and #6 imply long unattended runs. Worktree-per-attempt + per-step git checkpoints are the rollback floor; nothing autonomous ships without them.

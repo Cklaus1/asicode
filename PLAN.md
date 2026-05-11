@@ -6,7 +6,7 @@ judges: see [docs/judges/v1-prompts.md](./docs/judges/v1-prompts.md) + [docs/jud
 instrumentation: see [docs/INSTRUMENTATION.md](./docs/INSTRUMENTATION.md) — v2.0 schema for every metric and feature criterion (ships before P3)
 
 # Legend
-- v1 = current asicode (forked openclaude @ 0.7.0; 585k LOC TypeScript)
+- v1 = current asicode (forked asicode @ 0.7.0; 585k LOC TypeScript)
 - v2 = the rebuild this doc proposes
 - ↓ = drop / don't bring forward
 - → = keep but rewrite
@@ -47,10 +47,10 @@ src/cli/            12k
 - Resumable long-horizon tasks (#6)
 - 1.5 brief-completion wire-in (the production reviewer/fixer invokers)
 
-**asimux integration** is *documented* (`docs/asimux-roadmap.md`, AM-0..AM-10) but **none of it is implemented** — it's a roadmap. AM-0 is blocked on a license decision (asimux additions are PolyForm-Noncommercial, openclaude is MIT — `Cklaus1/asicode` private fork is the obvious answer).
+**asimux integration** is *documented* (`docs/asimux-roadmap.md`, AM-0..AM-10) but **none of it is implemented** — it's a roadmap. AM-0 is blocked on a license decision (asimux additions are PolyForm-Noncommercial, asicode is MIT — `Cklaus1/asicode` private fork is the obvious answer).
 
 **Naming load (renames v1→v2):**
-- 225 files contain `openclaude|OpenClaude|OPENCLAUDE`
+- 225 files contain `openclaude|OpenClaude|OPENCLAUDE` (literal strings flagged for the REQ-8 rename pass)
 - 400 files contain `claude-code|claude_code|CLAUDE_CODE|claudeCode` (largely Anthropic-CLI compat env vars like `CLAUDE_CODE_USE_OPENAI` — partly intentional, since users have these set)
 
 ---
@@ -60,7 +60,7 @@ src/cli/            12k
 Three honest options. Pick one. Don't pretend you can do both.
 
 ### Option A — **Rebrand & extend** (lowest risk)
-Rename in place: `openclaude → asicode`, fix imports, retag npm as `@cklaus1/asicode`, finish the unshipped ASI roadmap items (#4 best-of-N, #6 resumable, 1.5 wire-in), ship the asimux integration (AM-1..AM-6).
+Rename in place: `asicode → asicode`, fix imports, retag npm as `@cklaus1/asicode`, finish the unshipped ASI roadmap items (#4 best-of-N, #6 resumable, 1.5 wire-in), ship the asimux integration (AM-1..AM-6).
 
 - **Cost:** ~1–2 wk wall, ~20 agent-hr.
 - **Result:** asicode 1.0 — same 585k LOC, asi-branded, with the substrate handoff to asimux done.
@@ -212,12 +212,12 @@ Each phase is independently shippable. Reverse order doesn't work; later phases 
 `compute=~30min(225 file rename + npm package republish + proto rename)`
 `wall-clock-floor=~1d(npm propagation, deprecation alias visibility)`
 `bottleneck=registry-propagation`
-- `openclaude` → `asicode` everywhere. 225 files. `s/openclaude/asicode/g` is wrong — needs care around `CLAUDE_CODE_USE_OPENAI` (keep, that's an Anthropic compat env var users have) and around URLs/sponsors.
+- `openclaude` → `asicode` everywhere. 225 files. A blanket `s/openclaude/asicode/g` is wrong — needs care around `CLAUDE_CODE_USE_OPENAI` (keep, that's an Anthropic compat env var users have), URLs/sponsors, and stateful identifiers (npm package name, CLI binary `openclaude`, `OPENCLAUDE_*` env vars) deferred to REQ-8.2/REQ-8.3.
 - `package.json` → `@cklaus1/asicode`.
-- `bin/openclaude` → `bin/asicode`.
+- `bin/asicode` → `bin/asicode`.
 - Repo rename: **done** (GitHub already at `Cklaus1/asicode`).
 - npm package: publish `@cklaus1/asicode@0.8.0` as a deprecation alias of `@cklaus1/openclaude`; final cut at 1.0.
-- Proto file: `openclaude.proto` → `asicode.proto`, `package openclaude.v1` → `package asicode.v1`. Servers will be incompatible until clients reroll.
+- Proto file: `asicode.proto` → `asicode.proto`, `package asicode.v1` → `package asicode.v1`. Servers will be incompatible until clients reroll.
 - **Exit:** `npm i -g @cklaus1/asicode && asicode --version` prints `asicode 0.8.0`.
 
 ### P1 — Cut the dead weight
@@ -311,7 +311,7 @@ The answer most engineers give ("rewrite it in Rust!") is wrong if you take it t
 - **MCP-over-asimux.** asimux already has a per-pane bus. MCP servers could announce themselves there, and the asicode shell discovers them by subscribing to `mcp.*`. Replaces `~/.claude/mcp.json` config hunting with auto-discovery for local MCP. Speculative; tag as A16 if it earns it.
 - **Capability negotiation in IPC.** Same shape as asimux: `welcome` event lists the caps the core supports (`bash, read, write, edit, glob, grep, lsp, monitor, asimux, gpu, embedding-index, …`). Shell adapts at runtime. Forward-compat without version bumps.
 - **Sandbox/isolation tiers.** v1 has 0 (in-process) and 1 (worktree). v2 should expose 0 (in-process), 1 (worktree), 2 (asimux pane), 3 (asimux pane + bubblewrap), 4 (asimux pane + container). Pick per-task or per-tool-call; this is the substrate the trust-model upgrade (when we ever do one) hangs on.
-- **Drop the gRPC server, keep the proto.** asicode v1 has `src/grpc/` and `src/proto/openclaude.proto`. Real gRPC is multi-day, and asimux already shipped the TCP-gateway as the polyglot answer. **For v2: the protocol shape stays gRPC-shaped, but ship it as NDJSON over Unix sockets and a TCP gateway, same as asimux.** Real gRPC if/when there's a polyglot consumer that needs it.
+- **Drop the gRPC server, keep the proto.** asicode v1 has `src/grpc/` and `src/proto/asicode.proto`. Real gRPC is multi-day, and asimux already shipped the TCP-gateway as the polyglot answer. **For v2: the protocol shape stays gRPC-shaped, but ship it as NDJSON over Unix sockets and a TCP gateway, same as asimux.** Real gRPC if/when there's a polyglot consumer that needs it.
 - **Single binary distribution.** Once asicored exists, ship `asicode` as a tarball with `node + dist/cli.mjs + asicored binary` bundled, or use `bun build --compile` for a single static-linked TS executable that spawns asicored as a sibling. Either way: one curl, one binary, no `npm install -g`. Match asimux's distribution story (`ghcr.io/asimux + brew-tap`).
 
 ---
@@ -327,7 +327,7 @@ The answer most engineers give ("rewrite it in Rust!") is wrong if you take it t
 | Outcome log schema changes ship without migration | medium | versioned schema; readers tolerate older shapes; never break old data |
 | Ink TUI fights with a Rust pty | low | TS owns the TUI pty (user's terminal); Rust owns spawned panes — never compete |
 | Best-of-N (#4 / A10) costs blow the budget | medium | budget cap enforces; refuse to start a race when projected cost > caps |
-| Naming overlap with Anthropic CLI | medium | the existing `CLAUDE_CODE_USE_OPENAI` env compat is fine; don't pick names that look like Anthropic products. "asicode" is clear of trademark; openclaude was not |
+| Naming overlap with Anthropic CLI | medium | the existing `CLAUDE_CODE_USE_OPENAI` env compat is fine; don't pick names that look like Anthropic products. "asicode" is clear of trademark; asicode was not |
 
 ---
 

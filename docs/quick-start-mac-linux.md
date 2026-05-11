@@ -1,4 +1,4 @@
-# OpenClaude Quick Start for macOS and Linux
+# asicode Quick Start for macOS and Linux
 
 This guide uses a standard shell such as Terminal, iTerm, bash, or zsh.
 
@@ -15,7 +15,7 @@ node --version
 npm --version
 ```
 
-## 2. Install OpenClaude
+## 2. Install asicode
 
 ```bash
 npm install -g @gitlawb/openclaude
@@ -126,13 +126,13 @@ Check the basics:
 - make sure a model is loaded in LM Studio
 - make sure the model name matches what you set in `OPENAI_MODEL`
 
-## 6. Updating OpenClaude
+## 6. Updating asicode
 
 ```bash
-npm install -g @gitlawb/openclaude@latest
+npm install -g @gitlawb/asicode@latest
 ```
 
-## 7. Uninstalling OpenClaude
+## 7. Uninstalling asicode
 
 ```bash
 npm uninstall -g @gitlawb/openclaude
