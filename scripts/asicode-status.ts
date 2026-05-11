@@ -45,6 +45,19 @@ function fmtAge(tsMs: number): string {
   return `${Math.floor(ms / 86_400_000)}d ago`
 }
 
+// REQ-37: a run is "stale" when it never completed AND its ts_started
+// is older than the threshold (default 30 min). The latest run's
+// outcome='in_flight' for hours/days usually means the agent crashed
+// or the dispatch cmd was wrong — surface it so the walk-away user
+// stops waiting.
+const STALE_THRESHOLD_MS_DEFAULT = 30 * 60_000
+function isStaleInFlight(outcome: string, tsStarted: number): boolean {
+  if (outcome !== 'in_flight') return false
+  const thresh = parseInt(process.env.ASICODE_STALE_THRESHOLD_MS ?? '', 10)
+  const limit = Number.isFinite(thresh) && thresh > 0 ? thresh : STALE_THRESHOLD_MS_DEFAULT
+  return Date.now() - tsStarted > limit
+}
+
 function judgeSummary(db: Database, prSha: string | null): JudgeSummary {
   if (!prSha) return { rows: 0, composite: null }
   const row = db.query<{ n: number; mean: number | null }, [string]>(
@@ -118,6 +131,8 @@ function main() {
         outcome: r.outcome, isolation_mode: r.isolation_mode,
         wall_clock_ms: r.wall_clock_ms, tokens_used: r.tokens_used,
         was_race_winner: r.was_race_winner === 1, attempt_index: r.attempt_index,
+        // REQ-37: stale=true when in_flight + ts_started exceeds threshold
+        stale: isStaleInFlight(r.outcome, r.ts_started),
         verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms, stderr_tail: r.verify_stderr_tail } : null,
       })),
       pr: (brief.pr_sha || brief.pr_number !== null) ? {
@@ -145,7 +160,8 @@ function main() {
     console.log(`  runs         ${runs.length} total — latest:`)
     const r = runs[0]
     const dur = r.wall_clock_ms !== null ? `${(r.wall_clock_ms / 1000).toFixed(1)}s` : '?'
-    console.log(`    ${r.run_id}  ${r.outcome}  ${r.isolation_mode}  ${dur}${r.tokens_used !== null ? `  ${r.tokens_used}tok` : ''}`)
+    const stale = isStaleInFlight(r.outcome, r.ts_started) ? ` ⚠ stale (started ${fmtAge(r.ts_started)})` : ''
+    console.log(`    ${r.run_id}  ${r.outcome}${stale}  ${r.isolation_mode}  ${dur}${r.tokens_used !== null ? `  ${r.tokens_used}tok` : ''}`)
   }
   if (race) {
     console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}${race.strategy ? ` (${race.strategy})` : ''}`)

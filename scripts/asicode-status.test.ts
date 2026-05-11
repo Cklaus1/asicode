@@ -451,3 +451,76 @@ describe('REQ-21 verify_stderr_tail', () => {
     expect(winner.verify.stderr_tail).toContain('big stack trace')
   })
 })
+
+// REQ-37: in_flight + old ts_started → stale annotation.
+describe('REQ-37 stale in-flight detection', () => {
+  function seedRunAt(db: Database, runId: string, briefId: string, outcome: string, tsStartedAgoMs: number) {
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome)
+       VALUES (?, ?, ?, ?, ?)`,
+      [runId, briefId, Date.now() - tsStartedAgoMs, 'in_process', outcome],
+    )
+  }
+
+  test('text: in_flight + started 1h ago → "⚠ stale" annotation', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_stale1')
+    seedRunAt(db, 'run_old', 'brf_stale1', 'in_flight', 60 * 60_000)  // 1h ago
+    db.close()
+    const r = run(['brf_stale1'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('in_flight')
+    expect(r.stdout).toContain('⚠ stale')
+    expect(r.stdout).toMatch(/started \d+m ago|started 1h ago/)
+  })
+
+  test('text: in_flight + started <30min ago → no stale flag (still fresh)', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_fresh')
+    seedRunAt(db, 'run_new', 'brf_fresh', 'in_flight', 5 * 60_000)  // 5m ago
+    db.close()
+    const r = run(['brf_fresh'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('in_flight')
+    expect(r.stdout).not.toContain('stale')
+  })
+
+  test('text: completed run never marked stale (no matter how old)', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_done')
+    seedRunAt(db, 'run_done', 'brf_done', 'completed', 7 * 24 * 60 * 60_000)  // 7d ago
+    db.close()
+    const r = run(['brf_done'])
+    expect(r.stdout).not.toContain('stale')
+  })
+
+  test('--json: stale=true exposed per-run', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_j_stale')
+    seedRunAt(db, 'run_stale', 'brf_j_stale', 'in_flight', 60 * 60_000)
+    db.close()
+    const r = run(['brf_j_stale', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.runs[0].stale).toBe(true)
+  })
+
+  test('--json: stale=false for fresh in_flight', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_j_fresh')
+    seedRunAt(db, 'run_fresh', 'brf_j_fresh', 'in_flight', 5 * 60_000)
+    db.close()
+    const r = run(['brf_j_fresh', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.runs[0].stale).toBe(false)
+  })
+
+  test('ASICODE_STALE_THRESHOLD_MS overrides default threshold', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_tight')
+    seedRunAt(db, 'run_x', 'brf_tight', 'in_flight', 2 * 60_000)  // 2m ago
+    db.close()
+    // Tighten threshold to 60s → 2m run is now stale
+    const r = run(['brf_tight'], { ASICODE_STALE_THRESHOLD_MS: '60000' })
+    expect(r.stdout).toContain('⚠ stale')
+  })
+})
