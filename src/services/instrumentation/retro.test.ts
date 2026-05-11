@@ -383,6 +383,41 @@ describe('writeRetroWithMarkdown', () => {
     const r = writeRetroWithMarkdown({ record: rec, retrosDir })
     expect(readFileSync(r.markdownPath!, 'utf-8')).toContain('Retro')
   })
+
+  test('embeds runtime-probe markdown when provided', () => {
+    const retrosDir = join(tempDir, 'retros-probe')
+    const rec = makeRetro({ version_tag: 'v0.4.0' })
+    const probeMd = '## Runtime probe\n\nChecks: 1/1 ok\n\n**Enabled** (1): test-cap\n'
+    const r = writeRetroWithMarkdown({
+      record: rec,
+      retrosDir,
+      runtimeProbeMarkdown: probeMd,
+    })
+    const md = readFileSync(r.markdownPath!, 'utf-8')
+    expect(md).toContain('## Runtime probe')
+    expect(md).toContain('test-cap')
+    // The probe section must come before Q1 so it sits with the other
+    // mechanism sections (cycle metrics, path-walk) rather than buried
+    // after the qualitative answers.
+    expect(md.indexOf('## Runtime probe')).toBeLessThan(md.indexOf('## Q1'))
+  })
+
+  test('runtime probe omitted when caller does not provide it', () => {
+    const retrosDir = join(tempDir, 'retros-noprobe')
+    const rec = makeRetro({ version_tag: 'v0.5.0' })
+    const r = writeRetroWithMarkdown({ record: rec, retrosDir })
+    const md = readFileSync(r.markdownPath!, 'utf-8')
+    expect(md).not.toContain('## Runtime probe')
+  })
+
+  test('includePathWalk=false suppresses the walker section', () => {
+    const retrosDir = join(tempDir, 'retros-nowalk')
+    const rec = makeRetro({ version_tag: 'v0.6.0' })
+    const r = writeRetroWithMarkdown({ record: rec, retrosDir, includePathWalk: false })
+    const md = readFileSync(r.markdownPath!, 'utf-8')
+    expect(md).not.toContain('Integrated-path walk')
+    expect(md).toContain('## Q1') // other sections unaffected
+  })
 })
 
 describe('loadLastNRetros', () => {

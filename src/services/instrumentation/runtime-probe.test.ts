@@ -101,7 +101,7 @@ describe('probeRuntime — providers', () => {
     globalThis.fetch = (async () => {
       fetched = true
       return new Response('', { status: 200 })
-    }) as typeof fetch
+    }) as unknown as typeof fetch
     const r = await probeRuntime()
     const c = r.checks.find(c => c.name === 'ANTHROPIC_API_KEY')!
     expect(c.status).toBe('ok')
@@ -110,7 +110,7 @@ describe('probeRuntime — providers', () => {
 
   test('OLLAMA_HOST reachable → ok', async () => {
     process.env.OLLAMA_HOST = 'http://localhost:11434'
-    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as typeof fetch
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
     const r = await probeRuntime()
     const c = r.checks.find(c => c.name === 'OLLAMA_HOST')!
     expect(c.status).toBe('ok')
@@ -120,7 +120,7 @@ describe('probeRuntime — providers', () => {
     process.env.OLLAMA_HOST = 'http://localhost:11434'
     globalThis.fetch = (async () => {
       throw new Error('connect ECONNREFUSED')
-    }) as typeof fetch
+    }) as unknown as typeof fetch
     const r = await probeRuntime()
     const c = r.checks.find(c => c.name === 'OLLAMA_HOST')!
     expect(c.status).toBe('unreachable')

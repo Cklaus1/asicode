@@ -39,6 +39,10 @@ import {
   introspectCycle,
 } from '../src/services/instrumentation/retro-introspect'
 import { openInstrumentationDb } from '../src/services/instrumentation/client'
+import {
+  probeRuntime,
+  renderProbeMarkdown,
+} from '../src/services/instrumentation/runtime-probe'
 
 interface Args {
   versionTag: string | null
@@ -47,6 +51,7 @@ interface Args {
   dryRun: boolean
   auto: boolean
   timeoutSec: number
+  includeProbe: boolean
 }
 
 function parseDuration(s: string): number {
@@ -63,6 +68,7 @@ function parseArgs(argv: string[]): Args {
     dryRun: false,
     auto: false,
     timeoutSec: 90,
+    includeProbe: true,
   }
   try {
     for (let i = 2; i < argv.length; i++) {
@@ -73,9 +79,10 @@ function parseArgs(argv: string[]): Args {
       else if (a === '--dry-run') args.dryRun = true
       else if (a === '--auto') args.auto = true
       else if (a === '--timeout') args.timeoutSec = parseInt(argv[++i], 10)
+      else if (a === '--no-probe') args.includeProbe = false
       else if (a === '-h' || a === '--help') {
         console.log(
-          'usage: instrumentation-retro.ts --version vN.N.N [--since 7d] [--retros-dir DIR] [--dry-run] [--auto]',
+          'usage: instrumentation-retro.ts --version vN.N.N [--since 7d] [--retros-dir DIR] [--dry-run] [--auto] [--no-probe]',
         )
         process.exit(0)
       } else {
@@ -185,6 +192,21 @@ async function main() {
     process.exit(0)
   }
 
+  // ── Compute runtime-probe snapshot (iter 48 wire-up) ──
+  // The probe section captures which capabilities were live at retro
+  // time so a future reader can correlate "X feature didn't move" with
+  // "X feature was opted-out this cycle." Non-fatal: a probe failure
+  // just omits the section.
+  let probeMarkdown: string | undefined = undefined
+  if (args.includeProbe) {
+    try {
+      const probe = await probeRuntime()
+      probeMarkdown = renderProbeMarkdown(probe)
+    } catch (e) {
+      console.error(`[retro] probe failed (continuing without): ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   // ── Write the row + markdown ──
   const kind: RetroKind = args.auto ? 'forced_no_movement' : 'scheduled'
   const composed = result.composed
@@ -215,6 +237,7 @@ async function main() {
     },
     metrics: result.metrics,
     retrosDir: args.retrosDir,
+    runtimeProbeMarkdown: probeMarkdown,
   })
 
   console.log(`[retro] wrote retro=${write.retroId}`)

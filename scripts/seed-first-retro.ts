@@ -13,6 +13,7 @@
  */
 
 import { newRetroId, writeRetroWithMarkdown } from '../src/services/instrumentation/retro'
+import { probeRuntime, renderProbeMarkdown } from '../src/services/instrumentation/runtime-probe'
 
 const q1 = `**The substrate-first cadence delivered.** Forty-three iterations,
 six A-features end-to-end, 460 tests passing, ~15s L1 verifier loop. Each
@@ -138,9 +139,16 @@ async function main() {
     console.error('ASICODE_INSTRUMENTATION_DB must point at a migrated db')
     process.exit(2)
   }
+  let probeMarkdown: string | undefined
+  try {
+    probeMarkdown = renderProbeMarkdown(await probeRuntime())
+  } catch (e) {
+    console.error(`probe failed (continuing without): ${e instanceof Error ? e.message : String(e)}`)
+  }
   const result = writeRetroWithMarkdown({
     record: rec,
     retrosDir: 'docs/retros',
+    runtimeProbeMarkdown: probeMarkdown,
   })
   console.log(`wrote retro=${result.retroId}`)
   if (result.markdownPath) {

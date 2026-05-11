@@ -478,6 +478,14 @@ export interface WriteRetroOpts {
   metrics?: CycleMetrics
   /** Where to drop the markdown file. Defaults to <cwd>/docs/retros/. */
   retrosDir?: string
+  /**
+   * Pre-rendered markdown from runtime-probe. When provided, the retro
+   * file gets a "## Runtime probe" section between path-walk and Q1.
+   * Caller does the async fetch (renderRetroMarkdown is sync).
+   */
+  runtimeProbeMarkdown?: string
+  /** Set false to suppress the integrated-path-walker section. */
+  includePathWalk?: boolean
 }
 
 export interface WriteRetroResult {
@@ -490,6 +498,12 @@ export function writeRetroWithMarkdown(opts: WriteRetroOpts): WriteRetroResult {
   const dir = opts.retrosDir ?? join(process.cwd(), 'docs', 'retros')
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const markdownPath = join(dir, `${opts.record.version_tag}.md`)
-  writeFileSync(markdownPath, renderRetroMarkdown(opts.record, opts.metrics))
+  writeFileSync(
+    markdownPath,
+    renderRetroMarkdown(opts.record, opts.metrics, {
+      includePathWalk: opts.includePathWalk,
+      runtimeProbeMarkdown: opts.runtimeProbeMarkdown,
+    }),
+  )
   return { retroId: opts.record.retro_id, markdownPath }
 }
