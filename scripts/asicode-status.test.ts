@@ -514,6 +514,35 @@ describe('REQ-37 stale in-flight detection', () => {
     expect(parsed.runs[0].stale).toBe(false)
   })
 
+  // REQ-47: intervention_reason surfacing.
+  test('text: intervention_reason renders when set', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_int1')
+    db.run(`UPDATE briefs SET pr_outcome = 'abandoned', intervention_reason = 'race:budget_exhausted: projected 200000 tokens > 1000' WHERE brief_id = ?`, ['brf_int1'])
+    db.close()
+    const r = run(['brf_int1'])
+    expect(r.stdout).toContain('reason')
+    expect(r.stdout).toContain('race:budget_exhausted')
+  })
+
+  test('text: no reason line when intervention_reason null', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_int2')
+    db.close()
+    const r = run(['brf_int2'])
+    expect(r.stdout).not.toContain('reason ')
+  })
+
+  test('--json: intervention_reason exposed on brief block', () => {
+    const db = new Database(dbPath)
+    seedBrief(db, 'brf_int3')
+    db.run(`UPDATE briefs SET intervention_reason = 'reviewer caught typo' WHERE brief_id = ?`, ['brf_int3'])
+    db.close()
+    const r = run(['brf_int3', '--json'])
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.brief.intervention_reason).toBe('reviewer caught typo')
+  })
+
   // REQ-44: log_path reconstruction
   test('log_path: single-spawn (in_process) uses brief_id', () => {
     const db = new Database(dbPath)
