@@ -951,4 +951,80 @@ describe('Race + verifier section (REQ-23)', () => {
     const { stdout } = runReport(dbPath, ['--since', '7d'])
     expect(stdout).not.toContain('Race + verifier')
   })
+
+  // REQ-31: strategy distribution row.
+  test('strategy row counts each value (verifier_pick / llm_tiebreak / fcfs)', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    function seedRaceWithStrategy(b: string, strategy: string) {
+      seedBriefMin(db, b, now)
+      db.run(
+        `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, race_strategy)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [`${b}_w`, b, now, now + 100, 'worktree', 'completed', 0, 1, strategy],
+      )
+      db.run(
+        `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [`${b}_l`, b, now, now + 200, 'worktree', 'completed', 1, 0],
+      )
+    }
+    seedRaceWithStrategy('b_v1', 'verifier_pick')
+    seedRaceWithStrategy('b_v2', 'verifier_pick')
+    seedRaceWithStrategy('b_v3', 'verifier_pick')
+    seedRaceWithStrategy('b_l1', 'llm_tiebreak')
+    seedRaceWithStrategy('b_f1', 'fcfs')
+    seedRaceWithStrategy('b_f2', 'fcfs')
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Strategy')
+    expect(stdout).toMatch(/verifier 3/)
+    expect(stdout).toMatch(/llm 1/)
+    expect(stdout).toMatch(/fcfs 2/)
+  })
+
+  test('strategy row omits zero-count categories', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedBriefMin(db, 'b1', now)
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, race_strategy)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['r_w', 'b1', now, now + 100, 'worktree', 'completed', 0, 1, 'verifier_pick'],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['r_l', 'b1', now, now + 200, 'worktree', 'completed', 1, 0],
+    )
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/Strategy\s+verifier 1$/m)
+    expect(stdout).not.toContain('fcfs')
+    expect(stdout).not.toContain('llm ')
+  })
+
+  test('strategy row omitted when no winner has a strategy set (legacy)', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedBriefMin(db, 'b_legacy', now)
+    // Both racers but no race_strategy on winner — pre-REQ-30 races.
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['r_w', 'b_legacy', now, now + 100, 'worktree', 'completed', 0, 1],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['r_l', 'b_legacy', now, now + 200, 'worktree', 'completed', 1, 0],
+    )
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Race + verifier')
+    expect(stdout).not.toContain('Strategy ')
+  })
 })

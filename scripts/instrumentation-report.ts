@@ -156,6 +156,11 @@ interface Metrics {
   raceRacerPassRate: number | null  // % of all racers across all races that passed
   raceTotalRacers: number
   raceTotalRacersPassed: number
+  // REQ-31: distribution of race_strategy on winning runs.
+  raceStrategyVerifier: number
+  raceStrategyLlmTiebreak: number
+  raceStrategyFcfs: number
+  raceStrategyUnset: number  // older races before REQ-30 wired writes
 }
 
 function compute(db: Database, sinceMs: number): Metrics {
@@ -586,6 +591,30 @@ function compute(db: Database, sinceMs: number): Metrics {
   } catch {
     // Pre-0006 schema (no verify_outcome column) — leave at 0.
   }
+  // REQ-31: strategy distribution on winning runs.
+  let raceStrategyVerifier = 0, raceStrategyLlmTiebreak = 0,
+      raceStrategyFcfs = 0, raceStrategyUnset = 0
+  try {
+    const stratRows = db.query<{ race_strategy: string | null; n: number }, [number]>(
+      `WITH race_briefs AS (
+         SELECT brief_id FROM runs WHERE isolation_mode='worktree' AND ts_started >= ?
+         GROUP BY brief_id HAVING COUNT(*) >= 2
+       )
+       SELECT runs.race_strategy AS race_strategy, COUNT(*) AS n
+       FROM runs JOIN race_briefs USING (brief_id)
+       WHERE runs.was_race_winner = 1
+       GROUP BY runs.race_strategy`,
+    ).all(sinceMs)
+    for (const row of stratRows) {
+      if (row.race_strategy === 'verifier_pick') raceStrategyVerifier += row.n
+      else if (row.race_strategy === 'llm_tiebreak') raceStrategyLlmTiebreak += row.n
+      else if (row.race_strategy === 'fcfs') raceStrategyFcfs += row.n
+      else raceStrategyUnset += row.n
+    }
+  } catch {
+    // race_strategy column exists since schema v2, but the older v1
+    // didn't even have runs.race_strategy. Leave at 0 on read errors.
+  }
   const raceVerifyMeasured = raceWinnerPassed + raceWinnerFailed + raceWinnerVerifyError
   const raceWinnerPassRate = raceVerifyMeasured > 0 ? raceWinnerPassed / raceVerifyMeasured : null
   const raceRacerPassRate = raceTotalRacers > 0 ? raceTotalRacersPassed / raceTotalRacers : null
@@ -663,6 +692,10 @@ function compute(db: Database, sinceMs: number): Metrics {
     raceRacerPassRate,
     raceTotalRacers,
     raceTotalRacersPassed,
+    raceStrategyVerifier,
+    raceStrategyLlmTiebreak,
+    raceStrategyFcfs,
+    raceStrategyUnset,
   }
 }
 
@@ -856,6 +889,15 @@ function render(m: Metrics, sinceDays: number): string {
     }
     if (m.raceRacerPassRate !== null) {
       lines.push(`  Racer pass rate         ${fmtPct(m.raceRacerPassRate)}    (${m.raceTotalRacersPassed}/${m.raceTotalRacers} across all races)`)
+    }
+    // REQ-31: strategy distribution
+    const stratTotal = m.raceStrategyVerifier + m.raceStrategyLlmTiebreak + m.raceStrategyFcfs
+    if (stratTotal > 0) {
+      const parts: string[] = []
+      if (m.raceStrategyVerifier > 0) parts.push(`verifier ${m.raceStrategyVerifier}`)
+      if (m.raceStrategyLlmTiebreak > 0) parts.push(`llm ${m.raceStrategyLlmTiebreak}`)
+      if (m.raceStrategyFcfs > 0) parts.push(`fcfs ${m.raceStrategyFcfs}`)
+      lines.push(`  Strategy                ${parts.join(', ')}`)
     }
     lines.push('')
   }
