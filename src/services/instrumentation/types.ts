@@ -222,6 +222,8 @@ export const BriefUpdateSchema = z.object({
   pr_sha: z.string().optional(),
   pr_outcome: PrOutcomeSchema.optional(),
   intervention_reason: z.string().optional(),
+  // A12 — populated post-hoc by the brief-mode expander trigger.
+  expanded_brief: z.string().optional(),
   // A16 fields — populated post-hoc by the brief-gate trigger.
   a16_asi_readiness: ScoreSchema.optional(),
   a16_well_formedness: ScoreSchema.optional(),

@@ -146,9 +146,17 @@ export function adaptBeginRun(
       projectPath: cwd,
     })
 
-    // Fire the A16 brief-gate trigger when opted in. Updates the
-    // brief row with the evaluator's verdict asynchronously. Lazy-
-    // require keeps the recorder path lean when the gate is off.
+    // Fire the A12 expander trigger first when opted in — its async
+    // result populates the expanded_brief column. The A16 gate fires
+    // independently; if both are enabled they race (intentional —
+    // each writes its own columns, no contention). Lazy-require keeps
+    // the recorder path lean when either flag is off.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const expanderTrigger = require('../brief-gate/expander-trigger.js') as {
+      expandBriefOnSubmit: (input: { briefId: string; briefText: string }) => void
+    }
+    expanderTrigger.expandBriefOnSubmit({ briefId, briefText: initialPrompt })
+
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const briefGate = require('../brief-gate/trigger.js') as {
       evaluateBriefOnSubmit: (input: { briefId: string; briefText: string }) => void
