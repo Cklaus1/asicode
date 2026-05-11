@@ -13,11 +13,13 @@ import { resolve } from 'node:path'
 import { newBriefId, newRunId, recordBrief, recordRun } from '../src/services/instrumentation/client'
 import { buildRetrievedContext } from '../src/services/plan-retrieval/consumer'
 import { buildMemdirContext } from '../src/services/memdir-retrieval/consumer'
+import { raceAgents } from '../src/services/parallel/dispatcher'
 
-interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean }
+interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean; race: number }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false }
+  const envRace = parseInt(process.env.ASICODE_RACE_COUNT ?? '', 10)
+  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false, race: Number.isFinite(envRace) && envRace >= 2 ? envRace : 1 }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--file' || a === '-f') args.file = argv[++i]
@@ -26,16 +28,23 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--background' || a === '--bg') args.background = true
     else if (a === '--start') args.start = true
     else if (a === '--no-start') args.noStart = true
+    else if (a === '--race') {
+      const n = parseInt(argv[++i], 10)
+      if (!Number.isFinite(n) || n < 1 || n > 10) { console.error(`--race expects 1-10, got '${argv[i]}'`); process.exit(2) }
+      args.race = n
+    }
     else if (a === '--json') args.json = true
     else if (a === '-h' || a === '--help') {
-      console.log('usage: asicode-submit.ts [--file PATH | -] [--cwd PATH] [--start | --no-start] [--background] [--json]')
+      console.log('usage: asicode-submit.ts [--file PATH | -] [--cwd PATH] [--start | --no-start] [--race N] [--background] [--json]')
       console.log('  --file PATH    read brief from file (or pass path positionally)')
       console.log('  -              read brief from stdin')
       console.log('  --cwd PATH     project root (default: cwd)')
       console.log('  --start        spawn the agent via $ASICODE_DISPATCH_CMD with the brief on stdin (REQ-13)')
       console.log('  --no-start     record the brief only; do not spawn the agent')
-      console.log('  --background   detach the spawned agent and exit immediately (true walk-away)')
-      console.log('  --json         print {brief_id, project_fingerprint, run_id?, pid?} on stdout')
+      console.log('  --race N       REQ-14/A10: race N agents on isolated worktrees, pick the winning diff (1=no race, 2-10=best-of-N).')
+      console.log('                 ASICODE_RACE_COUNT sets the default. Requires --start (or ASICODE_AUTO_START=1).')
+      console.log('  --background   detach the spawned agent and exit immediately (true walk-away; single-spawn only — race is foreground)')
+      console.log('  --json         print {brief_id, project_fingerprint, run_id?, pid?, race?} on stdout')
       console.log('')
       console.log('Dispatch (REQ-13): when --start is given OR ASICODE_AUTO_START=1, this CLI')
       console.log('spawns the user-configured agent. Set ASICODE_DISPATCH_CMD to the command line')
@@ -186,13 +195,37 @@ async function main() {
   const autoStart = process.env.ASICODE_AUTO_START === '1'
   const shouldStart = !args.noStart && (args.start || autoStart)
   let dispatch: DispatchResult | DispatchSkip | null = null
-  if (shouldStart) dispatch = dispatchAgent(briefId, enrichedBrief, args.cwd, args.background)
+  // REQ-14: race mode (best-of-N). When race>=2 and shouldStart, use
+  // raceAgents instead of single-spawn. Race is foreground (we need to
+  // wait for the winner) — --background is ignored under race.
+  let race: { winnerRunId: string; racerRunIds: string[]; winnerWorktree: string; tiebreak: string | null } | null = null
+  let raceError: string | null = null
+  if (shouldStart && args.race >= 2) {
+    // ASICODE_RACE_SETTLE_MS / ASICODE_RACE_MAX_MS let ops + tests tune
+    // the race timing. Defaults (30s settle, 10min cap) live in the
+    // dispatcher; submit only overrides when env vars are set.
+    const settleMs = parseInt(process.env.ASICODE_RACE_SETTLE_MS ?? '', 10)
+    const maxMs = parseInt(process.env.ASICODE_RACE_MAX_MS ?? '', 10)
+    try {
+      const r = await raceAgents({
+        briefId, briefText: enrichedBrief, repoPath: args.cwd, count: args.race,
+        ...(Number.isFinite(settleMs) && settleMs > 0 ? { settleMs } : {}),
+        ...(Number.isFinite(maxMs) && maxMs > 0 ? { maxRaceMs: maxMs } : {}),
+      })
+      if (r.ok) race = { winnerRunId: r.winnerRunId, racerRunIds: r.racers.map(x => x.runId), winnerWorktree: r.winnerWorktree, tiebreak: r.tiebreak?.reason ?? null }
+      else raceError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
+    } catch (e) { raceError = e instanceof Error ? e.message : String(e) }
+  } else if (shouldStart) {
+    dispatch = dispatchAgent(briefId, enrichedBrief, args.cwd, args.background)
+  }
 
   if (args.json) {
     const out: Record<string, unknown> = { brief_id: briefId, project_fingerprint: fp, project_path: args.cwd, ts_submitted: now }
     if (retrievalHitCount > 0) out.retrieval_hits = retrievalHitCount
     if (memdirHitCount > 0) out.memdir_hits = memdirHitCount
-    if (dispatch?.ok) Object.assign(out, { run_id: dispatch.runId, pid: dispatch.pid, log_path: dispatch.logPath })
+    if (race) Object.assign(out, { race: { count: args.race, winner_run_id: race.winnerRunId, racer_run_ids: race.racerRunIds, winner_worktree: race.winnerWorktree, tiebreak: race.tiebreak } })
+    else if (raceError) out.race_error = raceError
+    else if (dispatch?.ok) Object.assign(out, { run_id: dispatch.runId, pid: dispatch.pid, log_path: dispatch.logPath })
     else if (dispatch && !dispatch.ok) Object.assign(out, { dispatch_skipped: dispatch.reason })
     console.log(JSON.stringify(out))
   }
@@ -201,7 +234,13 @@ async function main() {
     console.log(`  project:     ${args.cwd}`)
     console.log(`  fingerprint: ${fp}`)
     console.log(`  bytes:       ${briefText.length}`)
-    if (dispatch?.ok) {
+    if (race) {
+      console.log(`  race:        ${args.race} agents, winner=${race.winnerRunId}`)
+      console.log(`  worktree:    ${race.winnerWorktree}`)
+      if (race.tiebreak) console.log(`  tiebreak:    ${race.tiebreak}`)
+    } else if (raceError) {
+      console.log(`  race:        FAILED — ${raceError}`)
+    } else if (dispatch?.ok) {
       console.log(`  dispatched:  pid=${dispatch.pid} run=${dispatch.runId}`)
       console.log(`  log:         ${dispatch.logPath}`)
       if (args.background) console.log(`  mode:        background (detached)`)

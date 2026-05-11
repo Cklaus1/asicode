@@ -18,11 +18,11 @@ function applyAll(p: string) {
   db.close()
 }
 
-function run(argv: string[], opts: { stdin?: string; env?: Record<string, string> } = {}) {
+function run(argv: string[], opts: { stdin?: string; env?: Record<string, string>; timeout?: number } = {}) {
   const r = spawnSync(BUN, [SCRIPT, ...argv], {
     encoding: 'utf-8', input: opts.stdin,
     env: { ...process.env, ASICODE_INSTRUMENTATION_DB: dbPath, ...(opts.env ?? {}) },
-    timeout: 5000,
+    timeout: opts.timeout ?? 5000,
   })
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? -1 }
 }
@@ -314,5 +314,121 @@ describe('plan-retrieval consumer', () => {
     const row = db.query<{ user_text: string }, []>(`SELECT user_text FROM briefs LIMIT 1`).get()
     db.close()
     expect(row!.user_text).toBe('add caching')
+  })
+})
+
+// REQ-14: race-mode wiring. Submit --race N spawns N parallel racers
+// on isolated worktrees, picks a winner, and exposes it via JSON. Uses
+// a real git repo + a real ASICODE_DISPATCH_CMD shell script so the
+// substrate is exercised end-to-end.
+describe('--race best-of-N (REQ-14)', () => {
+  function gitInit(dir: string) {
+    spawnSync('git', ['init', '-q', '-b', 'main', dir])
+    spawnSync('git', ['-C', dir, 'config', 'user.email', 't@t.t'])
+    spawnSync('git', ['-C', dir, 'config', 'user.name', 'T'])
+    writeFileSync(join(dir, 'README.md'), 'init\n')
+    spawnSync('git', ['-C', dir, 'add', '.'])
+    spawnSync('git', ['-C', dir, 'commit', '-q', '--no-gpg-sign', '-m', 'init'])
+  }
+
+  // Fast race timing (500ms settle, 15s cap) keeps these tests
+  // bounded; the racer scripts complete in <100ms each so settle is
+  // enough to capture stragglers without slowing the suite.
+  const RACE_ENV = { ASICODE_RACE_SETTLE_MS: '500', ASICODE_RACE_MAX_MS: '20000' }
+
+  test('--race 2 spawns 2 racers and picks a winner', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'write result.txt\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo racer-out > result.txt; git config user.email t@t.t; git config user.name T; git add result.txt; git commit -q --no-gpg-sign -m "racer"',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-race'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.brief_id).toMatch(/^brf_/)
+    expect(parsed.race).toBeDefined()
+    expect(parsed.race.count).toBe(2)
+    expect(parsed.race.winner_run_id).toMatch(/^run_/)
+    expect(parsed.race.racer_run_ids).toHaveLength(2)
+    expect(parsed.race.winner_worktree).toMatch(/(\.asicode-race|asicode-race)/)
+    // No --background side-effects
+    expect(parsed.pid).toBeUndefined()
+  }, 90_000)
+
+  test('ASICODE_RACE_COUNT defaults the race count', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'echo win\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--json'], {
+      timeout: 60_000,
+      env: {
+        ...RACE_ENV,
+        ASICODE_RACE_COUNT: '2',
+        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo x > out.txt; git config user.email t@t.t; git config user.name T; git add out.txt; git commit -q --no-gpg-sign -m "x"',
+        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-race2'),
+      },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race?.count).toBe(2)
+    expect(parsed.race?.racer_run_ids).toHaveLength(2)
+  }, 90_000)
+
+  test('--race 1 falls back to single-spawn (no race orchestration)', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'single\n', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '1', '--background', '--json'], {
+      env: { ASICODE_DISPATCH_CMD: 'true', ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-r1') },
+    })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race).toBeUndefined()
+    expect(parsed.run_id).toMatch(/^run_/)
+  })
+
+  test('--race 11 (out-of-range) → exit 2', () => {
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--race', '11'])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('--race')
+  })
+
+  test('race + --no-start → race skipped (race needs dispatch)', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--race', '2', '--no-start', '--json'])
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race).toBeUndefined()
+    expect(parsed.run_id).toBeUndefined()
+  })
+
+  test('race with no ASICODE_DISPATCH_CMD → race_error surfaces opt_out', () => {
+    gitInit(projDir)
+    const briefPath = join(tempDir, 'b.md')
+    writeFileSync(briefPath, 'b', 'utf-8')
+    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--json'], {
+      timeout: 15_000,
+      env: { ...RACE_ENV, ASICODE_DISPATCH_CMD: '' },
+    })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBeTruthy()
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.race).toBeUndefined()
+    expect(parsed.race_error).toContain('opt_out')
+  })
+
+  test('--help mentions --race + ASICODE_RACE_COUNT', () => {
+    const r = run(['--help'], { env: { ASICODE_INSTRUMENTATION_DB: '' } })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('--race')
+    expect(r.stdout).toContain('ASICODE_RACE_COUNT')
   })
 })
