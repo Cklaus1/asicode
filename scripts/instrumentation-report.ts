@@ -88,7 +88,8 @@ interface Metrics {
   a16Clarify: number
   a16AcceptedAndMerged: number
   a16AcceptedAndAbandoned: number
-  a16RejectedButForced: number  // 'reject' verdict that still produced a PR (gate not enforced in v1)
+  a16RejectedButForced: number  // 'reject' verdict that still produced a PR (gate off OR --force override)
+  a16RejectedNotMerged: number  // 'reject' verdict that didn't produce a PR (gate likely enforced)
   a16AcceptancePrecision: number | null
   // A8 plan-retrieval stats
   a8TotalRetrievals: number
@@ -214,6 +215,7 @@ function compute(db: Database, sinceMs: number): Metrics {
         accepted_merged: number
         accepted_abandoned: number
         rejected_forced: number
+        rejected_not_merged: number
       },
       [number]
     >(
@@ -224,11 +226,12 @@ function compute(db: Database, sinceMs: number): Metrics {
          SUM(CASE WHEN a16_decision = 'clarify'  THEN 1 ELSE 0 END) AS clarify,
          SUM(CASE WHEN a16_decision = 'accept'  AND pr_outcome = 'merged_no_intervention' THEN 1 ELSE 0 END) AS accepted_merged,
          SUM(CASE WHEN a16_decision = 'accept'  AND pr_outcome = 'abandoned'              THEN 1 ELSE 0 END) AS accepted_abandoned,
-         SUM(CASE WHEN a16_decision = 'reject'  AND pr_outcome IN ('merged_no_intervention', 'merged_with_intervention') THEN 1 ELSE 0 END) AS rejected_forced
+         SUM(CASE WHEN a16_decision = 'reject'  AND pr_outcome IN ('merged_no_intervention', 'merged_with_intervention') THEN 1 ELSE 0 END) AS rejected_forced,
+         SUM(CASE WHEN a16_decision = 'reject'  AND (pr_outcome IS NULL OR pr_outcome NOT IN ('merged_no_intervention', 'merged_with_intervention')) THEN 1 ELSE 0 END) AS rejected_not_merged
        FROM briefs
        WHERE ts_submitted >= ?`,
     )
-    .get(sinceMs) ?? { graded: 0, accept: 0, reject: 0, clarify: 0, accepted_merged: 0, accepted_abandoned: 0, rejected_forced: 0 }
+    .get(sinceMs) ?? { graded: 0, accept: 0, reject: 0, clarify: 0, accepted_merged: 0, accepted_abandoned: 0, rejected_forced: 0, rejected_not_merged: 0 }
 
   const a16TotalGraded = a16Row.graded ?? 0
   const a16Accept = a16Row.accept ?? 0
@@ -237,6 +240,7 @@ function compute(db: Database, sinceMs: number): Metrics {
   const a16AcceptedAndMerged = a16Row.accepted_merged ?? 0
   const a16AcceptedAndAbandoned = a16Row.accepted_abandoned ?? 0
   const a16RejectedButForced = a16Row.rejected_forced ?? 0
+  const a16RejectedNotMerged = a16Row.rejected_not_merged ?? 0
   // Precision: accepts that landed cleanly vs. accepts with a known final outcome.
   // Briefs still in_flight don't count toward the denominator (their precision
   // isn't yet decidable).
@@ -440,6 +444,7 @@ function compute(db: Database, sinceMs: number): Metrics {
     a16AcceptedAndMerged,
     a16AcceptedAndAbandoned,
     a16RejectedButForced,
+    a16RejectedNotMerged,
     a16AcceptancePrecision,
     a8TotalRetrievals,
     a8RetrievalsFired,
@@ -509,13 +514,26 @@ function render(m: Metrics, sinceDays: number): string {
   // Suppressing the section on empty keeps the report clean for users
   // who haven't opted into ASICODE_BRIEF_GATE_ENABLED.
   if (m.a16TotalGraded > 0) {
-    lines.push('A16 brief gate (observe-only)')
+    // Iter 65: title reflects veto enforcement state at report time.
+    const vetoEnabled = process.env.ASICODE_BRIEF_VETO_ENABLED === '1'
+    lines.push(`A16 brief gate (${vetoEnabled ? 'veto enforced' : 'observe-only'})`)
     const total = m.a16TotalGraded
     lines.push(`  Briefs graded           ${String(total).padStart(4)}`)
     lines.push(`  Decision distribution   accept ${m.a16Accept}  reject ${m.a16Reject}  clarify ${m.a16Clarify}`)
     lines.push(`  Acceptance precision    ${fmtPct(m.a16AcceptancePrecision)}    (${m.a16AcceptedAndMerged}/${m.a16AcceptedAndMerged + m.a16AcceptedAndAbandoned} accepted briefs with outcome)`)
-    if (m.a16RejectedButForced > 0) {
-      lines.push(`  Reject-then-merged      ${m.a16RejectedButForced}    (v1 is observe-only; gate not enforced)`)
+    if (m.a16Reject > 0) {
+      // Two-row breakdown of what happened to vetoed briefs (iter 65).
+      // "vetoed" = reject + no merge (gate likely enforced).
+      // "overridden" = reject + merged anyway (gate off OR --force).
+      lines.push(
+        `  Vetoed                  ${String(m.a16RejectedNotMerged).padStart(4)}    (reject + no merge — gate enforced or brief refined)`,
+      )
+      if (m.a16RejectedButForced > 0) {
+        const label = vetoEnabled ? 'overridden' : 'gate not enforced'
+        lines.push(
+          `  Reject-then-merged      ${String(m.a16RejectedButForced).padStart(4)}    (${label})`,
+        )
+      }
     }
     lines.push('')
   }

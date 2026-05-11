@@ -220,7 +220,75 @@ describe('A16 brief-gate section', () => {
 
     const { stdout } = runReport(dbPath)
     expect(stdout).toContain('A16 brief gate')
-    expect(stdout).toContain('Reject-then-merged      1')
+    expect(stdout).toContain('Reject-then-merged')
+    // Format: padded with whitespace
+    expect(stdout).toMatch(/Reject-then-merged\s+1/)
+  })
+
+  test('iter 65: vetoed (reject + no merge) renders as separate row', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    // 2 vetoed: reject decisions that didn't produce a merge
+    seedGradedBrief(db, 'v1', 'reject', 2, 'abandoned', now)
+    seedGradedBrief(db, 'v2', 'reject', 1, 'in_flight', now)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('A16 brief gate')
+    expect(stdout).toMatch(/Vetoed\s+2/)
+    // No reject-then-merged row when none merged
+    expect(stdout).not.toContain('Reject-then-merged')
+  })
+
+  test('iter 65: title says veto enforced when flag is on', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedGradedBrief(db, 'r1', 'reject', 2, 'abandoned', now)
+    db.close()
+
+    // Spawn with the flag on; the runReport helper doesn't take env,
+    // so use spawnSync directly.
+    const { spawnSync } = require('node:child_process') as typeof import('node:child_process')
+    const proc = spawnSync(
+      'bun',
+      ['run', join(import.meta.dir, 'instrumentation-report.ts')],
+      {
+        env: {
+          ...process.env,
+          ASICODE_INSTRUMENTATION_DB: dbPath,
+          ASICODE_BRIEF_VETO_ENABLED: '1',
+        },
+        encoding: 'utf-8',
+      },
+    )
+    const stdout = proc.stdout ?? ''
+    expect(stdout).toContain('A16 brief gate (veto enforced)')
+  })
+
+  test('iter 65: title says observe-only when flag is off', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedGradedBrief(db, 'r1', 'reject', 2, 'abandoned', now)
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('A16 brief gate (observe-only)')
+  })
+
+  test('iter 65: both rows render when there are vetoed AND override briefs', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+    seedGradedBrief(db, 'v1', 'reject', 2, 'abandoned', now)  // vetoed
+    seedGradedBrief(db, 'o1', 'reject', 2, 'merged_no_intervention', now)  // overridden
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toMatch(/Vetoed\s+1/)
+    expect(stdout).toMatch(/Reject-then-merged\s+1/)
   })
 
   test('precision is n/a when no accepted brief has a final outcome', () => {
