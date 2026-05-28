@@ -102,8 +102,8 @@ import { getActiveAgentsFromList, getAgentDefinitionsWithOverrides, isBuiltInAge
 import type { LogOption } from './types/logs.js';
 import type { Message as MessageType } from './types/message.js';
 import { assertMinVersion } from './utils/autoUpdater.js';
-import { CLAUDE_IN_CHROME_SKILL_HINT, CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER } from './utils/claudeInChrome/prompt.js';
-import { setupClaudeInChrome, shouldAutoEnableClaudeInChrome, shouldEnableClaudeInChrome } from './utils/claudeInChrome/setup.js';
+import { shouldAutoEnableClaudeInChrome, shouldEnableClaudeInChrome } from './utils/claudeInChrome/setup.js';
+import { mergeSystemPromptFragment, resolveClaudeInChromeContribution } from './utils/claudeInChrome/integration.js';
 import { getContextWindowForModel } from './utils/context.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
@@ -1549,49 +1549,27 @@ async function run(): Promise<CommanderCommand> {
     setChromeFlagOverride(chromeOpts.chrome);
     const enableClaudeInChrome = shouldEnableClaudeInChrome(chromeOpts.chrome) && ("external" === 'ant' || isClaudeAISubscriber());
     const autoEnableClaudeInChrome = !enableClaudeInChrome && shouldAutoEnableClaudeInChrome();
-    if (enableClaudeInChrome) {
-      const platform = getPlatform();
-      try {
-        logEvent('tengu_claude_in_chrome_setup', {
-          platform: platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-        });
-        const {
-          mcpConfig: chromeMcpConfig,
-          allowedTools: chromeMcpTools,
-          systemPrompt: chromeSystemPrompt
-        } = setupClaudeInChrome();
-        dynamicMcpConfig = {
-          ...dynamicMcpConfig,
-          ...chromeMcpConfig
-        };
-        allowedTools.push(...chromeMcpTools);
-        if (chromeSystemPrompt) {
-          appendSystemPrompt = appendSystemPrompt ? `${chromeSystemPrompt}\n\n${appendSystemPrompt}` : chromeSystemPrompt;
+    // Claude-in-Chrome is an Anthropic-only integration; all of its MCP / tool /
+    // system-prompt + analytics policy lives behind resolveClaudeInChromeContribution
+    // (ADR-0001 step 2b — the seam a provider-scoped plugin will own). The kernel here
+    // only merges the generic contribution deltas.
+    if (enableClaudeInChrome || autoEnableClaudeInChrome) {
+      const mode = enableClaudeInChrome ? 'enabled' : 'auto';
+      const contribution = await resolveClaudeInChromeContribution(mode);
+      if (!contribution) {
+        // 'enabled' setup failure is fatal (matches prior behavior); 'auto' is a silent skip.
+        if (mode === 'enabled') {
+          // biome-ignore lint/suspicious/noConsole:: intentional console output
+          console.error(`Error: Failed to run with Claude in Chrome.`);
+          process.exit(1);
         }
-      } catch (error) {
-        logEvent('tengu_claude_in_chrome_setup_failed', {
-          platform: platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-        });
-        logForDebugging(`[Claude in Chrome] Error: ${error}`);
-        logError(error);
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.error(`Error: Failed to run with Claude in Chrome.`);
-        process.exit(1);
-      }
-    } else if (autoEnableClaudeInChrome) {
-      try {
-        const {
-          mcpConfig: chromeMcpConfig
-        } = setupClaudeInChrome();
+      } else {
         dynamicMcpConfig = {
           ...dynamicMcpConfig,
-          ...chromeMcpConfig
+          ...contribution.mcpConfig
         };
-        const hint = feature('WEB_BROWSER_TOOL') && typeof Bun !== 'undefined' && 'WebView' in Bun ? CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER : CLAUDE_IN_CHROME_SKILL_HINT;
-        appendSystemPrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${hint}` : hint;
-      } catch (error) {
-        // Silently skip any errors for the auto-enable
-        logForDebugging(`[Claude in Chrome] Error (auto-enable): ${error}`);
+        allowedTools.push(...contribution.allowedTools);
+        appendSystemPrompt = mergeSystemPromptFragment(appendSystemPrompt, contribution.systemPrompt);
       }
     }
 
