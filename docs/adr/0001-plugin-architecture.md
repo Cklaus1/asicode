@@ -73,6 +73,16 @@ fills them.
   registers `Tool` objects into the pool — no MCP subprocess.
 - **Tier 1 — provider registry.** Providers self-register (transport + model-prefix +
   auth) instead of a hardcoded switch. Makes "any LLM" a plugin point.
+- **Tier 1 — system-prompt fragments.** A plugin can contribute text appended to the
+  system prompt. Today this is a *closed seam* — only core `main.tsx` wiring can do it
+  (see `/chrome`). Opening it is what lets an integration plugin teach the model about
+  its own MCP tools.
+- **Cross-tier — availability / provider scope.** The manifest declares which
+  auth/provider environments a plugin is valid in (e.g. `availability: ['claude-ai']`),
+  reusing the per-command `availability` concept that already exists in
+  `src/types/command.ts`. A plugin out of scope is never loaded. This is the mechanism
+  that keeps **provider-specific** features (e.g. `/chrome`, which only works with
+  Anthropic) out of a provider-agnostic kernel without `#ifdef`-style gates in core.
 - **Tier 2 — UI-contribution surface** (this is what makes vim/voice plugins):
   - **component slots** — named render slots (PromptInput footer, REPL overlay, input
     decoration) the shell renders from a registry;
@@ -124,9 +134,17 @@ the kernel advertises what it supports; old plugins keep working as the contract
 
 1. **Adopt the built-in registry.** Move one command (`stickers` or `dream`) to a bundled
    plugin end-to-end; delete its `commands.ts` import. Proves the inversion.
-2. **Bundle the command-shaped bolt-ons** (`dream`, `advisor`, `stickers`, `knowledge`,
-   `chrome`) and the **autonomy substrate** as `asicode-autonomy`; add the `RunFinalized`
-   kernel event so the substrate subscribes via hooks instead of being imported.
+2. **Bundle the command-shaped bolt-ons** (`dream`, `advisor`, `stickers`, `knowledge`)
+   and the **autonomy substrate** as `asicode-autonomy`; add the `RunFinalized` kernel
+   event so the substrate subscribes via hooks instead of being imported.
+2b. **`/chrome` — the provider-scoped exemplar.** Extract `/chrome` + `src/utils/claudeInChrome/`
+   out of core into a default-off plugin scoped `availability: ['claude-ai']`. It is the
+   richest single example — command **+** MCP server **+** system-prompt fragment **+**
+   provider scope — so it drives the Tier-1 *system-prompt-fragment* and *availability/
+   provider-scope* capabilities above, and exposes the need for **in-process code
+   contribution** (a TS command/setup module, not markdown). Begin with a decoupling
+   refactor that collapses the scattered `main.tsx` wiring (`:1494`, `:1544-1594`) behind
+   a single integration seam, so the later move is a relocation, not a rewrite.
 3. **Tier 1:** open in-process **tool** contribution and the **provider** registry.
 4. **Tier 2:** build the UI-contribution surface (slots + input middleware + keybinding
    registry); migrate **voice → vim → buddy** onto it. Inline `native-ts` (it is a library,
@@ -138,7 +156,8 @@ the kernel advertises what it supports; old plugins keep working as the contract
 
 | Feature | Shape | Disposition |
 |---|---|---|
-| `dream` (memory consolidation), `advisor` (secondary model), `stickers` (swag), `knowledge` (KG/RAG), `chrome` (browser settings) | command | bundled plugin (step 2) |
+| `dream` (memory consolidation), `advisor` (secondary model), `stickers` (swag), `knowledge` (KG/RAG) | command | bundled plugin (step 2) |
+| **`chrome` (Claude-in-Chrome)** | command + MCP + system-prompt, **Anthropic-locked** (`availability: ['claude-ai']`, `isClaudeAISubscriber()`) | **provider-scoped plugin exemplar** (step 2b) — default-off, enables only for claude-ai; drives the system-prompt-fragment + provider-scope capabilities |
 | `judges`, `brief-gate`, `adversarial`, `replay`, `selfReview`, density | script/runtime-untouched | `asicode-autonomy` bundled plugin (step 2) |
 | `outcomes` recording | cross-cutting | stays kernel; emits `RunFinalized` event |
 | `voice`, `vim`, `buddy` | TUI / render + keystroke | plugin **after** Tier 2 (step 4) |
