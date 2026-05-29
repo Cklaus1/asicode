@@ -318,6 +318,14 @@ const PluginManifestMetadataSchema = lazySchema(() =>
           'Omit for "available everywhere". A plugin out of scope for the current ' +
           'provider/auth is not loaded (ADR-0001 availability/provider scope).',
       ),
+    systemPrompt: z
+      .string()
+      .optional()
+      .describe(
+        'Text appended to the system prompt when this plugin is enabled ' +
+          '(ADR-0001 system-prompt fragment) — e.g. to teach the model about the ' +
+          'tools or behavior this plugin contributes.',
+      ),
     dependencies: z
       .array(DependencyRefSchema())
       .optional()

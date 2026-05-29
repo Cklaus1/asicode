@@ -104,6 +104,7 @@ import type { Message as MessageType } from './types/message.js';
 import { assertMinVersion } from './utils/autoUpdater.js';
 import { shouldAutoEnableClaudeInChrome, shouldEnableClaudeInChrome } from './utils/claudeInChrome/setup.js';
 import { mergeSystemPromptFragment, resolveClaudeInChromeContribution } from './utils/claudeInChrome/integration.js';
+import { getPluginSystemPromptFragments } from './utils/plugins/loadPluginSystemPrompt.js';
 import { getContextWindowForModel } from './utils/context.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
@@ -1571,6 +1572,13 @@ async function run(): Promise<CommanderCommand> {
         allowedTools.push(...contribution.allowedTools);
         appendSystemPrompt = mergeSystemPromptFragment(appendSystemPrompt, contribution.systemPrompt);
       }
+    }
+
+    // ADR-0001 system-prompt fragments: enabled, in-scope plugins can append
+    // instructions to the system prompt (e.g. to teach the model about tools
+    // they contribute). Appended after chrome so an explicit chrome prepend keeps priority.
+    for (const fragment of await getPluginSystemPromptFragments()) {
+      appendSystemPrompt = mergeSystemPromptFragment(appendSystemPrompt, { text: fragment, position: 'append' });
     }
 
     // Extract strict MCP config flag
