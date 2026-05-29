@@ -58,6 +58,7 @@ import type {
   PluginLoadResult,
   PluginManifest,
 } from '../../types/plugin.js'
+import { meetsAvailability } from '../availability.js'
 import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import {
@@ -3233,6 +3234,20 @@ async function assemblePluginLoadResult(
     if (demoted.has(p.source)) p.enabled = false
   }
   allErrors.push(...depErrors)
+
+  // ADR-0001 availability/provider scope: demote plugins out of scope for the
+  // current provider/auth environment (e.g. an Anthropic-only plugin on an
+  // OpenAI session). Session-local, mirroring dependency demotion above.
+  for (const p of allPlugins) {
+    if (p.enabled && !meetsAvailability(p.manifest.availability)) {
+      p.enabled = false
+      logForDebugging(
+        `Plugin ${p.name} disabled: out of availability scope ${JSON.stringify(
+          p.manifest.availability,
+        )} for the current provider/auth`,
+      )
+    }
+  }
 
   const enabledPlugins = allPlugins.filter(p => p.enabled)
   logForDebugging(

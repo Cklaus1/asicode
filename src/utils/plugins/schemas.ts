@@ -310,6 +310,14 @@ const PluginManifestMetadataSchema = lazySchema(() =>
       .array(z.string())
       .optional()
       .describe('Tags for plugin discovery and categorization'),
+    availability: z
+      .array(z.enum(['claude-ai', 'console']))
+      .optional()
+      .describe(
+        'Auth/provider environments this plugin is valid in (e.g. ["claude-ai"]). ' +
+          'Omit for "available everywhere". A plugin out of scope for the current ' +
+          'provider/auth is not loaded (ADR-0001 availability/provider scope).',
+      ),
     dependencies: z
       .array(DependencyRefSchema())
       .optional()
