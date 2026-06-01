@@ -1,51 +1,79 @@
 /**
- * PR-merge → density A/B trigger.
+ * PR-merge -> density A/B trigger.
  *
  * Companion to services/judges/trigger.ts. Where the judge trigger fires
  * the 3-panel scoring at merge time, this trigger fires the density A/B
- * harness — and only when the commit looks like a refactor.
+ * harness -- and only when the commit looks like a refactor.
  *
  * Opt-in: ASICODE_DENSITY_ENABLED=1. Fire-and-forget. Failures log to
  * stderr but never bubble up to the caller's merge path.
  *
- * Refactor classification: heuristic only — the goal isn't perfect
+ * Refactor classification: heuristic only -- the goal isn't perfect
  * classification, it's "don't pollute the density metric with feature
  * PRs that *can't* be density-positive by definition." See classifyRefactor
  * below for the rules.
  *
- * Pre-tests caveat: the schema's full A/B requires the test pass-set at
- * HEAD~1 and HEAD. The trigger can't checkout HEAD~1 safely from inside
- * the merge path (working tree may be dirty, the user may have unrelated
- * changes). So this trigger fires recordDensity with NO test pass-sets —
- * the density_counted gate fails on "test pass-set not superset" until
- * the test-running orchestration ships. The mechanical LOC delta + the
- * judge equivalence score still record, which is the floor we want first.
+ * The behavioural A/B gate (test-superset) is controlled by the
+ * ASICODE_DENSITY_TESTS=1 env flag. Default-off because running a
+ * test suite is expensive and should never slow normal merge paths.
  */
+
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { asicodeEnv } from '../../utils/envCompat.js'
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
-import { recordDensity } from './density'
+import { type TestRunner, recordDensity } from './density'
 
-// ─── Opt-in ──────────────────────────────────────────────────────────
+// -- Opt-in --
 
 export function isDensityEnabled(): boolean {
   return asicodeEnv('DENSITY_ENABLED') === '1'
 }
 
-// ─── Refactor classification ─────────────────────────────────────────
+/**
+ * Whether to run the test suite as part of the A/B behavioural gate.
+ * Expensive -- shells out to the project's test runner. Default-off.
+ */
+export function isDensityTestsEnabled(): boolean {
+  return asicodeEnv('DENSITY_TESTS') === '1'
+}
+
+// -- Test-runner auto-detection --
+
+/**
+ * Peek at project files to guess which test runner to use.
+ * Detection is shallow -- only checks for the presence of known config
+ * files at the repo root.
+ */
+export function detectTestRunner(repoPath: string): TestRunner | null {
+  if (!existsSync(repoPath)) return null
+
+  const root = repoPath
+  if (existsSync(join(root, 'bun.lock')) || existsSync(join(root, 'bun.lockb'))) return 'bun'
+  if (existsSync(join(root, 'Cargo.toml'))) return 'cargo'
+  if (existsSync(join(root, 'pyproject.toml')) || existsSync(join(root, 'pytest.ini'))) return 'pytest'
+  if (existsSync(join(root, 'jest.config.js')) || existsSync(join(root, 'jest.config.ts'))) return 'jest'
+  // Deliberately conservative -- we only return a runner when we see a
+  // config file so we don't accidentally run tests on a project that
+  // doesn't have them.
+  return null
+}
+
+// -- Refactor classification --
 
 /**
  * Decide whether a commit looks like a refactor. Heuristic:
  *
- * STRONG signals (any one → refactor):
+ * STRONG signals (any one -> refactor):
  *   - Subject begins with 'refactor', 'refactor:', or 'refactor(' (Conventional Commits)
  *
- * WEAK signals (any combination of 2+ → refactor):
+ * WEAK signals (any combination of 2+ -> refactor):
  *   - Subject contains 'rename', 'simplify', 'cleanup', 'consolidate',
  *     'extract', 'inline', 'dedupe', 'reduce', 'collapse'
  *   - Diff is net-removal (more lines deleted than added in source files)
  *
- * EXCLUDERS (any one → not a refactor regardless):
+ * EXCLUDERS (any one -> not a refactor regardless):
  *   - Subject contains 'feat', 'feature', 'fix', 'add'
  *   - Diff includes binary file changes
  *
@@ -75,7 +103,7 @@ export async function classifyRefactor(
   if (/\b(feat|feature|add)\b/i.test(subject)) {
     return { isRefactor: false, reason: `subject mentions feature/add: "${subject}"` }
   }
-  // "fix" is tricky — a bugfix in a refactor PR is still net a fix.
+  // "fix" is tricky -- a bugfix in a refactor PR is still net a fix.
   // Allow refactor keywords to override fix.
   const isFixSubject = /\b(fix|hotfix)\b/i.test(subject)
   const isStrongRefactor = /^refactor(\b|:|\()/i.test(subject)
@@ -130,7 +158,7 @@ export async function classifyRefactor(
 
   const netRemoval = removed > added && removed - added >= 5 // at least 5-LOC net shrink
 
-  // Weak signal: keyword + net-removal → refactor
+  // Weak signal: keyword + net-removal -> refactor
   if (weakKeywordMatch && netRemoval) {
     return {
       isRefactor: true,
@@ -154,7 +182,7 @@ export async function classifyRefactor(
   return { isRefactor: false, reason: `no refactor signal in "${subject}"` }
 }
 
-// ─── Trigger ─────────────────────────────────────────────────────────
+// -- Trigger --
 
 export interface DensityTriggerInput {
   prSha: string
@@ -176,7 +204,7 @@ export function densityOnPrMerge(input: DensityTriggerInput): void {
         console.warn(`[asicode density] unreachable: ${input.prSha}`)
         return
       }
-      // Record density regardless of refactor classification — non-refactor
+      // Record density regardless of refactor classification -- non-refactor
       // PRs get is_refactor=0 and skip the metric, but the row exists for
       // audit. Mirrors the recordDensity contract.
       const result = await recordDensity({
@@ -184,7 +212,7 @@ export function densityOnPrMerge(input: DensityTriggerInput): void {
         briefId: input.briefId,
         isRefactor: cls.isRefactor,
         repoPath: input.repoPath,
-        runner: null, // see "Pre-tests caveat" in the header comment
+        runner: isDensityTestsEnabled() ? detectTestRunner(input.repoPath) : null,
       })
       // Iter 56: post density summary to PR if opted in. Soft-fail
       // (shouldPostDensity already filters non-refactors + null delta).
@@ -233,6 +261,6 @@ export async function densityOnPrMergeAwait(input: DensityTriggerInput): Promise
     briefId: input.briefId,
     isRefactor: cls.isRefactor,
     repoPath: input.repoPath,
-    runner: null,
+    runner: isDensityTestsEnabled() ? detectTestRunner(input.repoPath) : null,
   })
 }

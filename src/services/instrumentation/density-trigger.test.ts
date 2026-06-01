@@ -14,6 +14,8 @@ import {
   densityOnPrMerge,
   densityOnPrMergeAwait,
   isDensityEnabled,
+  detectTestRunner,
+  isDensityTestsEnabled,
 } from './density-trigger'
 
 const MIGRATION_PATH = join(
@@ -211,5 +213,100 @@ describe('densityOnPrMergeAwait (test variant)', () => {
   test('disabled → no-op no-throw', async () => {
     delete process.env.ASICODE_DENSITY_ENABLED
     await expect(densityOnPrMergeAwait({ prSha: 'abc1234', repoPath: repoDir })).resolves.toBeUndefined()
+  })
+})
+
+// ─── Test-runner detection ───────────────────────────────────────────
+
+describe('detectTestRunner', () => {
+  test('detects bun via bun.lock', () => {
+    const d = mkdtempSync(join(tmpdir(), 'detect-bun-'))
+    writeFileSync(join(d, 'bun.lock'), '')
+    expect(detectTestRunner(d)).toBe('bun')
+    rmSync(d, { recursive: true, force: true })
+  })
+
+  test('detects bun via bun.lockb', () => {
+    const d = mkdtempSync(join(tmpdir(), 'detect-bunb-'))
+    writeFileSync(join(d, 'bun.lockb'), '')
+    expect(detectTestRunner(d)).toBe('bun')
+    rmSync(d, { recursive: true, force: true })
+  })
+
+  test('detects cargo via Cargo.toml', () => {
+    const d = mkdtempSync(join(tmpdir(), 'detect-cargo-'))
+    writeFileSync(join(d, 'Cargo.toml'), '')
+    expect(detectTestRunner(d)).toBe('cargo')
+    rmSync(d, { recursive: true, force: true })
+  })
+
+  test('detects pytest via pyproject.toml', () => {
+    const d = mkdtempSync(join(tmpdir(), 'detect-pyproject-'))
+    writeFileSync(join(d, 'pyproject.toml'), '')
+    expect(detectTestRunner(d)).toBe('pytest')
+    rmSync(d, { recursive: true, force: true })
+  })
+
+  test('detects pytest via pytest.ini', () => {
+    const d = mkdtempSync(join(tmpdir(), 'detect-pytestini-'))
+    writeFileSync(join(d, 'pytest.ini'), '')
+    expect(detectTestRunner(d)).toBe('pytest')
+    rmSync(d, { recursive: true, force: true })
+  })
+
+  test('detects jest via jest.config.js', () => {
+    const d = mkdtempSync(join(tmpdir(), 'detect-jestjs-'))
+    writeFileSync(join(d, 'jest.config.js'), '')
+    expect(detectTestRunner(d)).toBe('jest')
+    rmSync(d, { recursive: true, force: true })
+  })
+
+  test('returns null for unknown projects', () => {
+    const d = mkdtempSync(join(tmpdir(), 'detect-unknown-'))
+    writeFileSync(join(d, 'README.md'), '')
+    expect(detectTestRunner(d)).toBeNull()
+    rmSync(d, { recursive: true, force: true })
+  })
+
+  test('returns null for missing repo path', () => {
+    expect(detectTestRunner('/does/not/exist')).toBeNull()
+  })
+})
+
+describe('isDensityTestsEnabled', () => {
+  test('false when unset (default-off)', () => {
+    delete process.env.ASICODE_DENSITY_TESTS
+    expect(isDensityTestsEnabled()).toBe(false)
+  })
+
+  test('true only when ASICODE_DENSITY_TESTS === "1"', () => {
+    process.env.ASICODE_DENSITY_TESTS = '1'
+    expect(isDensityTestsEnabled()).toBe(true)
+    process.env.ASICODE_DENSITY_TESTS = '0'
+    expect(isDensityTestsEnabled()).toBe(false)
+    delete process.env.ASICODE_DENSITY_TESTS
+    expect(isDensityTestsEnabled()).toBe(false)
+  })
+})
+
+describe('densityOnPrMergeAwait: default-off (runner=null)', () => {
+  test('does not attempt test detection when flag is off', async () => {
+    // Ensure the flag is explicitly unset
+    delete process.env.ASICODE_DENSITY_TESTS
+    delete process.env.ASICODE_DENSITY_ENABLED
+
+    // Even with density enabled, runner should be null because tests flag is off
+    process.env.ASICODE_DENSITY_ENABLED = '1'
+    commit('a.ts', 'one\n', 'refactor: shrink')
+    await densityOnPrMergeAwait({ prSha: git(['rev-parse', 'HEAD']).stdout.trim(), repoPath: repoDir })
+
+    const db = openInstrumentationDb()
+    const row = db
+      .query('SELECT tests_pre_passing, tests_post_passing, tests_pass_set_is_superset FROM density_ab WHERE pr_sha = ?')
+      .get(git(['rev-parse', 'HEAD']).stdout.trim()) as { tests_pre_passing: null; tests_post_passing: null; tests_pass_set_is_superset: null }
+    // With DENSITY_TESTS off, the behavioural columns stay null
+    expect(row.tests_pre_passing).toBeNull()
+    expect(row.tests_post_passing).toBeNull()
+    expect(row.tests_pass_set_is_superset).toBeNull()
   })
 })
