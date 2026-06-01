@@ -1,0 +1,277 @@
+diff --git a/scripts/asicode-status.test.ts b/scripts/asicode-status.test.ts
+index e3389d9..8be22f9 100644
+--- a/scripts/asicode-status.test.ts
++++ b/scripts/asicode-status.test.ts
+@@ -381,6 +381,64 @@ describe('REQ-21 verify_stderr_tail', () => {
+     expect(m![1].endsWith('…')).toBe(true)
+   })
+ 
++  // REQ-30: race strategy surfacing
++  test('race strategy renders in text when set on winner', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_st1')
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, verify_outcome, race_strategy)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['run_w', 'brf_st1', Date.now() - 1000, Date.now(), 'worktree', 'completed', 0, 1, 'passed', 'verifier_pick'],
++    )
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['run_l', 'brf_st1', Date.now() - 1000, Date.now(), 'worktree', 'completed', 1, 0],
++    )
++    db.close()
++    const r = run(['brf_st1'])
++    expect(r.code).toBe(0)
++    expect(r.stdout).toContain('winner=run_w (verifier_pick)')
++  })
++
++  test('--json: race.strategy surfaces the winner row value', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_st2')
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, race_strategy)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['run_a', 'brf_st2', Date.now() - 1000, Date.now(), 'worktree', 'completed', 0, 1, 'llm_tiebreak'],
++    )
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['run_b', 'brf_st2', Date.now() - 1000, Date.now(), 'worktree', 'completed', 1, 0],
++    )
++    db.close()
++    const r = run(['brf_st2', '--json'])
++    const parsed = JSON.parse(r.stdout)
++    expect(parsed.race.strategy).toBe('llm_tiebreak')
++  })
++
++  test('strategy null when winner row has no race_strategy set', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_st3')
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['run_a', 'brf_st3', Date.now() - 1000, Date.now(), 'worktree', 'completed', 0, 1],
++    )
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['run_b', 'brf_st3', Date.now() - 1000, Date.now(), 'worktree', 'completed', 1, 0],
++    )
++    db.close()
++    const r = run(['brf_st3', '--json'])
++    const parsed = JSON.parse(r.stdout)
++    expect(parsed.race.strategy).toBeNull()
++  })
++
+   test('--json: full stderr_tail exposed in runs[].verify', () => {
+     const db = new Database(dbPath)
+     seedBrief(db, 'brf_s4')
+diff --git a/scripts/asicode-status.ts b/scripts/asicode-status.ts
+index 53f5560..b57c70f 100644
+--- a/scripts/asicode-status.ts
++++ b/scripts/asicode-status.ts
+@@ -33,7 +33,7 @@ interface BriefRow {
+   pr_number: number | null;
+   reverted_within_7d: number; hotpatched_within_7d: number;
+ }
+-interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null }
++interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null; race_strategy: string | null }
+ interface JudgeSummary { rows: number; composite: number | null }
+ type ShipItSummary = { verdict: 'ship_it' | 'hold' | 'rollback'; reasons: string[]; signalsAvailable: number } | null
+ 
+@@ -82,7 +82,7 @@ function main() {
+ 
+   const runs = db.query<RunRow, [string]>(
+     `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index,
+-            verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail
++            verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail, race_strategy
+      FROM runs WHERE brief_id = ? ORDER BY ts_started DESC`,
+   ).all(args.briefId!)
+ 
+@@ -98,7 +98,12 @@ function main() {
+   const winnerRun = runs.find(r => r.was_race_winner === 1) ?? null
+   const racerRuns = runs.filter(r => r.isolation_mode === 'worktree')
+   const race = racerRuns.length >= 2
+-    ? { count: racerRuns.length, winner_run_id: winnerRun?.run_id ?? null }
++    ? {
++        count: racerRuns.length,
++        winner_run_id: winnerRun?.run_id ?? null,
++        // REQ-30: surface decision strategy (verifier_pick | llm_tiebreak | fcfs).
++        strategy: winnerRun?.race_strategy ?? null,
++      }
+     : null
+ 
+   if (args.json) {
+@@ -143,7 +148,7 @@ function main() {
+     console.log(`    ${r.run_id}  ${r.outcome}  ${r.isolation_mode}  ${dur}${r.tokens_used !== null ? `  ${r.tokens_used}tok` : ''}`)
+   }
+   if (race) {
+-    console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}`)
++    console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}${race.strategy ? ` (${race.strategy})` : ''}`)
+     // REQ-19: verifier breakdown across the racers (passed/failed/err)
+     const verdicts = racerRuns.filter(r => r.verify_outcome !== null)
+     if (verdicts.length > 0) {
+diff --git a/src/services/instrumentation/types.ts b/src/services/instrumentation/types.ts
+index 2b1eedd..dc41fc1 100644
+--- a/src/services/instrumentation/types.ts
++++ b/src/services/instrumentation/types.ts
+@@ -259,6 +259,9 @@ export const RunUpdateSchema = z.object({
+   wall_clock_ms: z.number().int().nonnegative().optional(),
+   tool_calls_total: z.number().int().nonnegative().optional(),
+   was_race_winner: z.boolean().optional(),
++  // REQ-30: which strategy decided this run was the winner. Recorded
++  // only on the winning row. 'verifier_pick' | 'llm_tiebreak' | 'fcfs'.
++  race_strategy: z.string().optional(),
+   // REQ-19: per-racer verifier signal (migration 0006).
+   verify_outcome: VerifyOutcomeSchema.optional(),
+   verify_exit_code: z.number().int().optional(),
+diff --git a/src/services/parallel/dispatcher.test.ts b/src/services/parallel/dispatcher.test.ts
+index 71d1af5..bd236c6 100644
+--- a/src/services/parallel/dispatcher.test.ts
++++ b/src/services/parallel/dispatcher.test.ts
+@@ -446,6 +446,109 @@ describe('raceAgents — verifier-gated winner (REQ-18)', () => {
+     if (r.ok) expect(r.baselineVerify).toBe('failed')
+   }, 60_000)
+ 
++  // REQ-30: race_strategy recorded on winner.
++  test('race_strategy=verifier_pick when verifier eliminates losers', async () => {
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      WT_NAME="$(basename "$PWD")"
++      case "$WT_NAME" in *-0-*) MARKER=fail ;; *) MARKER=ok ;; esac
++      echo "$MARKER" > marker.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add marker.txt
++      git commit -q --no-gpg-sign -m "marker $MARKER"
++    `
++    // Reset client singleton so it picks up the current dbPath.
++    const { closeInstrumentationDb } = await import('../instrumentation/client')
++    closeInstrumentationDb()
++    // Seed brief so the racer's recordRun FK succeeds.
++    const db = new Database(dbPath)
++    db.run(`INSERT OR IGNORE INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision) VALUES (?, ?, ?, ?, ?, ?)`,
++      ['rs1', Date.now(), repoDir, 'fp', 't', 'pending'])
++    db.close()
++    const r = await raceAgents({
++      briefId: 'rs1', briefText: 't',
++      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'strat-vp',
++      settleMs: 800, maxRaceMs: 20_000,
++      verifyCmd: 'grep -q "^ok$" marker.txt',
++    })
++    expect(r.ok).toBe(true)
++    if (r.ok) {
++      const db2 = new Database(dbPath)
++      const row = db2.query<{ race_strategy: string | null }, [string]>(
++        `SELECT race_strategy FROM runs WHERE run_id = ?`,
++      ).get(r.winnerRunId)
++      db2.close()
++      expect(row?.race_strategy).toBe('verifier_pick')
++    }
++  }, 60_000)
++
++  test('race_strategy=fcfs when no verifier configured', async () => {
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      echo "x" > x.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add x.txt
++      git commit -q --no-gpg-sign -m "x"
++    `
++    delete process.env.ASICODE_VERIFY_CMD
++    const { closeInstrumentationDb } = await import('../instrumentation/client')
++    closeInstrumentationDb()
++    const db = new Database(dbPath)
++    db.run(`INSERT OR IGNORE INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision) VALUES (?, ?, ?, ?, ?, ?)`,
++      ['rs2', Date.now(), repoDir, 'fp', 't', 'pending'])
++    db.close()
++    const r = await raceAgents({
++      briefId: 'rs2', briefText: 't',
++      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'strat-fcfs',
++      settleMs: 500, maxRaceMs: 15_000,
++      verifyCmd: '',
++    })
++    expect(r.ok).toBe(true)
++    if (r.ok) {
++      const db2 = new Database(dbPath)
++      const row = db2.query<{ race_strategy: string | null }, [string]>(
++        `SELECT race_strategy FROM runs WHERE run_id = ?`,
++      ).get(r.winnerRunId)
++      db2.close()
++      expect(row?.race_strategy).toBe('fcfs')
++    }
++  }, 60_000)
++
++  test('race_strategy=fcfs when verifier leaves all racers in same class', async () => {
++    // Verifier always passes → top class contains everyone → no shrink → fcfs.
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      echo "z" > z.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add z.txt
++      git commit -q --no-gpg-sign -m "z"
++    `
++    const { closeInstrumentationDb } = await import('../instrumentation/client')
++    closeInstrumentationDb()
++    const db = new Database(dbPath)
++    db.run(`INSERT OR IGNORE INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision) VALUES (?, ?, ?, ?, ?, ?)`,
++      ['rs3', Date.now(), repoDir, 'fp', 't', 'pending'])
++    db.close()
++    const r = await raceAgents({
++      briefId: 'rs3', briefText: 't',
++      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'strat-all-pass',
++      settleMs: 500, maxRaceMs: 15_000,
++      verifyCmd: 'true',
++    })
++    expect(r.ok).toBe(true)
++    if (r.ok) {
++      const db2 = new Database(dbPath)
++      const row = db2.query<{ race_strategy: string | null }, [string]>(
++        `SELECT race_strategy FROM runs WHERE run_id = ?`,
++      ).get(r.winnerRunId)
++      db2.close()
++      expect(row?.race_strategy).toBe('fcfs')
++    }
++  }, 60_000)
++
+   test('explicit verifyCmd: "" disables verifier even when env set', async () => {
+     process.env.ASICODE_DISPATCH_CMD = `
+       cat > /dev/null
+diff --git a/src/services/parallel/dispatcher.ts b/src/services/parallel/dispatcher.ts
+index 14a3814..5d2cf4b 100644
+--- a/src/services/parallel/dispatcher.ts
++++ b/src/services/parallel/dispatcher.ts
+@@ -356,7 +356,8 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
+   let tiebreak: TiebreakResult | null = null
+   let winner: RaceCandidate
+   // Restrict tiebreak to racers in the top verifier class only.
+-  const topClass = verifyCmd && finishers.some(r => r.verify)
++  const verifierRanCount = finishers.filter(r => r.verify).length
++  const topClass = verifyCmd && verifierRanCount > 0
+     ? (() => {
+         const ranked = finishers.filter(r => r.verify)
+         const topRank = Math.max(...ranked.map(r => verifyRank(r.verify!.outcome)))
+@@ -374,8 +375,18 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
+   } else {
+     winner = topClass[0] ?? candidates[0]
+   }
+-  // Flag the winner row
+-  try { updateRun({ run_id: winner.runId, was_race_winner: true }) } catch { /* db unavailable */ }
++  // REQ-30: record which strategy decided the winner.
++  //   'verifier_pick' — verifier ran AND it shrunk the candidate set
++  //                     (top class smaller than full finishers).
++  //   'llm_tiebreak'  — tiebreaker provider chose.
++  //   'fcfs'          — first-past-the-post (no verifier, or verifier
++  //                     left everything in one class with no LLM).
++  let raceStrategy: 'verifier_pick' | 'llm_tiebreak' | 'fcfs'
++  if (tiebreak !== null) raceStrategy = 'llm_tiebreak'
++  else if (verifyCmd && verifierRanCount > 0 && topClass.length < candidates.length) raceStrategy = 'verifier_pick'
++  else raceStrategy = 'fcfs'
++  // Flag the winner row with strategy.
++  try { updateRun({ run_id: winner.runId, was_race_winner: true, race_strategy: raceStrategy }) } catch { /* db unavailable */ }
+ 
+   // 7. Cleanup non-winner worktrees only. The winner's worktree stays
+   // on disk so the caller can read its diff, merge it, or run further

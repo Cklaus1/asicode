@@ -1,0 +1,272 @@
+diff --git a/docs/S2-autonomous-loop.md b/docs/S2-autonomous-loop.md
+new file mode 100644
+index 0000000..ee26747
+--- /dev/null
++++ b/docs/S2-autonomous-loop.md
+@@ -0,0 +1,129 @@
++# Autonomous-loop brief — drive S2→S3 to a live Autonomy Index
++
++> Feed this to a self-pacing agent loop (`/loop <this file>` in Claude Code, or any
++> harness that re-enters a task until an exit condition). It encodes the remaining
++> work to turn asicode's Autonomy Index from `n/a` into a real number, with explicit
++> verification, stop conditions, and guardrails so the loop converges instead of
++> spinning. Written 2026-06-01 after REQ-73..77.
++
++---
++
++## Mission (the single exit criterion)
++
++`bun run instrumentation:report` (against the S2 DB) prints a **non-null Autonomy
++Index** computed from a real `asicode:submit` run — i.e. all three primaries
++(hands_off, regression, judge_quality) are populated, not `n/a`.
++
++When that holds: STOP, print the report, summarize what moved it. Do not start new work.
++
++---
++
++## Environment (assert before each work item; re-source if a shell reset dropped it)
++
++```bash
++export ASICODE_INSTRUMENTATION_DB=/root/.asicode/s2-dogfood.db   # migrated to v9
++export ASICODE_DISPATCH_CMD="bun run $(pwd)/scripts/s2-dispatch-stub.ts"
++export ASICODE_VERIFY_CMD="test -f docs/asi-roadmap.md"
++export ASICODE_VERIFY_BASELINE=0
++export ASICODE_AUTONOMY_GATE=1
++export ASICODE_JUDGES_ENABLED=1
++export ASICODE_DENSITY_ENABLED=1
++export ASICODE_JUDGE_OPENAI_BASE_URL=http://127.0.0.1:18306/v1   # local vLLM qwen (t3)
++# L2 reviewer model → same local qwen via the OpenAI shim:
++export CLAUDE_CODE_USE_OPENAI=1
++export OPENAI_BASE_URL=http://127.0.0.1:18306/v1
++export OPENAI_MODEL=Qwen3.6-35B-A3B-FP8
++export OPENAI_API_KEY=local
++```
++Project-local `.asicode/judges.toml` routes the whole panel to qwen (gitignored).
++Preflight: `curl -s -m4 http://127.0.0.1:18306/v1/models` must return 200, else
++ESCALATE (vLLM down — not something the loop can fix).
++
++---
++
++## Work items (ordered; do the lowest-numbered unmet one each turn)
++
++### W1 — Root-cause the in-run judge timeout  ⚠️ bounded
++**Symptom:** judges return `kind:timeout` ONLY inside the live `bun run
++scripts/asicode-submit.ts` process. They complete in <2s standalone, after
++spawn/kill, after L2, and in a concurrent `runAutonomyGate`. vLLM serves 3
++concurrent calls in <200ms. Already ruled out: env vars, race children,
++sequencing, vLLM saturation, gate logic.
++**Next hypotheses to test (one per turn, cheapest first):**
++1. Add `PRAGMA busy_timeout=5000` in `openInstrumentationDb` (client.ts) — the
++   race's child recorder-adapters may hold a WAL write lock when the judge's
++   `writeToDb` fires; a blocked write inside `dispatchJudgments` could surface as
++   the judge "not completing". Test: does the in-run timeout disappear?
++2. Instrument `openaiCompat.complete` to log fetch start/return timestamps in-run
++   — distinguish "fetch never sent" (event-loop starved) from "fetch sent, no
++   response" (socket/keepalive wedge from L2's heavy API client).
++3. Try `writeToDb:false` for the gate's judge call (the gate doesn't need the row
++   persisted twice) — if the timeout vanishes, it's the DB write, not the fetch.
++**Bound:** at most **4 distinct hypothesis-tests across the whole loop**. If none
++resolves it, ESCALATE with the evidence table — do not keep guessing.
++
++### W2 — Make the density gatherer diff-driven
++The density harness is sha-keyed (reads a committed sha via `git log`/`git show`),
++so `gatherDensity` returns a missing signal pre-merge. Give it a path that
++classifies + scores the winner's uncommitted worktree diff (the diff is already in
++`GateContext.diff`; the worktree is `ctx.cwd`). Reuse `classifyRefactor` logic
++against the diff text rather than a sha. Keep the sha-keyed path for the
++post-merge trigger. Unit-test the new path.
++**Done when:** on a refactor diff, `gatherDensity` returns `ran:true` with a real
++`densityCounted`/`densityDelta`; on the doc-edit dogfood brief it returns
++`ran:true, passed:true` (n/a, non-refactor) instead of missing.
++
++### W3 — Clean full submit run
++With W1+W2 done, run the dogfood brief through `asicode:submit --start --race 2`.
++**Done when:** the brief row has `pr_outcome = merged_no_intervention` (gate
++mergeable) OR a documented, correct `needs_human` with a real reason — and
++`judgments` + `density_ab` rows exist for it.
++
++### W4 — Populate enough briefs for a non-null index
++The Autonomy Index needs hands_off (≥1 merged_no_intervention), a judge_quality
++mean (have it), and a regression rate (needs merged briefs in the W-2 window).
++Run the dogfood brief 3–5× (vary the note text per run so diffs differ). 
++**Done when:** `instrumentation:report` shows a non-null Autonomy Index → MISSION MET.
++
++### W5 — S3 calibration (only after W4)
++Run `instrumentation:calibrate`; confirm qwen ranks the known-tier corpus
++strong>medium>weak. If qwen's variance is too high (it scored a no-op doc edit
++1/1/1 on correctness vs 5/5/5 elsewhere), note it as a calibration finding — do
++not block the mission on it.
++
++---
++
++## Per-turn loop protocol
++
++1. Re-assert the environment block. Preflight vLLM.
++2. Pick the lowest-numbered unmet work item.
++3. Make the smallest change that advances it. Match surrounding style.
++4. Verify: `bun test <touched dirs>` green; `bun run build` green if a script/entrypoint changed.
++5. Commit as the next `REQ-NN` (one increment, intent line, the Co-Authored-By trailer).
++6. Re-check the mission exit criterion. If met → STOP and report.
++7. Otherwise schedule the next iteration (dynamic pacing; ~270s if waiting on a
++   running submit, longer if idle).
++
++## Stop / escalate conditions (hard)
++
++- **Success:** non-null Autonomy Index → stop, print report, summarize.
++- **W1 budget exhausted** (4 hypothesis-tests, unresolved) → escalate with the
++  evidence table. The loop must not keep trying random fixes.
++- **vLLM unreachable** → escalate (infra, not code).
++- **Any required `bun test` goes red and a fix isn't obvious in one turn** → stop,
++  surface the failure. Never commit over red. Never `--no-verify`.
++- **Repeated identical no-progress turns (×2)** → stop; the loop is stuck.
++
++## Guardrails (non-negotiable — same as the repo's BUILD_PROTOCOL)
++
++- **Commit only; never push.** All work stays on `adr-plugin-architecture`.
++- **Stage explicit paths.** Never `git add -A`. Never stage `.asicode-profile.json`
++  or `.asicode/judges.toml`.
++- **No PR step.** Run submit WITHOUT `--auto-pr` (the gate still records its verdict;
++  REQ-76 decoupled it). No pushing to the real remote.
++- **Honesty:** silence is not a pass. A gate that didn't run is `missing`, never a
++  fabricated pass. Report `needs_human` outcomes as successes of the gate, not
++  failures to paper over.
++- **Don't widen scope:** no plugin work, no P1 cuts, no Rust — only W1–W5.
++```
++```
+diff --git a/scripts/s2-dispatch-stub.ts b/scripts/s2-dispatch-stub.ts
+index 474046f..6ba894f 100644
+--- a/scripts/s2-dispatch-stub.ts
++++ b/scripts/s2-dispatch-stub.ts
+@@ -22,19 +22,13 @@ import { join } from 'node:path'
+ const cwd = process.env.ASICODE_WORKTREE_PATH ?? process.cwd()
+ const runId = process.env.ASICODE_RUN_ID ?? 'unknown-run'
+ 
+-// Drain stdin (the brief) so the writer doesn't get EPIPE; we don't need its
+-// content for the deterministic change, but a real agent would read it here.
++// Drain stdin (the brief) to completion so the writer doesn't get EPIPE, then
++// the FD is fully consumed and the process won't linger blocked on pipe_read.
++// A real agent would parse the brief here; the stub just consumes it.
+ try {
+-  // Bun: synchronous stdin read to completion.
+-  const chunks: Uint8Array[] = []
+-  const fd = 0
+-  const buf = new Uint8Array(65536)
+-  // best-effort, non-fatal
+-  void chunks
+-  void fd
+-  void buf
++  await new Response(Bun.stdin.stream()).text()
+ } catch {
+-  /* ignore */
++  /* ignore — stdin may already be closed */
+ }
+ 
+ const target = join(cwd, 'docs', 'asi-roadmap.md')
+diff --git a/src/services/autonomyGate/gather.ts b/src/services/autonomyGate/gather.ts
+index f139e6d..00fbbb0 100644
+--- a/src/services/autonomyGate/gather.ts
++++ b/src/services/autonomyGate/gather.ts
+@@ -76,8 +76,19 @@ export interface GateGatherers {
+  * Only the *required* gates for the risk class are gathered — there's no point
+  * paying judge latency on a `throwaway`. Advisory gates are left unmeasured
+  * (the contract records them as `advisory`, not `missing`, since they're not
+- * required). Required gatherers run concurrently; a gatherer that rejects is
+- * coerced to a missing signal (defence in depth — gatherers shouldn't throw).
++ * required). A gatherer that rejects is coerced to a missing signal (defence in
++ * depth — gatherers shouldn't throw).
++ *
++ * **Sequential by default.** The L2 and judges gatherers each make LLM calls; in
++ * a local/self-hosted deployment they target the *same* model backend (e.g. one
++ * vLLM instance). Firing them concurrently makes L2's large reviewer prompt and
++ * the 3-judge panel contend for the same batch — observed in S2: each judge
++ * fetch took ~107s under L2 load and tripped the 90s per-judge timeout, even
++ * though every call completes in <2s in isolation. Running gatherers one at a
++ * time removes the contention. Set `ASICODE_AUTONOMY_GATE_CONCURRENT=1` to fire
++ * them concurrently when the backend can absorb it (e.g. distinct hosted models
++ * per role). The gate runs once per brief off the latency-critical path, so
++ * sequential is the safe default.
+  */
+ export async function runAutonomyGate(
+   ctx: GateContext,
+@@ -86,23 +97,28 @@ export async function runAutonomyGate(
+ ): Promise<GateVerdict> {
+   const required = REQUIRED_GATES[ctx.riskClass]
+   const signals: GateSignals = {}
++  const concurrent = process.env.ASICODE_AUTONOMY_GATE_CONCURRENT === '1'
+ 
+-  await Promise.all(
+-    required.map(async (gate: GateName) => {
+-      try {
+-        signals[gate] = await gatherers[gate](ctx)
+-      } catch (e) {
+-        // Gatherers shouldn't throw; if one does, the gate is missing (never a
+-        // pass). Surface the cause so a misconfigured gate is diagnosable rather
+-        // than silently degrading the verdict to needs_human.
+-        if (process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1') {
+-          // eslint-disable-next-line no-console
+-          console.error(`[autonomy-gate] ${gate} gatherer threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
+-        }
+-        signals[gate] = { ran: false }
++  const run = async (gate: GateName): Promise<void> => {
++    try {
++      signals[gate] = await gatherers[gate](ctx)
++    } catch (e) {
++      // Gatherers shouldn't throw; if one does, the gate is missing (never a
++      // pass). Surface the cause so a misconfigured gate is diagnosable rather
++      // than silently degrading the verdict to needs_human.
++      if (process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1') {
++        // eslint-disable-next-line no-console
++        console.error(`[autonomy-gate] ${gate} gatherer threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
+       }
+-    }),
+-  )
++      signals[gate] = { ran: false }
++    }
++  }
++
++  if (concurrent) {
++    await Promise.all(required.map(run))
++  } else {
++    for (const gate of required) await run(gate)
++  }
+ 
+   return composeVerdict(ctx.riskClass, signals, thresholds)
+ }
+diff --git a/src/services/instrumentation/client.ts b/src/services/instrumentation/client.ts
+index 582b75c..c9062b4 100644
+--- a/src/services/instrumentation/client.ts
++++ b/src/services/instrumentation/client.ts
+@@ -62,6 +62,11 @@ export function openInstrumentationDb(dbPath?: string): Database {
+   db.exec('PRAGMA journal_mode = WAL')
+   db.exec('PRAGMA foreign_keys = ON')
+   db.exec('PRAGMA synchronous = NORMAL')
++  // Race dispatch spawns child processes that write runs/tool_calls rows to this
++  // same DB while the parent's autonomy gate writes judgments/reviews. Under WAL
++  // a concurrent writer otherwise fails immediately with SQLITE_BUSY ("database
++  // is locked"); a busy_timeout makes writers wait-and-retry instead of throwing.
++  db.exec('PRAGMA busy_timeout = 5000')
+ 
+   // Tolerate fresh / unmigrated dbs cleanly: a missing _schema_version
+   // table means "version 0", same outcome as version-too-old.
+diff --git a/src/services/judges/providers/openaiCompat.ts b/src/services/judges/providers/openaiCompat.ts
+index 1090d55..e402c25 100644
+--- a/src/services/judges/providers/openaiCompat.ts
++++ b/src/services/judges/providers/openaiCompat.ts
+@@ -95,6 +95,9 @@ export class OpenAICompatProvider implements Provider {
+     const headers: Record<string, string> = { 'content-type': 'application/json' }
+     if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`
+ 
++    const dbg = process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1'
++    const t0 = dbg ? Date.now() : 0
++    if (dbg) console.error(`[openaiCompat] ${this.modelId} fetch START`)
+     const res = await fetch(`${this.baseURL}/chat/completions`, {
+       method: 'POST',
+       headers,
+@@ -115,6 +118,7 @@ export class OpenAICompatProvider implements Provider {
+       }),
+       signal: args.signal,
+     })
++    if (dbg) console.error(`[openaiCompat] ${this.modelId} fetch RETURNED ${res.status} in ${Date.now() - t0}ms`)
+ 
+     if (!res.ok) {
+       const body = await res.text().catch(() => '')

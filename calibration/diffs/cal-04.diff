@@ -1,0 +1,78 @@
+diff --git a/scripts/asicode-submit.ts b/scripts/asicode-submit.ts
+index c007dda..f893363 100644
+--- a/scripts/asicode-submit.ts
++++ b/scripts/asicode-submit.ts
+@@ -247,9 +247,18 @@ async function main() {
+     // dispatcher; submit only overrides when env vars are set.
+     const settleMs = parseInt(process.env.ASICODE_RACE_SETTLE_MS ?? '', 10)
+     const maxMs = parseInt(process.env.ASICODE_RACE_MAX_MS ?? '', 10)
++    // Base the race off the CURRENT branch (HEAD), not the hardcoded 'main'.
++    // Branching off main when the working branch is ahead makes `git diff
++    // base..HEAD` capture the entire main→branch gap — for asicode's own
++    // dev branch that's ~700KB / ~170k tokens, which buried the judge panel's
++    // prompt and made each judge fetch take ~107s (REQ-79). The racer's diff
++    // must contain only what the racer changed. Override with ASICODE_RACE_BASE.
++    const headBranch = spawnSync('git', ['-C', args.cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' }).stdout?.trim()
++    const raceBase = process.env.ASICODE_RACE_BASE || (headBranch && headBranch !== 'HEAD' ? headBranch : undefined)
+     try {
+       const r = await raceAgents({
+         briefId, briefText: enrichedBrief, repoPath: args.cwd, count: args.race,
++        ...(raceBase ? { base: raceBase } : {}),
+         ...(Number.isFinite(settleMs) && settleMs > 0 ? { settleMs } : {}),
+         ...(Number.isFinite(maxMs) && maxMs > 0 ? { maxRaceMs: maxMs } : {}),
+       })
+diff --git a/src/services/autonomyGate/gather.ts b/src/services/autonomyGate/gather.ts
+index 00fbbb0..a7c348a 100644
+--- a/src/services/autonomyGate/gather.ts
++++ b/src/services/autonomyGate/gather.ts
+@@ -173,13 +173,23 @@ async function gatherL2(ctx: GateContext, thresholds: ContractThresholds): Promi
+  */
+ async function gatherJudges(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
+   const { judgeOnPrMergeAwait } = await import('../judges/trigger.js')
++  // Defence-in-depth: cap the diff fed to the panel. A pathological diff (e.g. a
++  // race mis-based off a far-behind branch — the REQ-79 bug — or a genuinely huge
++  // change) would otherwise make the prefill dominate and stall a local model.
++  // The judges see a representative head of the diff plus a truncation marker.
++  // Override the cap with ASICODE_JUDGE_DIFF_CHAR_CAP.
++  const cap = Number(process.env.ASICODE_JUDGE_DIFF_CHAR_CAP) || 60_000
++  const diff =
++    ctx.diff.length > cap
++      ? `${ctx.diff.slice(0, cap)}\n\n…[diff truncated: ${ctx.diff.length} chars total, showing first ${cap}]`
++      : ctx.diff
+   // prSha is required by the input type but unused when diff is provided; a
+   // stable synthetic value keeps any caching keyed per-brief.
+   const result = await judgeOnPrMergeAwait({
+     briefId: ctx.briefId,
+     prSha: `pre-merge-${ctx.briefId}`,
+     briefText: ctx.briefText,
+-    diff: ctx.diff,
++    diff,
+     cwd: ctx.cwd,
+   })
+   if (!result) return { ran: false } // judges disabled or no registry
+diff --git a/src/services/judges/providers/openaiCompat.ts b/src/services/judges/providers/openaiCompat.ts
+index e402c25..b8530ab 100644
+--- a/src/services/judges/providers/openaiCompat.ts
++++ b/src/services/judges/providers/openaiCompat.ts
+@@ -97,7 +97,8 @@ export class OpenAICompatProvider implements Provider {
+ 
+     const dbg = process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1'
+     const t0 = dbg ? Date.now() : 0
+-    if (dbg) console.error(`[openaiCompat] ${this.modelId} fetch START`)
++    const promptChars = args.system.length + args.user.length
++    if (dbg) console.error(`[openaiCompat] ${this.modelId} fetch START prompt_chars=${promptChars}`)
+     const res = await fetch(`${this.baseURL}/chat/completions`, {
+       method: 'POST',
+       headers,
+@@ -130,6 +131,11 @@ export class OpenAICompatProvider implements Provider {
+       const msg = typeof data.error === 'string' ? data.error : (data.error.message ?? 'unknown error')
+       throw new Error(`OpenAI-compat ${this.modelId} error: ${msg}`)
+     }
++    if (dbg) {
++      const u = (data as { usage?: { completion_tokens?: number } }).usage
++      const fr = (data as { choices?: Array<{ finish_reason?: string }> }).choices?.[0]?.finish_reason
++      console.error(`[openaiCompat] ${this.modelId} completion_tokens=${u?.completion_tokens} finish_reason=${fr}`)
++    }
+     return stripThink(data.choices?.[0]?.message?.content ?? '')
+   }
+ }

@@ -1,0 +1,466 @@
+diff --git a/scripts/asicode-submit.test.ts b/scripts/asicode-submit.test.ts
+index 336f1c5..285891e 100644
+--- a/scripts/asicode-submit.test.ts
++++ b/scripts/asicode-submit.test.ts
+@@ -431,4 +431,50 @@ describe('--race best-of-N (REQ-14)', () => {
+     expect(r.stdout).toContain('--race')
+     expect(r.stdout).toContain('ASICODE_RACE_COUNT')
+   })
++
++  test('--help mentions --auto-pr + ASICODE_AUTO_PR (REQ-15)', () => {
++    const r = run(['--help'], { env: { ASICODE_INSTRUMENTATION_DB: '' } })
++    expect(r.code).toBe(0)
++    expect(r.stdout).toContain('--auto-pr')
++    expect(r.stdout).toContain('ASICODE_AUTO_PR')
++  })
++
++  test('race exposes winner_branch in JSON (REQ-15 prerequisite)', () => {
++    gitInit(projDir)
++    const briefPath = join(tempDir, 'b.md')
++    writeFileSync(briefPath, 'wb\n', 'utf-8')
++    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--json'], {
++      timeout: 60_000,
++      env: {
++        ...RACE_ENV,
++        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo x > out.txt; git config user.email t@t.t; git config user.name T; git add out.txt; git commit -q --no-gpg-sign -m "x"',
++        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-wb'),
++      },
++    })
++    expect(r.code).toBe(0)
++    const parsed = JSON.parse(r.stdout)
++    expect(parsed.race?.winner_branch).toMatch(/asicode\/race-/)
++  }, 90_000)
++
++  test('--auto-pr without race + remote → pr_error surfaces (soft-fail)', () => {
++    gitInit(projDir)
++    const briefPath = join(tempDir, 'b.md')
++    writeFileSync(briefPath, 'b\n', 'utf-8')
++    // race wins, but no remote → openWinnerPr returns no_remote
++    const r = run([briefPath, '--cwd', projDir, '--start', '--race', '2', '--auto-pr', '--json'], {
++      timeout: 60_000,
++      env: {
++        ...RACE_ENV,
++        ASICODE_DISPATCH_CMD: 'cat > /dev/null; echo y > out.txt; git config user.email t@t.t; git config user.name T; git add out.txt; git commit -q --no-gpg-sign -m "y"',
++        ASICODE_RUN_LOG_DIR: join(tempDir, 'runlogs-pr-fail'),
++      },
++    })
++    expect(r.code).toBe(0)
++    const parsed = JSON.parse(r.stdout)
++    // Race still won
++    expect(parsed.race).toBeDefined()
++    expect(parsed.pr).toBeUndefined()
++    // pr_error mentions no_remote
++    expect(parsed.pr_error).toContain('no_remote')
++  }, 90_000)
+ })
+diff --git a/scripts/asicode-submit.ts b/scripts/asicode-submit.ts
+index 8172485..64b2f2d 100644
+--- a/scripts/asicode-submit.ts
++++ b/scripts/asicode-submit.ts
+@@ -14,12 +14,13 @@ import { newBriefId, newRunId, recordBrief, recordRun } from '../src/services/in
+ import { buildRetrievedContext } from '../src/services/plan-retrieval/consumer'
+ import { buildMemdirContext } from '../src/services/memdir-retrieval/consumer'
+ import { raceAgents } from '../src/services/parallel/dispatcher'
++import { isAutoPrEnabled, openWinnerPr } from '../src/services/parallel/openWinnerPr'
+ 
+-interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean; race: number }
++interface Args { file: string | null; stdin: boolean; cwd: string; background: boolean; json: boolean; start: boolean; noStart: boolean; race: number; autoPr: boolean }
+ 
+ function parseArgs(argv: string[]): Args {
+   const envRace = parseInt(process.env.ASICODE_RACE_COUNT ?? '', 10)
+-  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false, race: Number.isFinite(envRace) && envRace >= 2 ? envRace : 1 }
++  const args: Args = { file: null, stdin: false, cwd: process.cwd(), background: false, json: false, start: false, noStart: false, race: Number.isFinite(envRace) && envRace >= 2 ? envRace : 1, autoPr: isAutoPrEnabled() }
+   for (let i = 2; i < argv.length; i++) {
+     const a = argv[i]
+     if (a === '--file' || a === '-f') args.file = argv[++i]
+@@ -33,6 +34,8 @@ function parseArgs(argv: string[]): Args {
+       if (!Number.isFinite(n) || n < 1 || n > 10) { console.error(`--race expects 1-10, got '${argv[i]}'`); process.exit(2) }
+       args.race = n
+     }
++    else if (a === '--auto-pr') args.autoPr = true
++    else if (a === '--no-auto-pr') args.autoPr = false
+     else if (a === '--json') args.json = true
+     else if (a === '-h' || a === '--help') {
+       console.log('usage: asicode-submit.ts [--file PATH | -] [--cwd PATH] [--start | --no-start] [--race N] [--background] [--json]')
+@@ -43,6 +46,8 @@ function parseArgs(argv: string[]): Args {
+       console.log('  --no-start     record the brief only; do not spawn the agent')
+       console.log('  --race N       REQ-14/A10: race N agents on isolated worktrees, pick the winning diff (1=no race, 2-10=best-of-N).')
+       console.log('                 ASICODE_RACE_COUNT sets the default. Requires --start (or ASICODE_AUTO_START=1).')
++      console.log('  --auto-pr      REQ-15: after a race wins, push the winner branch + `gh pr create` against base.')
++      console.log('                 ASICODE_AUTO_PR=1 sets the default. Use --no-auto-pr to override.')
+       console.log('  --background   detach the spawned agent and exit immediately (true walk-away; single-spawn only — race is foreground)')
+       console.log('  --json         print {brief_id, project_fingerprint, run_id?, pid?, race?} on stdout')
+       console.log('')
+@@ -198,7 +203,7 @@ async function main() {
+   // REQ-14: race mode (best-of-N). When race>=2 and shouldStart, use
+   // raceAgents instead of single-spawn. Race is foreground (we need to
+   // wait for the winner) — --background is ignored under race.
+-  let race: { winnerRunId: string; racerRunIds: string[]; winnerWorktree: string; tiebreak: string | null } | null = null
++  let race: { winnerRunId: string; racerRunIds: string[]; winnerWorktree: string; winnerBranch: string; tiebreak: string | null } | null = null
+   let raceError: string | null = null
+   if (shouldStart && args.race >= 2) {
+     // ASICODE_RACE_SETTLE_MS / ASICODE_RACE_MAX_MS let ops + tests tune
+@@ -212,21 +217,38 @@ async function main() {
+         ...(Number.isFinite(settleMs) && settleMs > 0 ? { settleMs } : {}),
+         ...(Number.isFinite(maxMs) && maxMs > 0 ? { maxRaceMs: maxMs } : {}),
+       })
+-      if (r.ok) race = { winnerRunId: r.winnerRunId, racerRunIds: r.racers.map(x => x.runId), winnerWorktree: r.winnerWorktree, tiebreak: r.tiebreak?.reason ?? null }
++      if (r.ok) race = { winnerRunId: r.winnerRunId, racerRunIds: r.racers.map(x => x.runId), winnerWorktree: r.winnerWorktree, winnerBranch: r.winnerBranch, tiebreak: r.tiebreak?.reason ?? null }
+       else raceError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
+     } catch (e) { raceError = e instanceof Error ? e.message : String(e) }
+   } else if (shouldStart) {
+     dispatch = dispatchAgent(briefId, enrichedBrief, args.cwd, args.background)
+   }
+ 
++  // REQ-15: auto-PR. Only fires when a race won AND --auto-pr (or
++  // ASICODE_AUTO_PR=1). Soft-fail — race result stays exposed.
++  let pr: { prNumber: number; url: string; branch: string } | null = null
++  let prError: string | null = null
++  if (race && args.autoPr) {
++    try {
++      const r = await openWinnerPr({
++        branch: race.winnerBranch, repoPath: args.cwd, worktreePath: race.winnerWorktree,
++        briefText, briefId, racerRunIds: race.racerRunIds,
++      })
++      if (r.ok) pr = { prNumber: r.prNumber, url: r.url, branch: r.branch }
++      else prError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
++    } catch (e) { prError = e instanceof Error ? e.message : String(e) }
++  }
++
+   if (args.json) {
+     const out: Record<string, unknown> = { brief_id: briefId, project_fingerprint: fp, project_path: args.cwd, ts_submitted: now }
+     if (retrievalHitCount > 0) out.retrieval_hits = retrievalHitCount
+     if (memdirHitCount > 0) out.memdir_hits = memdirHitCount
+-    if (race) Object.assign(out, { race: { count: args.race, winner_run_id: race.winnerRunId, racer_run_ids: race.racerRunIds, winner_worktree: race.winnerWorktree, tiebreak: race.tiebreak } })
++    if (race) Object.assign(out, { race: { count: args.race, winner_run_id: race.winnerRunId, racer_run_ids: race.racerRunIds, winner_worktree: race.winnerWorktree, winner_branch: race.winnerBranch, tiebreak: race.tiebreak } })
+     else if (raceError) out.race_error = raceError
+     else if (dispatch?.ok) Object.assign(out, { run_id: dispatch.runId, pid: dispatch.pid, log_path: dispatch.logPath })
+     else if (dispatch && !dispatch.ok) Object.assign(out, { dispatch_skipped: dispatch.reason })
++    if (pr) out.pr = pr
++    else if (prError) out.pr_error = prError
+     console.log(JSON.stringify(out))
+   }
+   else {
+@@ -237,7 +259,10 @@ async function main() {
+     if (race) {
+       console.log(`  race:        ${args.race} agents, winner=${race.winnerRunId}`)
+       console.log(`  worktree:    ${race.winnerWorktree}`)
++      console.log(`  branch:      ${race.winnerBranch}`)
+       if (race.tiebreak) console.log(`  tiebreak:    ${race.tiebreak}`)
++      if (pr) console.log(`  pr:          #${pr.prNumber} ${pr.url}`)
++      else if (prError) console.log(`  pr:          FAILED — ${prError}`)
+     } else if (raceError) {
+       console.log(`  race:        FAILED — ${raceError}`)
+     } else if (dispatch?.ok) {
+diff --git a/src/services/parallel/dispatcher.ts b/src/services/parallel/dispatcher.ts
+index f8ce895..b234fa5 100644
+--- a/src/services/parallel/dispatcher.ts
++++ b/src/services/parallel/dispatcher.ts
+@@ -53,7 +53,7 @@ export type RaceFailure =
+   | 'no_finishers'             // race timed out with no finishers
+ 
+ export type RaceResult =
+-  | { ok: true; winnerRunId: string; winnerDiff: string; winnerWorktree: string; racers: RaceRacer[]; tiebreak: TiebreakResult | null }
++  | { ok: true; winnerRunId: string; winnerDiff: string; winnerWorktree: string; winnerBranch: string; racers: RaceRacer[]; tiebreak: TiebreakResult | null }
+   | { ok: false; reason: RaceFailure; detail?: string; racers?: RaceRacer[] }
+ 
+ const DEFAULT_SETTLE_MS = 30_000
+@@ -246,6 +246,7 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
+     winnerRunId: winner.runId,
+     winnerDiff: winner.diff,
+     winnerWorktree: winnerPath,
++    winnerBranch: winner.branch,
+     racers,
+     tiebreak,
+   }
+diff --git a/src/services/parallel/openWinnerPr.test.ts b/src/services/parallel/openWinnerPr.test.ts
+new file mode 100644
+index 0000000..fc5aa10
+--- /dev/null
++++ b/src/services/parallel/openWinnerPr.test.ts
+@@ -0,0 +1,186 @@
++// REQ-15: openWinnerPr substrate tests. Uses real spawn for git steps
++// (mkdtemp + git init); stubs gh via the _setSpawnForTest injection in
++// pr-comment-shared/gh.ts. Same dual-injection pattern as iter 89+90.
++
++import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
++import { EventEmitter } from 'node:events'
++import { spawnSync } from 'node:child_process'
++import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { _resetSpawnForTest, _setSpawnForTest } from '../pr-comment-shared/gh'
++import { buildPrBody, buildPrTitle, isAutoPrEnabled, openWinnerPr } from './openWinnerPr'
++
++let tempDir: string, repoDir: string
++
++class StubChild extends EventEmitter {
++  stdout = new EventEmitter()
++  stderr = new EventEmitter()
++  stdin = { end: (_data?: string | Buffer) => {} }
++  kill() {}
++  fire(s: { stdout?: string[]; stderr?: string[]; exitCode: number; errorEvent?: Error }) {
++    setImmediate(() => {
++      if (s.errorEvent) { this.emit('error', s.errorEvent); return }
++      for (const l of s.stdout ?? []) this.stdout.emit('data', Buffer.from(l, 'utf-8'))
++      for (const l of s.stderr ?? []) this.stderr.emit('data', Buffer.from(l, 'utf-8'))
++      this.emit('close', s.exitCode)
++    })
++  }
++}
++
++let ghScripts: Array<{ matcher: (a: string[]) => boolean; script: { stdout?: string[]; stderr?: string[]; exitCode: number } }> = []
++function fakeGhSpawn(_cmd: string, args: readonly string[] | undefined): StubChild {
++  const a = (args ?? []) as string[]
++  for (const m of ghScripts) {
++    if (m.matcher(a)) { const c = new StubChild(); c.fire(m.script); return c }
++  }
++  const c = new StubChild(); c.fire({ exitCode: 0 }); return c
++}
++
++function gitInit(dir: string) {
++  spawnSync('git', ['init', '-q', '-b', 'main', dir])
++  spawnSync('git', ['-C', dir, 'config', 'user.email', 't@t.t'])
++  spawnSync('git', ['-C', dir, 'config', 'user.name', 'T'])
++  writeFileSync(join(dir, 'README.md'), 'init\n')
++  spawnSync('git', ['-C', dir, 'add', '.'])
++  spawnSync('git', ['-C', dir, 'commit', '-q', '--no-gpg-sign', '-m', 'init'])
++}
++
++beforeEach(() => {
++  ghScripts = []
++  _setSpawnForTest(fakeGhSpawn as unknown as Parameters<typeof _setSpawnForTest>[0])
++  tempDir = mkdtempSync(join(tmpdir(), 'asicode-winner-pr-'))
++  repoDir = join(tempDir, 'repo')
++  ;(globalThis as Record<string, unknown>)['_makeDir'] = repoDir
++})
++afterEach(() => {
++  _resetSpawnForTest()
++  rmSync(tempDir, { recursive: true, force: true })
++})
++
++describe('buildPrTitle', () => {
++  test('first non-empty line, trimmed', () => {
++    expect(buildPrTitle('\n\n  fix logging in api.ts  \n more\n')).toBe('fix logging in api.ts')
++  })
++  test('truncates >72 chars with ellipsis', () => {
++    const t = buildPrTitle('a'.repeat(100))
++    expect(t.length).toBe(70)  // 69 + '…'
++    expect(t.endsWith('…')).toBe(true)
++  })
++  test('default when empty', () => {
++    expect(buildPrTitle('   \n  ')).toBe('asicode: brief')
++  })
++})
++
++describe('buildPrBody', () => {
++  test('includes brief id + first 20 lines of brief', () => {
++    const body = buildPrBody({ briefId: 'brf_1', briefText: 'line1\nline2', racerRunIds: ['run_a', 'run_b'] })
++    expect(body).toContain('brf_1')
++    expect(body).toContain('line1')
++    expect(body).toContain('line2')
++    expect(body).toContain('run_a, run_b')
++    expect(body).toContain('REQ-15')
++  })
++  test('omits Race section when no racer ids', () => {
++    const body = buildPrBody({ briefId: 'b', briefText: 'x' })
++    expect(body).not.toContain('## Race')
++  })
++})
++
++describe('isAutoPrEnabled', () => {
++  test('false by default', () => {
++    delete process.env.ASICODE_AUTO_PR
++    expect(isAutoPrEnabled()).toBe(false)
++  })
++  test('true when ASICODE_AUTO_PR=1', () => {
++    process.env.ASICODE_AUTO_PR = '1'
++    expect(isAutoPrEnabled()).toBe(true)
++    delete process.env.ASICODE_AUTO_PR
++  })
++})
++
++describe('openWinnerPr — guards', () => {
++  test('no remote → no_remote', async () => {
++    gitInit(repoDir)
++    // No `git remote add origin ...` — config get exits non-zero.
++    const r = await openWinnerPr({
++      branch: 'asicode/race-1', repoPath: repoDir, worktreePath: repoDir,
++      briefText: 'fix the thing', briefId: 'brf_1',
++    })
++    expect(r.ok).toBe(false)
++    if (!r.ok) expect(r.reason).toBe('no_remote')
++  })
++})
++
++describe('openWinnerPr — happy path', () => {
++  test('push + gh pr create both succeed', async () => {
++    gitInit(repoDir)
++    // Add a fake remote so the remote check passes. We don't actually
++    // push (origin is bogus) — but the spawn-stub overrides gh, NOT
++    // git. So we need a working `git push`. Easiest: add a local bare
++    // repo as the remote.
++    const bareDir = join(tempDir, 'bare.git')
++    spawnSync('git', ['init', '--bare', '-b', 'main', bareDir])
++    spawnSync('git', ['-C', repoDir, 'remote', 'add', 'origin', bareDir])
++    spawnSync('git', ['-C', repoDir, 'checkout', '-b', 'asicode/race-1'])
++    writeFileSync(join(repoDir, 'racer.txt'), 'racer wrote this\n')
++    spawnSync('git', ['-C', repoDir, 'add', 'racer.txt'])
++    spawnSync('git', ['-C', repoDir, 'commit', '-q', '--no-gpg-sign', '-m', 'racer'])
++    // gh pr create returns a URL on stdout
++    ghScripts.push({
++      matcher: a => a.includes('create'),
++      script: { stdout: ['https://github.com/x/y/pull/42\n'], exitCode: 0 },
++    })
++    const r = await openWinnerPr({
++      branch: 'asicode/race-1', repoPath: repoDir, worktreePath: repoDir,
++      briefText: 'add caching', briefId: 'brf_x', racerRunIds: ['run_1', 'run_2'],
++    })
++    expect(r.ok).toBe(true)
++    if (r.ok) {
++      expect(r.prNumber).toBe(42)
++      expect(r.url).toBe('https://github.com/x/y/pull/42')
++      expect(r.branch).toBe('asicode/race-1')
++    }
++  }, 30_000)
++
++  test('gh already_exists → gh_failed (caller can dedupe)', async () => {
++    gitInit(repoDir)
++    const bareDir = join(tempDir, 'bare.git')
++    spawnSync('git', ['init', '--bare', '-b', 'main', bareDir])
++    spawnSync('git', ['-C', repoDir, 'remote', 'add', 'origin', bareDir])
++    spawnSync('git', ['-C', repoDir, 'checkout', '-b', 'asicode/race-2'])
++    writeFileSync(join(repoDir, 'f.txt'), 'a\n')
++    spawnSync('git', ['-C', repoDir, 'add', 'f.txt'])
++    spawnSync('git', ['-C', repoDir, 'commit', '-q', '--no-gpg-sign', '-m', 'a'])
++    ghScripts.push({
++      matcher: a => a.includes('create'),
++      script: { stdout: [], stderr: ['a pull request for branch ... already exists'], exitCode: 1 },
++    })
++    const r = await openWinnerPr({
++      branch: 'asicode/race-2', repoPath: repoDir, worktreePath: repoDir,
++      briefText: 'b', briefId: 'brf_y',
++    })
++    expect(r.ok).toBe(false)
++    if (!r.ok) {
++      expect(r.reason).toBe('gh_failed')
++      expect(r.detail).toContain('already exists')
++    }
++  }, 30_000)
++
++  test('push fails (no remote.origin reachable) → git_push_failed', async () => {
++    gitInit(repoDir)
++    // Add an obviously unreachable remote so push fails. Use a path
++    // that's not a valid git dir.
++    spawnSync('git', ['-C', repoDir, 'remote', 'add', 'origin', '/dev/null/not-a-repo'])
++    spawnSync('git', ['-C', repoDir, 'checkout', '-b', 'asicode/race-3'])
++    writeFileSync(join(repoDir, 'q.txt'), 'q\n')
++    spawnSync('git', ['-C', repoDir, 'add', 'q.txt'])
++    spawnSync('git', ['-C', repoDir, 'commit', '-q', '--no-gpg-sign', '-m', 'q'])
++    const r = await openWinnerPr({
++      branch: 'asicode/race-3', repoPath: repoDir, worktreePath: repoDir,
++      briefText: 'q', briefId: 'brf_q',
++    })
++    expect(r.ok).toBe(false)
++    if (!r.ok) expect(r.reason).toBe('git_push_failed')
++  }, 30_000)
++})
+diff --git a/src/services/parallel/openWinnerPr.ts b/src/services/parallel/openWinnerPr.ts
+new file mode 100644
+index 0000000..fef5e27
+--- /dev/null
++++ b/src/services/parallel/openWinnerPr.ts
+@@ -0,0 +1,93 @@
++// REQ-15: push race-winner branch + open PR. Substrate consumed by
++// asicode-submit when --auto-pr (or ASICODE_AUTO_PR=1). Soft-fails so
++// the caller can keep its race-winner JSON even if the publish step
++// fails (gh missing, no remote, auth, etc.).
++//
++// Inputs: winner branch + worktree + brief metadata. Outputs:
++// {ok, prNumber?, url?, reason?, detail?}. Never throws.
++
++import { spawn } from 'node:child_process'
++import { createPrFromBranch } from '../pr-comment-shared/gh.js'
++
++export type OpenWinnerPrFailure =
++  | 'opt_out'           // ASICODE_AUTO_PR not set
++  | 'no_remote'         // git remote.origin missing
++  | 'git_push_failed'
++  | 'gh_failed'
++  | 'parse_error'
++
++export type OpenWinnerPrResult =
++  | { ok: true; prNumber: number; url: string; branch: string }
++  | { ok: false; reason: OpenWinnerPrFailure; detail?: string; branch: string }
++
++export interface OpenWinnerPrInput {
++  /** Winner racer branch (e.g. asicode/race-foo-1). */
++  branch: string
++  /** The host repo path (parent worktree, NOT the racer's worktree). */
++  repoPath: string
++  /** The racer's worktree path — that's where the branch's HEAD is. */
++  worktreePath: string
++  /** Base branch to PR against. Defaults to 'main'. */
++  base?: string
++  /** Brief text — used to build the PR title (first line, ≤72 chars). */
++  briefText: string
++  /** The brief id — surfaced in the PR body for traceability. */
++  briefId: string
++  /** Optional list of racer run-ids (best-of-N audit trail). */
++  racerRunIds?: string[]
++  /** Hard caps on subprocess wall-clock. */
++  timeoutMs?: number
++}
++
++export function isAutoPrEnabled(): boolean {
++  return process.env.ASICODE_AUTO_PR === '1'
++}
++
++function spawnPipe(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
++  return new Promise(res => {
++    let out = '', err = '', settled = false
++    const ch = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
++    const t = setTimeout(() => { ch.kill(); if (!settled) { settled = true; res({ code: -1, stdout: out, stderr: `timeout after ${timeoutMs}ms` }) } }, timeoutMs)
++    ch.stdout.on('data', c => { out += c.toString('utf-8') })
++    ch.stderr.on('data', c => { err += c.toString('utf-8') })
++    ch.on('error', e => { clearTimeout(t); if (!settled) { settled = true; res({ code: -1, stdout: out, stderr: e.message }) } })
++    ch.on('close', code => { clearTimeout(t); if (!settled) { settled = true; res({ code: code ?? -1, stdout: out, stderr: err }) } })
++  })
++}
++
++/** First non-empty line of the brief, trimmed to ≤72 chars. */
++export function buildPrTitle(briefText: string): string {
++  const first = briefText.split('\n').find(l => l.trim().length > 0)?.trim() ?? 'asicode: brief'
++  return first.length > 72 ? `${first.slice(0, 69)}…` : first
++}
++
++export function buildPrBody(input: { briefId: string; briefText: string; racerRunIds?: string[] }): string {
++  const head = input.briefText.split('\n').slice(0, 20).join('\n')
++  const racers = input.racerRunIds && input.racerRunIds.length > 0
++    ? `\n\n## Race\n\n${input.racerRunIds.length} racers, winner picked by tiebreak/FCFS.\nRacer run ids: ${input.racerRunIds.join(', ')}`
++    : ''
++  return `Brief: \`${input.briefId}\`\n\n## Original brief\n\n${head}${racers}\n\n---\n\n🤖 Opened by asicode (REQ-15 auto-PR).`
++}
++
++export async function openWinnerPr(input: OpenWinnerPrInput): Promise<OpenWinnerPrResult> {
++  const timeoutMs = input.timeoutMs ?? 60_000
++  // 1. Confirm there's a remote we can push to.
++  const remote = await spawnPipe('git', ['-C', input.repoPath, 'config', '--get', 'remote.origin.url'], input.repoPath, 10_000)
++  if (remote.code !== 0 || remote.stdout.trim() === '') return { ok: false, reason: 'no_remote', detail: 'remote.origin.url unset', branch: input.branch }
++
++  // 2. Push the branch. The racer's branch lives in the parent repo's
++  // refs (the worktree shares the same .git), so push from repoPath.
++  const push = await spawnPipe('git', ['-C', input.repoPath, 'push', '-u', 'origin', input.branch], input.repoPath, timeoutMs)
++  if (push.code !== 0) return { ok: false, reason: 'git_push_failed', detail: push.stderr.slice(0, 300), branch: input.branch }
++
++  // 3. Open the PR via gh.
++  const base = input.base ?? 'main'
++  const title = buildPrTitle(input.briefText)
++  const body = buildPrBody({ briefId: input.briefId, briefText: input.briefText, racerRunIds: input.racerRunIds })
++  const r = await createPrFromBranch({ branch: input.branch, base, title, body, repoPath: input.repoPath, timeoutMs })
++  if (!r.ok) {
++    if (r.reason === 'already_exists') return { ok: false, reason: 'gh_failed', detail: 'pr already exists for branch', branch: input.branch }
++    return { ok: false, reason: r.reason === 'parse_error' ? 'parse_error' : 'gh_failed', detail: r.stderr, branch: input.branch }
++  }
++  return { ok: true, prNumber: r.prNumber, url: r.url, branch: input.branch }
++}

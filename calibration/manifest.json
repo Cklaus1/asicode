@@ -1,4 +1,215 @@
 {
   "version": 1,
-  "entries": []
+  "entries": [
+    {
+      "id": "cal-01",
+      "tier": "strong",
+      "diff_path": "diffs/cal-01.diff",
+      "brief": "refactor(status): drop logPathFor reconstruction (REQ-59)",
+      "source": "1736b54"
+    }    ,
+    {
+      "id": "cal-02",
+      "tier": "strong",
+      "diff_path": "diffs/cal-02.diff",
+      "brief": "refactor: single source for SCHEMA_VERSION_REQUIRED (REQ-56)",
+      "source": "dcae47c"
+    }    ,
+    {
+      "id": "cal-03",
+      "tier": "strong",
+      "diff_path": "diffs/cal-03.diff",
+      "brief": "refactor(chrome): collapse main.tsx wiring behind a lazy integration seam (REQ-69)",
+      "source": "17824f7"
+    }    ,
+    {
+      "id": "cal-04",
+      "tier": "strong",
+      "diff_path": "diffs/cal-04.diff",
+      "brief": "fix(autonomy): race base = current branch — kills the 107s judge timeout (REQ-79)",
+      "source": "20c43f3"
+    }    ,
+    {
+      "id": "cal-05",
+      "tier": "strong",
+      "diff_path": "diffs/cal-05.diff",
+      "brief": "fix(autonomy): set ts_completed on gate verdict — unblocks the Autonomy Index (REQ-81)",
+      "source": "fdbc1f5"
+    }    ,
+    {
+      "id": "cal-06",
+      "tier": "strong",
+      "diff_path": "diffs/cal-06.diff",
+      "brief": "fix(autonomy): unblock L2 in unbuilt submit — MACRO shim + config bootstrap (REQ-77)",
+      "source": "7aa7ba4"
+    }    ,
+    {
+      "id": "cal-07",
+      "tier": "strong",
+      "diff_path": "diffs/cal-07.diff",
+      "brief": "fix(bin): shim + scripts run under bun, not node (REQ-57)",
+      "source": "8967cc4"
+    }    ,
+    {
+      "id": "cal-08",
+      "tier": "strong",
+      "diff_path": "diffs/cal-08.diff",
+      "brief": "fix(recorder-adapter): cascade abort_reason to brief on aborted finalize (REQ-48)",
+      "source": "c0045d8"
+    }    ,
+    {
+      "id": "cal-09",
+      "tier": "strong",
+      "diff_path": "diffs/cal-09.diff",
+      "brief": "refactor: drop getLocalAsicodePath alias left by rename",
+      "source": "1ba18fc"
+    }    ,
+    {
+      "id": "cal-10",
+      "tier": "strong",
+      "diff_path": "diffs/cal-10.diff",
+      "brief": "feat(autonomy): diff-driven density gate — last blocker to a hands-off verdict (REQ-80)",
+      "source": "989c1c7"
+    }    ,
+    {
+      "id": "cal-11",
+      "tier": "medium",
+      "diff_path": "diffs/cal-11.diff",
+      "brief": "feat(submit): print follow hint with status command (REQ-53)",
+      "source": "2c137ac"
+    }    ,
+    {
+      "id": "cal-12",
+      "tier": "medium",
+      "diff_path": "diffs/cal-12.diff",
+      "brief": "feat(status): surface intervention_reason (REQ-47)",
+      "source": "83338a4"
+    }    ,
+    {
+      "id": "cal-13",
+      "tier": "medium",
+      "diff_path": "diffs/cal-13.diff",
+      "brief": "feat(status): surface log_path for each run (REQ-44)",
+      "source": "88163b8"
+    }    ,
+    {
+      "id": "cal-14",
+      "tier": "medium",
+      "diff_path": "diffs/cal-14.diff",
+      "brief": "feat(watch-merges): auto-reap stale in-flight runs (REQ-38)",
+      "source": "57ab34e"
+    }    ,
+    {
+      "id": "cal-15",
+      "tier": "medium",
+      "diff_path": "diffs/cal-15.diff",
+      "brief": "feat(briefs): persist pr_url (REQ-41)",
+      "source": "c3ed418"
+    }    ,
+    {
+      "id": "cal-16",
+      "tier": "medium",
+      "diff_path": "diffs/cal-16.diff",
+      "brief": "feat(status): surface pr_number + race info (REQ-17)",
+      "source": "4487d4b"
+    }    ,
+    {
+      "id": "cal-17",
+      "tier": "medium",
+      "diff_path": "diffs/cal-17.diff",
+      "brief": "feat(instrumentation): persist verifier stderr tail (REQ-21)",
+      "source": "989a200"
+    }    ,
+    {
+      "id": "cal-18",
+      "tier": "medium",
+      "diff_path": "diffs/cal-18.diff",
+      "brief": "feat(report): strategy distribution row (REQ-31)",
+      "source": "c213fad"
+    }    ,
+    {
+      "id": "cal-19",
+      "tier": "medium",
+      "diff_path": "diffs/cal-19.diff",
+      "brief": "feat(plugins): system-prompt fragment contribution (REQ-71)",
+      "source": "43289e9"
+    }    ,
+    {
+      "id": "cal-20",
+      "tier": "medium",
+      "diff_path": "diffs/cal-20.diff",
+      "brief": "feat(instrumentation): thread L1 auto-approve signal to tool_calls (REQ-82)",
+      "source": "2d5ef94"
+    }    ,
+    {
+      "id": "cal-21",
+      "tier": "weak",
+      "diff_path": "diffs/cal-21.diff",
+      "brief": "feat(rename): full openclaude→asicode (REQ-34)",
+      "source": "63d0a0e"
+    }    ,
+    {
+      "id": "cal-22",
+      "tier": "weak",
+      "diff_path": "diffs/cal-22.diff",
+      "brief": "feat(autonomy): governance suite + runnable Definition-of-Done gate (REQ-73)",
+      "source": "8d8cee2"
+    }    ,
+    {
+      "id": "cal-23",
+      "tier": "weak",
+      "diff_path": "diffs/cal-23.diff",
+      "brief": "feat(autonomy): wire composeVerdict into the submit path, annotate-only (REQ-74)",
+      "source": "fceeed0"
+    }    ,
+    {
+      "id": "cal-24",
+      "tier": "weak",
+      "diff_path": "diffs/cal-24.diff",
+      "brief": "fix(autonomy): gate robustness — busy_timeout, sequential gates, stub stdin (REQ-78)",
+      "source": "6380183"
+    }    ,
+    {
+      "id": "cal-25",
+      "tier": "weak",
+      "diff_path": "diffs/cal-25.diff",
+      "brief": "feat(submit): --auto-pr opens a PR from the race winner (REQ-15)",
+      "source": "8ee4e41"
+    }    ,
+    {
+      "id": "cal-26",
+      "tier": "weak",
+      "diff_path": "diffs/cal-26.diff",
+      "brief": "feat(verifier): auto-detect verify cmd from project files (REQ-24)",
+      "source": "2b0d5f6"
+    }    ,
+    {
+      "id": "cal-27",
+      "tier": "weak",
+      "diff_path": "diffs/cal-27.diff",
+      "brief": "feat(env): ASICODE_* env vars with OPENCLAUDE_* back-compat shim (REQ-8.3)",
+      "source": "07129a8"
+    }    ,
+    {
+      "id": "cal-28",
+      "tier": "weak",
+      "diff_path": "diffs/cal-28.diff",
+      "brief": "feat(parallel): record race_strategy on winning run (REQ-30)",
+      "source": "0af191c"
+    }    ,
+    {
+      "id": "cal-29",
+      "tier": "weak",
+      "diff_path": "diffs/cal-29.diff",
+      "brief": "feat(parallel): verifier-gated race winner selection (REQ-18 / A1 L1)",
+      "source": "c565268"
+    }    ,
+    {
+      "id": "cal-30",
+      "tier": "weak",
+      "diff_path": "diffs/cal-30.diff",
+      "brief": "feat(submit): --race N wires raceAgents into the submit path (REQ-14)",
+      "source": "5c37d5c"
+    }
+  ]
 }

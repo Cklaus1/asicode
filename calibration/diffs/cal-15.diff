@@ -1,0 +1,176 @@
+diff --git a/migrations/instrumentation/0008-pr-url-on-briefs.sql b/migrations/instrumentation/0008-pr-url-on-briefs.sql
+new file mode 100644
+index 0000000..4721ea8
+--- /dev/null
++++ b/migrations/instrumentation/0008-pr-url-on-briefs.sql
+@@ -0,0 +1,38 @@
++-- Migration 0008: REQ-41. Persist auto-PR URL on briefs.
++--
++-- REQ-15 opened the PR and knew its URL; REQ-16 persisted only the
++-- pr_number. status surfaced '#42' with no link, forcing the user to
++-- construct github.com/owner/repo/pull/42 from the project_path. Just
++-- store the URL.
++--
++-- Additive-only nullable TEXT.
++
++PRAGMA journal_mode = WAL;
++PRAGMA foreign_keys = ON;
++
++BEGIN;
++
++ALTER TABLE briefs ADD COLUMN pr_url TEXT;
++
++INSERT INTO _schema_version (version, applied_at, description)
++VALUES (
++  8,
++  CAST((julianday('now') - 2440587.5) * 86400 * 1000 AS INTEGER),
++  'pr_url column on briefs — REQ-41, surfaces full PR link in status'
++);
++
++COMMIT;
++
++-- sanity
++SELECT CASE
++  WHEN COUNT(*) = 1 THEN 'ok: pr_url column added'
++  ELSE 'FAIL: pr_url column missing'
++END AS column_check
++FROM pragma_table_info('briefs')
++WHERE name = 'pr_url';
++
++SELECT CASE
++  WHEN MAX(version) = 8 THEN 'ok: schema at version 8'
++  ELSE 'FAIL: schema version not advanced'
++END AS version_check
++FROM _schema_version;
+diff --git a/scripts/asicode-status.test.ts b/scripts/asicode-status.test.ts
+index 6238e31..61449d0 100644
+--- a/scripts/asicode-status.test.ts
++++ b/scripts/asicode-status.test.ts
+@@ -514,6 +514,28 @@ describe('REQ-37 stale in-flight detection', () => {
+     expect(parsed.runs[0].stale).toBe(false)
+   })
+ 
++  test('REQ-41: pr_url surfaces in text + JSON when set', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_url1')
++    db.run(`UPDATE briefs SET pr_number = ?, pr_url = ? WHERE brief_id = ?`,
++      [42, 'https://github.com/x/y/pull/42', 'brf_url1'])
++    db.close()
++    const r = run(['brf_url1'])
++    expect(r.stdout).toContain('https://github.com/x/y/pull/42')
++    const j = JSON.parse(run(['brf_url1', '--json']).stdout)
++    expect(j.pr.url).toBe('https://github.com/x/y/pull/42')
++    expect(j.pr.number).toBe(42)
++  })
++
++  test('REQ-41: pr_url null when not set (no extra cruft)', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_url2')
++    db.run(`UPDATE briefs SET pr_number = ? WHERE brief_id = ?`, [99, 'brf_url2'])
++    db.close()
++    const j = JSON.parse(run(['brf_url2', '--json']).stdout)
++    expect(j.pr.url).toBeNull()
++  })
++
+   test('ASICODE_STALE_THRESHOLD_MS overrides default threshold', () => {
+     const db = new Database(dbPath)
+     seedBrief(db, 'brf_tight')
+diff --git a/scripts/asicode-status.ts b/scripts/asicode-status.ts
+index 8e14956..1eb60c6 100644
+--- a/scripts/asicode-status.ts
++++ b/scripts/asicode-status.ts
+@@ -30,7 +30,7 @@ interface BriefRow {
+   project_path: string; user_text: string;
+   a16_decision: string; a16_composite: number | null;
+   pr_sha: string | null; pr_outcome: string | null;
+-  pr_number: number | null;
++  pr_number: number | null; pr_url: string | null;
+   reverted_within_7d: number; hotpatched_within_7d: number;
+ }
+ interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null; race_strategy: string | null }
+@@ -88,7 +88,7 @@ function main() {
+ 
+   const brief = db.query<BriefRow, [string]>(
+     `SELECT brief_id, ts_submitted, ts_completed, project_path, user_text,
+-            a16_decision, a16_composite, pr_sha, pr_outcome, pr_number, reverted_within_7d, hotpatched_within_7d
++            a16_decision, a16_composite, pr_sha, pr_outcome, pr_number, pr_url, reverted_within_7d, hotpatched_within_7d
+      FROM briefs WHERE brief_id = ?`,
+   ).get(args.briefId!)
+   if (!brief) { console.error(`brief not found: ${args.briefId}`); db.close(); process.exit(1) }
+@@ -137,7 +137,7 @@ function main() {
+       })),
+       pr: (brief.pr_sha || brief.pr_number !== null) ? {
+         sha: brief.pr_sha, outcome: brief.pr_outcome,
+-        number: brief.pr_number,
++        number: brief.pr_number, url: brief.pr_url,
+         reverted_within_7d: brief.reverted_within_7d === 1,
+         hotpatched_within_7d: brief.hotpatched_within_7d === 1,
+       } : null,
+@@ -190,14 +190,14 @@ function main() {
+     }
+   }
+   if (brief.pr_number !== null && !brief.pr_sha) {
+-    // Auto-PR opened (REQ-15) but not yet merged — surface the number.
+-    console.log(`  pr           #${brief.pr_number}  (open; merge will populate sha)`)
++    // Auto-PR opened (REQ-15) but not yet merged — surface the number + url.
++    console.log(`  pr           #${brief.pr_number}${brief.pr_url ? `  ${brief.pr_url}` : ''}  (open; merge will populate sha)`)
+   }
+   if (brief.pr_sha) {
+     const flags: string[] = []
+     if (brief.reverted_within_7d) flags.push('reverted')
+     if (brief.hotpatched_within_7d) flags.push('hotpatched')
+-    console.log(`  pr           ${brief.pr_sha.slice(0, 12)}${brief.pr_number !== null ? `  #${brief.pr_number}` : ''}  outcome=${brief.pr_outcome ?? '?'}${flags.length ? `  flags=[${flags.join(',')}]` : ''}`)
++    console.log(`  pr           ${brief.pr_sha.slice(0, 12)}${brief.pr_number !== null ? `  #${brief.pr_number}` : ''}${brief.pr_url ? `  ${brief.pr_url}` : ''}  outcome=${brief.pr_outcome ?? '?'}${flags.length ? `  flags=[${flags.join(',')}]` : ''}`)
+     if (j.rows > 0) console.log(`  judges       ${j.rows} rows  composite=${j.composite !== null ? j.composite.toFixed(2) : '?'}/5`)
+     else console.log(`  judges       (none yet — gate ASICODE_JUDGES_ENABLED on a merged PR)`)
+     if (ship) {
+diff --git a/scripts/asicode-submit.ts b/scripts/asicode-submit.ts
+index 06a83ba..eb63082 100644
+--- a/scripts/asicode-submit.ts
++++ b/scripts/asicode-submit.ts
+@@ -307,8 +307,8 @@ async function main() {
+         // REQ-16: persist pr_number on the brief row so watch-merges
+         // links the merge sha back deterministically. Soft-fail: a db
+         // hiccup must not undo the actual PR that's already open.
+-        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber }) }
+-        catch (e) { console.error(`[auto-pr] updateBrief(pr_number) failed (PR still open at ${r.url}): ${e instanceof Error ? e.message : String(e)}`) }
++        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber, pr_url: r.url }) }
++        catch (e) { console.error(`[auto-pr] updateBrief(pr_number/url) failed (PR still open at ${r.url}): ${e instanceof Error ? e.message : String(e)}`) }
+       } else prError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
+     } catch (e) { prError = e instanceof Error ? e.message : String(e) }
+   }
+diff --git a/src/services/instrumentation/client.ts b/src/services/instrumentation/client.ts
+index ff73039..a67e1f9 100644
+--- a/src/services/instrumentation/client.ts
++++ b/src/services/instrumentation/client.ts
+@@ -36,7 +36,7 @@ import {
+   type ToolCallRecord,
+ } from './types'
+ 
+-const SCHEMA_VERSION_REQUIRED = 7
++const SCHEMA_VERSION_REQUIRED = 8
+ 
+ let _db: Database | null = null
+ 
+diff --git a/src/services/instrumentation/types.ts b/src/services/instrumentation/types.ts
+index dc41fc1..90b76cb 100644
+--- a/src/services/instrumentation/types.ts
++++ b/src/services/instrumentation/types.ts
+@@ -105,6 +105,8 @@ export const BriefRecordSchema = z.object({
+   // REQ-16 (migration 0005): PR number persisted at auto-PR open time
+   // so watch-merges links brief↔PR deterministically.
+   pr_number: z.number().int().positive().optional(),
++  // REQ-41 (migration 0008): full PR URL — surfaces in status output.
++  pr_url: z.string().optional(),
+ })
+ 
+ export type BriefRecord = z.infer<typeof BriefRecordSchema>
+@@ -231,6 +233,8 @@ export const BriefUpdateSchema = z.object({
+   intervention_reason: z.string().optional(),
+   // REQ-16: auto-PR number persisted at open time.
+   pr_number: z.number().int().positive().optional(),
++  // REQ-41: full PR URL.
++  pr_url: z.string().optional(),
+   // A12 — populated post-hoc by the brief-mode expander trigger.
+   expanded_brief: z.string().optional(),
+   // A16 fields — populated post-hoc by the brief-gate trigger.

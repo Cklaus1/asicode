@@ -1,0 +1,159 @@
+diff --git a/scripts/instrumentation-report.test.ts b/scripts/instrumentation-report.test.ts
+index 97665aa..a8e9629 100644
+--- a/scripts/instrumentation-report.test.ts
++++ b/scripts/instrumentation-report.test.ts
+@@ -951,4 +951,80 @@ describe('Race + verifier section (REQ-23)', () => {
+     const { stdout } = runReport(dbPath, ['--since', '7d'])
+     expect(stdout).not.toContain('Race + verifier')
+   })
++
++  // REQ-31: strategy distribution row.
++  test('strategy row counts each value (verifier_pick / llm_tiebreak / fcfs)', () => {
++    const db = new Database(dbPath)
++    db.exec('PRAGMA foreign_keys = ON')
++    const now = Date.now()
++    function seedRaceWithStrategy(b: string, strategy: string) {
++      seedBriefMin(db, b, now)
++      db.run(
++        `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, race_strategy)
++         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++        [`${b}_w`, b, now, now + 100, 'worktree', 'completed', 0, 1, strategy],
++      )
++      db.run(
++        `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
++         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++        [`${b}_l`, b, now, now + 200, 'worktree', 'completed', 1, 0],
++      )
++    }
++    seedRaceWithStrategy('b_v1', 'verifier_pick')
++    seedRaceWithStrategy('b_v2', 'verifier_pick')
++    seedRaceWithStrategy('b_v3', 'verifier_pick')
++    seedRaceWithStrategy('b_l1', 'llm_tiebreak')
++    seedRaceWithStrategy('b_f1', 'fcfs')
++    seedRaceWithStrategy('b_f2', 'fcfs')
++    db.close()
++    const { stdout } = runReport(dbPath)
++    expect(stdout).toContain('Strategy')
++    expect(stdout).toMatch(/verifier 3/)
++    expect(stdout).toMatch(/llm 1/)
++    expect(stdout).toMatch(/fcfs 2/)
++  })
++
++  test('strategy row omits zero-count categories', () => {
++    const db = new Database(dbPath)
++    db.exec('PRAGMA foreign_keys = ON')
++    const now = Date.now()
++    seedBriefMin(db, 'b1', now)
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner, race_strategy)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['r_w', 'b1', now, now + 100, 'worktree', 'completed', 0, 1, 'verifier_pick'],
++    )
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['r_l', 'b1', now, now + 200, 'worktree', 'completed', 1, 0],
++    )
++    db.close()
++    const { stdout } = runReport(dbPath)
++    expect(stdout).toMatch(/Strategy\s+verifier 1$/m)
++    expect(stdout).not.toContain('fcfs')
++    expect(stdout).not.toContain('llm ')
++  })
++
++  test('strategy row omitted when no winner has a strategy set (legacy)', () => {
++    const db = new Database(dbPath)
++    db.exec('PRAGMA foreign_keys = ON')
++    const now = Date.now()
++    seedBriefMin(db, 'b_legacy', now)
++    // Both racers but no race_strategy on winner — pre-REQ-30 races.
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['r_w', 'b_legacy', now, now + 100, 'worktree', 'completed', 0, 1],
++    )
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      ['r_l', 'b_legacy', now, now + 200, 'worktree', 'completed', 1, 0],
++    )
++    db.close()
++    const { stdout } = runReport(dbPath)
++    expect(stdout).toContain('Race + verifier')
++    expect(stdout).not.toContain('Strategy ')
++  })
+ })
+diff --git a/scripts/instrumentation-report.ts b/scripts/instrumentation-report.ts
+index dc12be6..396cfe6 100644
+--- a/scripts/instrumentation-report.ts
++++ b/scripts/instrumentation-report.ts
+@@ -156,6 +156,11 @@ interface Metrics {
+   raceRacerPassRate: number | null  // % of all racers across all races that passed
+   raceTotalRacers: number
+   raceTotalRacersPassed: number
++  // REQ-31: distribution of race_strategy on winning runs.
++  raceStrategyVerifier: number
++  raceStrategyLlmTiebreak: number
++  raceStrategyFcfs: number
++  raceStrategyUnset: number  // older races before REQ-30 wired writes
+ }
+ 
+ function compute(db: Database, sinceMs: number): Metrics {
+@@ -586,6 +591,30 @@ function compute(db: Database, sinceMs: number): Metrics {
+   } catch {
+     // Pre-0006 schema (no verify_outcome column) — leave at 0.
+   }
++  // REQ-31: strategy distribution on winning runs.
++  let raceStrategyVerifier = 0, raceStrategyLlmTiebreak = 0,
++      raceStrategyFcfs = 0, raceStrategyUnset = 0
++  try {
++    const stratRows = db.query<{ race_strategy: string | null; n: number }, [number]>(
++      `WITH race_briefs AS (
++         SELECT brief_id FROM runs WHERE isolation_mode='worktree' AND ts_started >= ?
++         GROUP BY brief_id HAVING COUNT(*) >= 2
++       )
++       SELECT runs.race_strategy AS race_strategy, COUNT(*) AS n
++       FROM runs JOIN race_briefs USING (brief_id)
++       WHERE runs.was_race_winner = 1
++       GROUP BY runs.race_strategy`,
++    ).all(sinceMs)
++    for (const row of stratRows) {
++      if (row.race_strategy === 'verifier_pick') raceStrategyVerifier += row.n
++      else if (row.race_strategy === 'llm_tiebreak') raceStrategyLlmTiebreak += row.n
++      else if (row.race_strategy === 'fcfs') raceStrategyFcfs += row.n
++      else raceStrategyUnset += row.n
++    }
++  } catch {
++    // race_strategy column exists since schema v2, but the older v1
++    // didn't even have runs.race_strategy. Leave at 0 on read errors.
++  }
+   const raceVerifyMeasured = raceWinnerPassed + raceWinnerFailed + raceWinnerVerifyError
+   const raceWinnerPassRate = raceVerifyMeasured > 0 ? raceWinnerPassed / raceVerifyMeasured : null
+   const raceRacerPassRate = raceTotalRacers > 0 ? raceTotalRacersPassed / raceTotalRacers : null
+@@ -663,6 +692,10 @@ function compute(db: Database, sinceMs: number): Metrics {
+     raceRacerPassRate,
+     raceTotalRacers,
+     raceTotalRacersPassed,
++    raceStrategyVerifier,
++    raceStrategyLlmTiebreak,
++    raceStrategyFcfs,
++    raceStrategyUnset,
+   }
+ }
+ 
+@@ -857,6 +890,15 @@ function render(m: Metrics, sinceDays: number): string {
+     if (m.raceRacerPassRate !== null) {
+       lines.push(`  Racer pass rate         ${fmtPct(m.raceRacerPassRate)}    (${m.raceTotalRacersPassed}/${m.raceTotalRacers} across all races)`)
+     }
++    // REQ-31: strategy distribution
++    const stratTotal = m.raceStrategyVerifier + m.raceStrategyLlmTiebreak + m.raceStrategyFcfs
++    if (stratTotal > 0) {
++      const parts: string[] = []
++      if (m.raceStrategyVerifier > 0) parts.push(`verifier ${m.raceStrategyVerifier}`)
++      if (m.raceStrategyLlmTiebreak > 0) parts.push(`llm ${m.raceStrategyLlmTiebreak}`)
++      if (m.raceStrategyFcfs > 0) parts.push(`fcfs ${m.raceStrategyFcfs}`)
++      lines.push(`  Strategy                ${parts.join(', ')}`)
++    }
+     lines.push('')
+   }
+ 

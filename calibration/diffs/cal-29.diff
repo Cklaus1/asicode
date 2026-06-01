@@ -1,0 +1,438 @@
+diff --git a/src/services/parallel/dispatcher.test.ts b/src/services/parallel/dispatcher.test.ts
+index d700e58..4f3b32f 100644
+--- a/src/services/parallel/dispatcher.test.ts
++++ b/src/services/parallel/dispatcher.test.ts
+@@ -194,3 +194,120 @@ describe('raceAgents — failure modes', () => {
+     if (!r.ok) expect(r.reason).toBe('all_racers_failed')
+   }, 30_000)
+ })
++
++// REQ-18: verifier-gated winner selection.
++describe('raceAgents — verifier-gated winner (REQ-18)', () => {
++  test('passing racer wins over failing racer (regardless of finish order)', async () => {
++    // Each racer writes a "marker" file naming itself, then commits.
++    // The verifier checks the marker: only racers where marker says
++    // "ok" pass. We seed BOTH racers to write differently so each
++    // has a distinguishable diff; the verifier picks the passing one.
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      # Pick a marker value from the worktree path so each racer differs.
++      # Use a function of the path to ensure deterministic but distinct
++      # markers between the two worktrees.
++      WT_NAME="$(basename "$PWD")"
++      case "$WT_NAME" in
++        *-0-*) MARKER=fail ;;
++        *) MARKER=ok ;;
++      esac
++      echo "$MARKER" > marker.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add marker.txt
++      git commit -q --no-gpg-sign -m "marker $MARKER"
++    `
++    const r = await raceAgents({
++      briefId: 'bv1', briefText: 'pick a marker',
++      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-pass',
++      settleMs: 800, maxRaceMs: 20_000,
++      verifyCmd: 'grep -q "^ok$" marker.txt',
++      verifyTimeoutMs: 5000,
++    })
++    expect(r.ok).toBe(true)
++    if (r.ok) {
++      // Winner's diff contains "ok" marker, not "fail"
++      expect(r.winnerDiff).toContain('ok')
++      expect(r.winnerDiff).not.toContain('+fail')
++      // Winner's verify outcome is 'passed'
++      const winner = r.racers.find(rr => rr.runId === r.winnerRunId)
++      expect(winner?.verify?.outcome).toBe('passed')
++    }
++  }, 60_000)
++
++  test('no passing racer → still picks best (failing) over no candidate', async () => {
++    // Both racers commit but both fail the verifier. Result: a winner
++    // is still chosen (the FCFS one among failing), not 'all_failed'.
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      echo "broken" > f.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add f.txt
++      git commit -q --no-gpg-sign -m "broken"
++    `
++    const r = await raceAgents({
++      briefId: 'bv2', briefText: 't',
++      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-allfail',
++      settleMs: 800, maxRaceMs: 20_000,
++      verifyCmd: 'exit 1',  // always fail
++      verifyTimeoutMs: 3000,
++    })
++    expect(r.ok).toBe(true)
++    if (r.ok) {
++      const winner = r.racers.find(rr => rr.runId === r.winnerRunId)
++      expect(winner?.verify?.outcome).toBe('failed')
++    }
++  }, 60_000)
++
++  test('verifyCmd undefined (default) → reads from ASICODE_VERIFY_CMD env', async () => {
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      echo "x" > x.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add x.txt
++      git commit -q --no-gpg-sign -m "x"
++    `
++    process.env.ASICODE_VERIFY_CMD = 'true'  // always pass
++    try {
++      const r = await raceAgents({
++        briefId: 'bv3', briefText: 't',
++        repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-env',
++        settleMs: 500, maxRaceMs: 15_000,
++        // verifyCmd omitted on purpose
++      })
++      expect(r.ok).toBe(true)
++      if (r.ok) {
++        const winner = r.racers.find(rr => rr.runId === r.winnerRunId)
++        expect(winner?.verify?.outcome).toBe('passed')
++      }
++    } finally { delete process.env.ASICODE_VERIFY_CMD }
++  }, 60_000)
++
++  test('explicit verifyCmd: "" disables verifier even when env set', async () => {
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      echo "x" > x.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add x.txt
++      git commit -q --no-gpg-sign -m "x"
++    `
++    process.env.ASICODE_VERIFY_CMD = 'true'
++    try {
++      const r = await raceAgents({
++        briefId: 'bv4', briefText: 't',
++        repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-off',
++        settleMs: 500, maxRaceMs: 15_000,
++        verifyCmd: '',
++      })
++      expect(r.ok).toBe(true)
++      if (r.ok) {
++        // No verify ran → racers' verify field stays null.
++        expect(r.racers.every(rr => rr.verify === null)).toBe(true)
++      }
++    } finally { delete process.env.ASICODE_VERIFY_CMD }
++  }, 60_000)
++})
+diff --git a/src/services/parallel/dispatcher.ts b/src/services/parallel/dispatcher.ts
+index b234fa5..d55f01a 100644
+--- a/src/services/parallel/dispatcher.ts
++++ b/src/services/parallel/dispatcher.ts
+@@ -13,6 +13,7 @@ import {
+ import type { JudgeProvider } from '../judges/dispatcher.js'
+ import { provisionWorktrees, type ProvisionedWorktree } from './worktreeProvisioner.js'
+ import { pickWinner, type RaceCandidate, type TiebreakResult } from './tiebreaker.js'
++import { runVerifier, verifyCmdFromEnv, verifyRank, type VerifyOutcome } from './verifier.js'
+ 
+ export interface RaceInput {
+   briefId: string
+@@ -33,6 +34,16 @@ export interface RaceInput {
+   rootDir?: string
+   /** Label suffix for branch names (for tests + concurrent races). */
+   label?: string
++  /**
++   * REQ-18: verifier shell command run inside each finished racer's
++   * worktree. When set, the dispatcher prefers passing racers over
++   * failing ones; ties within a class fall through to tiebreak.
++   * Defaults to ASICODE_VERIFY_CMD when undefined; pass empty string
++   * to explicitly disable.
++   */
++  verifyCmd?: string
++  /** Hard cap on verifier wall-clock per racer. Default 5 min. */
++  verifyTimeoutMs?: number
+ }
+ 
+ export interface RaceRacer extends ProvisionedWorktree {
+@@ -42,6 +53,8 @@ export interface RaceRacer extends ProvisionedWorktree {
+   outcome: 'pending' | 'completed' | 'crashed' | 'killed' | 'timed_out'
+   finishedAtMs: number | null
+   diff: string | null
++  /** REQ-18: per-racer verifier result. null when no verifyCmd ran. */
++  verify: { outcome: VerifyOutcome; exitCode: number | null; durationMs: number; stderrTail: string } | null
+ }
+ 
+ export type RaceFailure =
+@@ -131,7 +144,7 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
+     const runId = newRunId()
+     const logPath = resolve(logDir, `${runId}.log`)
+     const racer: RaceRacer = {
+-      ...wt, runId, pid: 0, logPath, outcome: 'pending', finishedAtMs: null, diff: null,
++      ...wt, runId, pid: 0, logPath, outcome: 'pending', finishedAtMs: null, diff: null, verify: null,
+     }
+     try {
+       recordRun({
+@@ -186,8 +199,30 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
+     if (r.outcome !== 'completed') continue
+     r.diff = await captureDiff(r, base, input.repoPath)
+   }
+-  const candidates: RaceCandidate[] = racers
+-    .filter(r => r.outcome === 'completed' && r.diff !== null && r.diff.trim() !== '')
++  const finishers = racers.filter(r => r.outcome === 'completed' && r.diff !== null && r.diff.trim() !== '')
++
++  // REQ-18: run the verifier inside each finished worktree. verifyCmd
++  // explicitly empty string disables; undefined falls back to env.
++  const verifyCmd = input.verifyCmd !== undefined ? input.verifyCmd : verifyCmdFromEnv() ?? ''
++  if (verifyCmd && finishers.length > 0) {
++    // Run verifiers in parallel — the racers are isolated worktrees,
++    // so the verifier processes shouldn't contend.
++    await Promise.all(finishers.map(async r => {
++      const res = await runVerifier({ worktreePath: r.path, cmd: verifyCmd, timeoutMs: input.verifyTimeoutMs })
++      r.verify = { outcome: res.outcome, exitCode: res.exitCode, durationMs: res.durationMs, stderrTail: res.stderrTail }
++    }))
++  }
++
++  // Candidate list, sorted by verify rank desc (passed first, then
++  // failed, then verifier_error). Within the same rank, FCFS order
++  // is preserved by stable sort on finishedAtMs.
++  const candidates: RaceCandidate[] = [...finishers]
++    .sort((a, b) => {
++      const ar = a.verify ? verifyRank(a.verify.outcome) : -1
++      const br = b.verify ? verifyRank(b.verify.outcome) : -1
++      if (br !== ar) return br - ar
++      return (a.finishedAtMs ?? 0) - (b.finishedAtMs ?? 0)
++    })
+     .map(r => ({ runId: r.runId, diff: r.diff!, worktreePath: r.path, branch: r.branch }))
+ 
+   // Update db rows so status CLI sees the outcomes
+@@ -204,18 +239,30 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
+     return { ok: false, reason: 'all_racers_failed', racers }
+   }
+ 
+-  // 6. Tiebreak (or first-past-the-post when provider absent)
++  // 6. Tiebreak (or first-past-the-post when provider absent). With
++  // REQ-18, candidates are pre-sorted by verifier rank, so an LLM
++  // tiebreak only fires when ≥2 racers share the top class (e.g.
++  // multiple passing diffs).
+   let tiebreak: TiebreakResult | null = null
+   let winner: RaceCandidate
+-  if (input.tiebreakProvider && candidates.length > 1) {
++  // Restrict tiebreak to racers in the top verifier class only.
++  const topClass = verifyCmd && finishers.some(r => r.verify)
++    ? (() => {
++        const ranked = finishers.filter(r => r.verify)
++        const topRank = Math.max(...ranked.map(r => verifyRank(r.verify!.outcome)))
++        const topIds = new Set(ranked.filter(r => verifyRank(r.verify!.outcome) === topRank).map(r => r.runId))
++        return candidates.filter(c => topIds.has(c.runId))
++      })()
++    : candidates
++  if (input.tiebreakProvider && topClass.length > 1) {
+     tiebreak = await pickWinner({
+       briefText: input.briefText,
+-      candidates,
++      candidates: topClass,
+       provider: input.tiebreakProvider,
+     })
+-    winner = tiebreak.winner ?? candidates[0]
++    winner = tiebreak.winner ?? topClass[0]
+   } else {
+-    winner = candidates[0]
++    winner = topClass[0] ?? candidates[0]
+   }
+   // Flag the winner row
+   try { updateRun({ run_id: winner.runId, was_race_winner: true }) } catch { /* db unavailable */ }
+diff --git a/src/services/parallel/verifier.test.ts b/src/services/parallel/verifier.test.ts
+new file mode 100644
+index 0000000..3f01dc5
+--- /dev/null
++++ b/src/services/parallel/verifier.test.ts
+@@ -0,0 +1,92 @@
++// REQ-18: verifier substrate tests. Uses /bin/sh trivial commands so
++// no real toolchain needed.
++
++import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
++import { mkdtempSync, rmSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { runVerifier, verifyCmdFromEnv, verifyRank } from './verifier'
++
++let tempDir: string
++
++beforeEach(() => { tempDir = mkdtempSync(join(tmpdir(), 'asicode-verify-')) })
++afterEach(() => { rmSync(tempDir, { recursive: true, force: true }); delete process.env.ASICODE_VERIFY_CMD })
++
++describe('verifyCmdFromEnv', () => {
++  test('null by default', () => {
++    delete process.env.ASICODE_VERIFY_CMD
++    expect(verifyCmdFromEnv()).toBeNull()
++  })
++  test('empty string → null', () => {
++    process.env.ASICODE_VERIFY_CMD = '   '
++    expect(verifyCmdFromEnv()).toBeNull()
++  })
++  test('non-empty → returned', () => {
++    process.env.ASICODE_VERIFY_CMD = 'bun test'
++    expect(verifyCmdFromEnv()).toBe('bun test')
++  })
++})
++
++describe('verifyRank', () => {
++  test('passed > failed > verifier_error', () => {
++    expect(verifyRank('passed')).toBeGreaterThan(verifyRank('failed'))
++    expect(verifyRank('failed')).toBeGreaterThan(verifyRank('verifier_error'))
++  })
++})
++
++describe('runVerifier', () => {
++  test('exit 0 → passed', async () => {
++    const r = await runVerifier({ worktreePath: tempDir, cmd: 'true' })
++    expect(r.outcome).toBe('passed')
++    expect(r.exitCode).toBe(0)
++    expect(r.durationMs).toBeGreaterThanOrEqual(0)
++  })
++
++  test('exit non-zero → failed (with stderr tail)', async () => {
++    const r = await runVerifier({
++      worktreePath: tempDir,
++      cmd: 'echo "boom" >&2; exit 7',
++    })
++    expect(r.outcome).toBe('failed')
++    expect(r.exitCode).toBe(7)
++    expect(r.stderrTail).toContain('boom')
++  })
++
++  test('runs in the provided worktree (CWD)', async () => {
++    const r = await runVerifier({
++      worktreePath: tempDir,
++      cmd: 'test "$(pwd)" = "' + tempDir + '"',
++    })
++    expect(r.outcome).toBe('passed')
++  })
++
++  test('timeout → verifier_error', async () => {
++    const r = await runVerifier({
++      worktreePath: tempDir,
++      cmd: 'sleep 10',
++      timeoutMs: 150,
++    })
++    expect(r.outcome).toBe('verifier_error')
++    expect(r.exitCode).toBeNull()
++    expect(r.durationMs).toBeLessThan(2000)
++  })
++
++  test('extra env passed through to child', async () => {
++    const r = await runVerifier({
++      worktreePath: tempDir,
++      cmd: 'test "$FOO" = "bar"',
++      env: { FOO: 'bar' },
++    })
++    expect(r.outcome).toBe('passed')
++  })
++
++  test('stderr tail truncated to ≤2k chars', async () => {
++    // emit ~5k chars to stderr; tail should be ≤2k
++    const r = await runVerifier({
++      worktreePath: tempDir,
++      cmd: 'for i in $(seq 1 100); do printf "%.0sX" {1..50} >&2; done; exit 1',
++    })
++    expect(r.outcome).toBe('failed')
++    expect(r.stderrTail.length).toBeLessThanOrEqual(2048)
++  })
++})
+diff --git a/src/services/parallel/verifier.ts b/src/services/parallel/verifier.ts
+new file mode 100644
+index 0000000..404cc10
+--- /dev/null
++++ b/src/services/parallel/verifier.ts
+@@ -0,0 +1,93 @@
++// REQ-18: verifier-gated race winner selection (A1 L1).
++//
++// When ASICODE_VERIFY_CMD is set, the dispatcher runs it inside each
++// finished racer's worktree (after the race settles, before tiebreak).
++// A racer that exits 0 is "passed"; non-zero is "failed". The dispatcher
++// then prefers passing over failing — passing racers are tiebroken
++// among themselves (LLM judge if configured, else FCFS); failing
++// racers only win if no racer passed.
++//
++// Substrate-only. The dispatcher composes this into the existing
++// race lifecycle (REQ-6.2). Soft-fail throughout: if the verify cmd
++// is missing / times out / blows up, that racer is treated as
++// "verifier_error" — which ranks below 'failed' in the same way
++// failed ranks below 'passed'.
++
++import { spawn } from 'node:child_process'
++
++export type VerifyOutcome = 'passed' | 'failed' | 'verifier_error'
++
++export interface VerifyResult {
++  outcome: VerifyOutcome
++  exitCode: number | null
++  durationMs: number
++  /** Truncated stderr tail (≤2k chars) — surfaces in the race report. */
++  stderrTail: string
++}
++
++export interface VerifyInput {
++  /** Racer's worktree path; the cmd runs with CWD=this. */
++  worktreePath: string
++  /** Shell command to run as the verifier. Passed to `/bin/sh -c`. */
++  cmd: string
++  /** Hard cap on the verifier wall-clock. Default 5 min. */
++  timeoutMs?: number
++  /** Extra env to merge into the child. Useful for tests + smoke. */
++  env?: Record<string, string>
++}
++
++const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
++const STDERR_TAIL_MAX = 2048
++
++export function verifyCmdFromEnv(): string | null {
++  const cmd = process.env.ASICODE_VERIFY_CMD
++  return cmd && cmd.trim() !== '' ? cmd : null
++}
++
++/** Run the verifier against one worktree. Never throws. */
++export function runVerifier(input: VerifyInput): Promise<VerifyResult> {
++  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS
++  const started = Date.now()
++  return new Promise<VerifyResult>(resolve_ => {
++    let stderr = ''
++    let settled = false
++    const finish = (outcome: VerifyOutcome, exitCode: number | null) => {
++      if (settled) return
++      settled = true
++      resolve_({
++        outcome, exitCode,
++        durationMs: Date.now() - started,
++        stderrTail: stderr.slice(-STDERR_TAIL_MAX),
++      })
++    }
++    try {
++      const ch = spawn('/bin/sh', ['-c', input.cmd], {
++        cwd: input.worktreePath,
++        stdio: ['ignore', 'ignore', 'pipe'],
++        env: { ...process.env, ...(input.env ?? {}) },
++      })
++      const t = setTimeout(() => { ch.kill('SIGKILL'); finish('verifier_error', null) }, timeoutMs)
++      ch.stderr.on('data', c => { stderr += c.toString('utf-8') })
++      ch.on('error', e => { clearTimeout(t); stderr += `\n[spawn error] ${e.message}`; finish('verifier_error', null) })
++      ch.on('close', code => {
++        clearTimeout(t)
++        finish(code === 0 ? 'passed' : 'failed', code ?? null)
++      })
++    } catch (e) {
++      stderr += `\n[throw] ${e instanceof Error ? e.message : String(e)}`
++      finish('verifier_error', null)
++    }
++  })
++}
++
++/**
++ * Rank ordering for verifier outcomes. Higher = better. Lets the
++ * dispatcher sort candidates without writing the comparison twice.
++ */
++export function verifyRank(outcome: VerifyOutcome): number {
++  switch (outcome) {
++    case 'passed': return 2
++    case 'failed': return 1
++    case 'verifier_error': return 0
++  }
++}

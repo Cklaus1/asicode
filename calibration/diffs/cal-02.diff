@@ -1,0 +1,60 @@
+diff --git a/src/services/instrumentation/client.ts b/src/services/instrumentation/client.ts
+index 0b5abb9..582b75c 100644
+--- a/src/services/instrumentation/client.ts
++++ b/src/services/instrumentation/client.ts
+@@ -36,7 +36,7 @@ import {
+   type ToolCallRecord,
+ } from './types'
+ 
+-const SCHEMA_VERSION_REQUIRED = 9
++export const SCHEMA_VERSION_REQUIRED = 9
+ 
+ let _db: Database | null = null
+ 
+diff --git a/src/services/instrumentation/runtime-probe.test.ts b/src/services/instrumentation/runtime-probe.test.ts
+index 7c5e20b..7a6da57 100644
+--- a/src/services/instrumentation/runtime-probe.test.ts
++++ b/src/services/instrumentation/runtime-probe.test.ts
+@@ -570,6 +570,25 @@ describe('REQ-32 race + verifier knobs', () => {
+   })
+ })
+ 
++// REQ-56: probe imports SCHEMA_VERSION_REQUIRED from client, so the
++// two stay in lockstep. This test pins that contract.
++describe('REQ-56 single source for schema version', () => {
++  test('probe + client agree on SCHEMA_VERSION_REQUIRED', async () => {
++    const { SCHEMA_VERSION_REQUIRED } = await import('./client')
++    // Render a probe report against a partial-schema db and confirm
++    // the detail message names the same required version.
++    const partialPath = join(tempDir, 'partial-v.db')
++    const db = new Database(partialPath, { create: true })
++    db.exec(`CREATE TABLE _schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT)`)
++    db.exec(`INSERT INTO _schema_version VALUES (1, 0, 'partial')`)
++    db.close()
++    process.env.ASICODE_INSTRUMENTATION_DB = partialPath
++    const r = await probeRuntime()
++    const check = r.checks.find(c => c.name === 'ASICODE_INSTRUMENTATION_DB')!
++    expect(check.detail).toContain(`v${SCHEMA_VERSION_REQUIRED}`)
++  })
++})
++
+ // REQ-55: probe verifies schema version against the client requirement.
+ describe('REQ-55 schema version check', () => {
+   test('migrated db (current schema) → ok', async () => {
+diff --git a/src/services/instrumentation/runtime-probe.ts b/src/services/instrumentation/runtime-probe.ts
+index 9209b1a..c42f079 100644
+--- a/src/services/instrumentation/runtime-probe.ts
++++ b/src/services/instrumentation/runtime-probe.ts
+@@ -23,11 +23,7 @@
+ import { Database } from 'bun:sqlite'
+ import { spawn } from 'node:child_process'
+ import { existsSync } from 'node:fs'
+-
+-// REQ-55: required schema version mirrored from client.ts. Updated
+-// in lockstep when a migration ships. Probe queries this against the
+-// db's _schema_version max so users see the gap before submit fails.
+-const SCHEMA_VERSION_REQUIRED = 9
++import { SCHEMA_VERSION_REQUIRED } from './client'
+ 
+ function readDbSchemaVersion(dbPath: string): number | null {
+   try {

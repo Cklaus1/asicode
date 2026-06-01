@@ -1,0 +1,304 @@
+diff --git a/scripts/asicode-submit.test.ts b/scripts/asicode-submit.test.ts
+index 0428c8c..2fbd50c 100644
+--- a/scripts/asicode-submit.test.ts
++++ b/scripts/asicode-submit.test.ts
+@@ -554,6 +554,14 @@ describe('--race best-of-N (REQ-14)', () => {
+     expect(r.stdout).toContain('ASICODE_AUTO_PR_FORCE')
+   })
+ 
++  test('--help mentions verifier auto-detect (REQ-24)', () => {
++    const r = run(['--help'], { env: { ASICODE_INSTRUMENTATION_DB: '' } })
++    expect(r.code).toBe(0)
++    expect(r.stdout).toContain('ASICODE_VERIFY_CMD')
++    expect(r.stdout).toContain('auto-detected')
++    expect(r.stdout).toContain('ASICODE_VERIFY_AUTODETECT')
++  })
++
+   test('ASICODE_AUTO_PR_FORCE=1 sets force-pr default', () => {
+     gitInit(projDir)
+     const briefPath = join(tempDir, 'b.md')
+diff --git a/scripts/asicode-submit.ts b/scripts/asicode-submit.ts
+index e20dc24..441570b 100644
+--- a/scripts/asicode-submit.ts
++++ b/scripts/asicode-submit.ts
+@@ -51,6 +51,12 @@ function parseArgs(argv: string[]): Args {
+       console.log('                 ASICODE_AUTO_PR=1 sets the default. Use --no-auto-pr to override.')
+       console.log('  --force-pr     REQ-20: open PR even when the winner failed the verifier (default: gated when verify_outcome != passed).')
+       console.log('                 ASICODE_AUTO_PR_FORCE=1 sets the default.')
++      console.log('')
++      console.log('Verifier (REQ-18/24): each finished racer runs $ASICODE_VERIFY_CMD inside its worktree;')
++      console.log('the dispatcher prefers a racer that exits 0. If ASICODE_VERIFY_CMD is unset, the verifier')
++      console.log('is auto-detected from project files: bun.lock+package.json → bun test; Cargo.toml → cargo')
++      console.log('test --quiet; pyproject.toml/pytest.ini → pytest -q; package.json scripts.test → npm test.')
++      console.log('ASICODE_VERIFY_AUTODETECT=0 disables auto-detection.')
+       console.log('  --background   detach the spawned agent and exit immediately (true walk-away; single-spawn only — race is foreground)')
+       console.log('  --json         print {brief_id, project_fingerprint, run_id?, pid?, race?} on stdout')
+       console.log('')
+diff --git a/src/services/parallel/dispatcher.test.ts b/src/services/parallel/dispatcher.test.ts
+index 4f3b32f..786a444 100644
+--- a/src/services/parallel/dispatcher.test.ts
++++ b/src/services/parallel/dispatcher.test.ts
+@@ -286,6 +286,71 @@ describe('raceAgents — verifier-gated winner (REQ-18)', () => {
+     } finally { delete process.env.ASICODE_VERIFY_CMD }
+   }, 60_000)
+ 
++  test('verifier auto-detected from project files when env unset (REQ-24)', async () => {
++    // The race repo has bun.lock+package.json from setupRepo? No — let
++    // me seed them on the racer's commits via the dispatch cmd. Actually
++    // setupRepo only commits README. Seed in this repo before the race.
++    writeFileSync(join(repoDir, 'bun.lock'), '')
++    writeFileSync(join(repoDir, 'package.json'), '{}')
++    spawnSync('git', ['-C', repoDir, 'add', '.'])
++    spawnSync('git', ['-C', repoDir, 'commit', '-q', '--no-gpg-sign', '-m', 'seed'])
++    // Make sure env is unset
++    delete process.env.ASICODE_VERIFY_CMD
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      echo "y" > out.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add out.txt
++      git commit -q --no-gpg-sign -m "y"
++    `
++    const r = await raceAgents({
++      briefId: 'bvauto', briefText: 't',
++      repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-auto',
++      settleMs: 500, maxRaceMs: 15_000,
++      // verifyCmd omitted; ASICODE_VERIFY_CMD unset → detect bun, but the
++      // worktree won't have a real bun project, so verifier runs `bun
++      // test` and exits non-zero. Verifies that auto-detect FIRED.
++    })
++    expect(r.ok).toBe(true)
++    if (r.ok) {
++      // Some racer's verifier should have run (outcome won't be null).
++      // Whether it passed/failed depends on bun's behavior in an empty
++      // dir, but we should NOT have null verify.
++      const winnerRacer = r.racers.find(rr => rr.runId === r.winnerRunId)
++      expect(winnerRacer?.verify).not.toBeNull()
++    }
++  }, 60_000)
++
++  test('ASICODE_VERIFY_AUTODETECT=0 disables auto-detection', async () => {
++    writeFileSync(join(repoDir, 'bun.lock'), '')
++    writeFileSync(join(repoDir, 'package.json'), '{}')
++    spawnSync('git', ['-C', repoDir, 'add', '.'])
++    spawnSync('git', ['-C', repoDir, 'commit', '-q', '--no-gpg-sign', '-m', 'seed'])
++    delete process.env.ASICODE_VERIFY_CMD
++    process.env.ASICODE_VERIFY_AUTODETECT = '0'
++    process.env.ASICODE_DISPATCH_CMD = `
++      cat > /dev/null
++      echo "z" > z.txt
++      git config user.email t@t.t
++      git config user.name T
++      git add z.txt
++      git commit -q --no-gpg-sign -m "z"
++    `
++    try {
++      const r = await raceAgents({
++        briefId: 'bvautooff', briefText: 't',
++        repoPath: repoDir, count: 2, rootDir: tempDir, label: 'verify-auto-off',
++        settleMs: 500, maxRaceMs: 15_000,
++      })
++      expect(r.ok).toBe(true)
++      if (r.ok) {
++        // No verifier ran → verify stays null
++        expect(r.racers.every(rr => rr.verify === null)).toBe(true)
++      }
++    } finally { delete process.env.ASICODE_VERIFY_AUTODETECT }
++  }, 60_000)
++
+   test('explicit verifyCmd: "" disables verifier even when env set', async () => {
+     process.env.ASICODE_DISPATCH_CMD = `
+       cat > /dev/null
+diff --git a/src/services/parallel/dispatcher.ts b/src/services/parallel/dispatcher.ts
+index bba5046..ffea6ed 100644
+--- a/src/services/parallel/dispatcher.ts
++++ b/src/services/parallel/dispatcher.ts
+@@ -14,6 +14,7 @@ import type { JudgeProvider } from '../judges/dispatcher.js'
+ import { provisionWorktrees, type ProvisionedWorktree } from './worktreeProvisioner.js'
+ import { pickWinner, type RaceCandidate, type TiebreakResult } from './tiebreaker.js'
+ import { runVerifier, verifyCmdFromEnv, verifyRank, type VerifyOutcome } from './verifier.js'
++import { detectVerifyCmd } from './verifyDetect.js'
+ 
+ export interface RaceInput {
+   briefId: string
+@@ -201,9 +202,20 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
+   }
+   const finishers = racers.filter(r => r.outcome === 'completed' && r.diff !== null && r.diff.trim() !== '')
+ 
+-  // REQ-18: run the verifier inside each finished worktree. verifyCmd
+-  // explicitly empty string disables; undefined falls back to env.
+-  const verifyCmd = input.verifyCmd !== undefined ? input.verifyCmd : verifyCmdFromEnv() ?? ''
++  // REQ-18 + REQ-24: resolve verifier. Priority:
++  //   1. input.verifyCmd (CLI override; '' explicitly disables)
++  //   2. ASICODE_VERIFY_CMD env var
++  //   3. auto-detection from project files (REQ-24)
++  // ASICODE_VERIFY_AUTODETECT=0 disables step 3 (e.g. for racing in
++  // repos where the test suite is too slow or interactive).
++  let verifyCmd: string
++  if (input.verifyCmd !== undefined) verifyCmd = input.verifyCmd
++  else {
++    const envCmd = verifyCmdFromEnv()
++    if (envCmd !== null) verifyCmd = envCmd
++    else if (process.env.ASICODE_VERIFY_AUTODETECT === '0') verifyCmd = ''
++    else verifyCmd = detectVerifyCmd(input.repoPath)?.cmd ?? ''
++  }
+   if (verifyCmd && finishers.length > 0) {
+     // Run verifiers in parallel — the racers are isolated worktrees,
+     // so the verifier processes shouldn't contend.
+diff --git a/src/services/parallel/verifyDetect.test.ts b/src/services/parallel/verifyDetect.test.ts
+new file mode 100644
+index 0000000..12854a8
+--- /dev/null
++++ b/src/services/parallel/verifyDetect.test.ts
+@@ -0,0 +1,84 @@
++// REQ-24: auto-detection tests. Each test seeds different marker
++// files in a tmpdir and asserts the detected cmd.
++
++import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
++import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { detectVerifyCmd } from './verifyDetect'
++
++let dir: string
++beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'asicode-detect-')) })
++afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
++
++describe('detectVerifyCmd', () => {
++  test('null when no markers exist', () => {
++    expect(detectVerifyCmd(dir)).toBeNull()
++  })
++
++  test('bun: bun.lock + package.json → bun test', () => {
++    writeFileSync(join(dir, 'bun.lock'), '')
++    writeFileSync(join(dir, 'package.json'), '{}')
++    const r = detectVerifyCmd(dir)
++    expect(r).toEqual({ cmd: 'bun test', source: 'bun' })
++  })
++
++  test('bun requires package.json (lockfile alone is not enough)', () => {
++    writeFileSync(join(dir, 'bun.lock'), '')
++    expect(detectVerifyCmd(dir)).toBeNull()
++  })
++
++  test('cargo: Cargo.toml → cargo test --quiet', () => {
++    writeFileSync(join(dir, 'Cargo.toml'), '[package]\nname = "x"')
++    const r = detectVerifyCmd(dir)
++    expect(r).toEqual({ cmd: 'cargo test --quiet', source: 'cargo' })
++  })
++
++  test('python: pyproject.toml → pytest -q --tb=no', () => {
++    writeFileSync(join(dir, 'pyproject.toml'), '[project]\nname = "x"')
++    const r = detectVerifyCmd(dir)
++    expect(r).toEqual({ cmd: 'pytest -q --tb=no', source: 'pyproject' })
++  })
++
++  test('python: pytest.ini also matches', () => {
++    writeFileSync(join(dir, 'pytest.ini'), '[pytest]')
++    const r = detectVerifyCmd(dir)
++    expect(r?.cmd).toBe('pytest -q --tb=no')
++    expect(r?.source).toBe('pytest_ini')
++  })
++
++  test('npm: package.json with a real test script → npm test', () => {
++    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'jest' } }))
++    const r = detectVerifyCmd(dir)
++    expect(r).toEqual({ cmd: 'npm test', source: 'npm' })
++  })
++
++  test('npm: rejects the default placeholder test script', () => {
++    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }))
++    expect(detectVerifyCmd(dir)).toBeNull()
++  })
++
++  test('npm: rejects package.json with no scripts.test', () => {
++    writeFileSync(join(dir, 'package.json'), '{}')
++    expect(detectVerifyCmd(dir)).toBeNull()
++  })
++
++  test('npm: tolerates malformed package.json (no throw, returns null)', () => {
++    writeFileSync(join(dir, 'package.json'), 'not-json{')
++    expect(detectVerifyCmd(dir)).toBeNull()
++  })
++
++  test('precedence: bun beats npm when both apply', () => {
++    writeFileSync(join(dir, 'bun.lock'), '')
++    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'jest' } }))
++    const r = detectVerifyCmd(dir)
++    expect(r?.source).toBe('bun')
++  })
++
++  test('precedence: cargo beats python when both apply (Rust+Python ML mono-repos)', () => {
++    writeFileSync(join(dir, 'Cargo.toml'), '')
++    writeFileSync(join(dir, 'pyproject.toml'), '')
++    const r = detectVerifyCmd(dir)
++    expect(r?.source).toBe('cargo')
++  })
++})
+diff --git a/src/services/parallel/verifyDetect.ts b/src/services/parallel/verifyDetect.ts
+new file mode 100644
+index 0000000..5b4f37f
+--- /dev/null
++++ b/src/services/parallel/verifyDetect.ts
+@@ -0,0 +1,60 @@
++// REQ-24: auto-detect a sensible verifier cmd from project files. Used
++// when ASICODE_VERIFY_CMD is unset so most repos get correctness
++// gating without configuration.
++//
++// Detection order (first match wins):
++//   bun.lock + package.json     → "bun test"
++//   Cargo.toml                  → "cargo test --quiet"
++//   pyproject.toml/pytest.ini   → "pytest -q --tb=no"
++//   package.json scripts.test   → "npm test"
++//
++// Never throws. Returns null when nothing matches — caller stays
++// no-op (race picks winner by FCFS as before).
++
++import { existsSync, readFileSync } from 'node:fs'
++import { join } from 'node:path'
++
++export interface DetectedVerifier {
++  cmd: string
++  /** Identifier for the matched marker file (for logs + reports). */
++  source: 'bun' | 'cargo' | 'pyproject' | 'pytest_ini' | 'npm'
++}
++
++export function detectVerifyCmd(repoPath: string): DetectedVerifier | null {
++  const has = (rel: string) => existsSync(join(repoPath, rel))
++
++  // bun first — its lockfile is unique to bun and the runner is fast.
++  if (has('bun.lock') && has('package.json')) {
++    return { cmd: 'bun test', source: 'bun' }
++  }
++
++  // Rust
++  if (has('Cargo.toml')) {
++    return { cmd: 'cargo test --quiet', source: 'cargo' }
++  }
++
++  // Python — pyproject.toml or pytest.ini are the canonical markers.
++  // We don't run pytest just because there's a .py file; that's too
++  // greedy and fails noisily in non-test repos.
++  if (has('pyproject.toml')) {
++    return { cmd: 'pytest -q --tb=no', source: 'pyproject' }
++  }
++  if (has('pytest.ini')) {
++    return { cmd: 'pytest -q --tb=no', source: 'pytest_ini' }
++  }
++
++  // npm — only if package.json declares a "test" script. Otherwise the
++  // default `npm test` exits 1 with "no test specified" which would
++  // mark every racer as failed.
++  if (has('package.json')) {
++    try {
++      const pkg = JSON.parse(readFileSync(join(repoPath, 'package.json'), 'utf-8')) as { scripts?: { test?: string } }
++      if (pkg.scripts?.test && pkg.scripts.test !== 'echo "Error: no test specified" && exit 1') {
++        return { cmd: 'npm test', source: 'npm' }
++      }
++    } catch {
++      // Malformed package.json — skip.
++    }
++  }
++  return null
++}

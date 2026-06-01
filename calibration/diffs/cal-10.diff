@@ -1,0 +1,233 @@
+diff --git a/src/services/autonomyGate/gather.ts b/src/services/autonomyGate/gather.ts
+index a7c348a..4e19101 100644
+--- a/src/services/autonomyGate/gather.ts
++++ b/src/services/autonomyGate/gather.ts
+@@ -214,20 +214,16 @@ async function gatherJudges(ctx: GateContext, thresholds: ContractThresholds): P
+ /**
+  * Density: required for `production`/`security` on refactors.
+  *
+- * The live density harness (`classifyRefactor` + `recordDensity`) is sha-keyed:
+- * it reads a *committed* sha via `git log`/`git show`, not a worktree's
+- * uncommitted diff. The pre-merge gate runs before the winner is committed to a
+- * landable sha, so the harness can't evaluate it here without a refactor to
+- * make it diff-driven (tracked as follow-up; see AUTONOMY_CONTRACT.md "S1").
+- *
+- * Until that lands, density is gathered post-merge by the existing
+- * `densityOnPrMerge` trigger, and the pre-merge gate returns a **missing
+- * signal** when density is required and the change is a candidate refactor. Per
+- * the contract that fails the verdict → `needs_human`, which is the safe
+- * reading: we don't fabricate a density pass we couldn't actually measure.
+- *
+- * `injectedAb` lets the call site (or a future diff-driven harness) supply a
+- * real result; when present we score it properly.
++ * Diff-driven (REQ-80): the original density harness is sha-keyed and can't read
++ * a pre-merge worktree change, so the gate now classifies refactor-ness from the
++ * brief and computes the LOC delta directly from `ctx.diff` via
++ * `analyzeDiffDensity`. A non-refactor is n/a (trivial pass); a refactor passes
++ * iff it didn't add net lines (delta ≥ 0). This is the *structural* half of the
++ * density A/B — the behavioural half (pre/post test-suite superset + judge
++ * equivalence) genuinely needs two trees and stays the post-merge trigger's job.
++ * The structural signal is enough to catch what the contract cares about: a
++ * refactor that bloats. An explicit `ctx.densityAb` (e.g. a full A/B result)
++ * still takes precedence when supplied.
+  */
+ async function gatherDensity(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
+   const { isDensityEnabled } = await import('../instrumentation/density-trigger.js')
+@@ -235,9 +231,12 @@ async function gatherDensity(ctx: GateContext, thresholds: ContractThresholds):
+   if (ctx.densityAb) {
+     return densitySignal(ctx.densityAb, thresholds)
+   }
+-  // No diff-driven A/B result available pre-merge — missing signal, blocks
+-  // where required. Honest over a fabricated pass.
+-  return { ran: false }
++  const { analyzeDiffDensity } = await import('../instrumentation/densityDiff.js')
++  const a = analyzeDiffDensity(ctx.briefText, ctx.diff)
++  return densitySignal(
++    { isRefactor: a.isRefactor, densityCounted: a.densityCounted, densityDelta: a.densityDelta ?? 0 },
++    thresholds,
++  )
+ }
+ 
+ /**
+diff --git a/src/services/instrumentation/densityDiff.test.ts b/src/services/instrumentation/densityDiff.test.ts
+new file mode 100644
+index 0000000..3cccdb6
+--- /dev/null
++++ b/src/services/instrumentation/densityDiff.test.ts
+@@ -0,0 +1,70 @@
++import { describe, expect, test } from 'bun:test'
++import { analyzeDiffDensity, classifyRefactorFromText, locDeltaFromDiff } from './densityDiff.js'
++
++describe('classifyRefactorFromText', () => {
++  test('feature/add intent is not a refactor', () => {
++    expect(classifyRefactorFromText('Add a status note to the roadmap').isRefactor).toBe(false)
++    expect(classifyRefactorFromText('feat: implement OAuth login').isRefactor).toBe(false)
++    expect(classifyRefactorFromText('Introduce a new caching layer').isRefactor).toBe(false)
++  })
++  test('conventional refactor: is a strong refactor signal', () => {
++    expect(classifyRefactorFromText('refactor: collapse the wiring').isRefactor).toBe(true)
++    expect(classifyRefactorFromText('refactor(chrome): extract seam').isRefactor).toBe(true)
++  })
++  test('densification verbs are refactor signals', () => {
++    for (const v of ['rename', 'simplify', 'consolidate', 'extract', 'inline', 'dedupe', 'densify']) {
++      expect(classifyRefactorFromText(`${v} the helper`).isRefactor).toBe(true)
++    }
++  })
++  test('ambiguous intent defaults to not-a-refactor (density n/a)', () => {
++    expect(classifyRefactorFromText('Update the docs').isRefactor).toBe(false)
++  })
++  test('uses the first non-empty line', () => {
++    expect(classifyRefactorFromText('\n\nextract the predicate\nmore detail').isRefactor).toBe(true)
++  })
++})
++
++describe('locDeltaFromDiff', () => {
++  test('counts +/- content lines, ignores file headers', () => {
++    const diff = [
++      '--- a/x.ts',
++      '+++ b/x.ts',
++      '@@ -1,3 +1,2 @@',
++      ' unchanged',
++      '-old one',
++      '-old two',
++      '+new one',
++    ].join('\n')
++    const r = locDeltaFromDiff(diff)
++    expect(r.removed).toBe(2)
++    expect(r.added).toBe(1)
++    expect(r.delta).toBe(1) // removed 2, added 1 → denser by 1
++  })
++  test('+++/--- headers are not counted as content', () => {
++    const diff = '--- a/f\n+++ b/f\n@@ -0,0 +1 @@\n+only line'
++    expect(locDeltaFromDiff(diff)).toMatchObject({ added: 1, removed: 0, delta: -1 })
++  })
++})
++
++describe('analyzeDiffDensity', () => {
++  test('non-refactor → n/a (delta null, not counted)', () => {
++    const r = analyzeDiffDensity('Add a status note', '+++ b/x\n+a line')
++    expect(r.isRefactor).toBe(false)
++    expect(r.densityDelta).toBeNull()
++    expect(r.densityCounted).toBe(false)
++  })
++  test('refactor that removes net lines → counted (denser)', () => {
++    const diff = '--- a/x\n+++ b/x\n-line1\n-line2\n-line3\n+combined'
++    const r = analyzeDiffDensity('refactor: collapse three lines into one', diff)
++    expect(r.isRefactor).toBe(true)
++    expect(r.densityDelta).toBe(2)
++    expect(r.densityCounted).toBe(true)
++  })
++  test('refactor that bloats → NOT counted (the anti-pattern the gate catches)', () => {
++    const diff = '--- a/x\n+++ b/x\n-one\n+two\n+three\n+four'
++    const r = analyzeDiffDensity('simplify the function', diff)
++    expect(r.isRefactor).toBe(true)
++    expect(r.densityDelta).toBe(-2) // added 3, removed 1
++    expect(r.densityCounted).toBe(false)
++  })
++})
+diff --git a/src/services/instrumentation/densityDiff.ts b/src/services/instrumentation/densityDiff.ts
+new file mode 100644
+index 0000000..d079e84
+--- /dev/null
++++ b/src/services/instrumentation/densityDiff.ts
+@@ -0,0 +1,100 @@
++/**
++ * Diff-driven density analysis for the pre-merge autonomy gate.
++ *
++ * The original density harness (density.ts) is sha-keyed: it reads a *committed*
++ * sha via `git log`/`git diff sha~1..sha`. The autonomy gate runs BEFORE the
++ * winner is committed to a landable sha, so it can't use that path — the
++ * gatherer previously returned a missing signal, which held every production
++ * refactor for human review (REQ-74 limitation).
++ *
++ * This module computes the same two judgments from the inputs the gate already
++ * has: the brief text (intent) and the unified diff (the change). No git, no
++ * sha — pure functions of (briefText, diff). It mirrors classifyRefactor's
++ * keyword logic and loCDeltaForCommit's add/remove counting.
++ *
++ * What it does NOT do: the behavioural A/B (pre/post test-suite superset + judge
++ * equivalence). That genuinely needs to run the suite on two trees, which the
++ * pre-merge gate isn't positioned to do. So `densityCounted` here means
++ * "refactor with non-negative LOC delta" — the structural half. The full A/B
++ * stays the post-merge trigger's job; the gate uses this structural signal,
++ * which is enough to catch the anti-pattern the contract cares about: a refactor
++ * that bloats.
++ */
++
++/** Is this change a refactor, judged from the brief/intent text? */
++export function classifyRefactorFromText(briefText: string): { isRefactor: boolean; reason: string } {
++  const text = (briefText.split('\n').find(l => l.trim().length > 0) ?? briefText).trim()
++
++  // Excluders: a feature/add is not a refactor (new code, density n/a).
++  if (/\b(feat|feature|add|implement|introduce|new)\b/i.test(text)) {
++    return { isRefactor: false, reason: `intent mentions feature/add: "${text.slice(0, 60)}"` }
++  }
++  // Strong signal: conventional-commits refactor.
++  if (/^refactor(\b|:|\()/i.test(text)) {
++    return { isRefactor: true, reason: 'intent starts with "refactor"' }
++  }
++  // Weak signal: densification verbs.
++  if (
++    /\b(rename|simplify|cleanup|clean[\-_ ]?up|consolidate|extract|inline|dedupe|deduplicate|reduce|collapse|tighten|densif(y|ied)|refactor)\b/i.test(
++      text,
++    )
++  ) {
++    return { isRefactor: true, reason: `intent uses a densification verb: "${text.slice(0, 60)}"` }
++  }
++  return { isRefactor: false, reason: `no refactor signal in intent: "${text.slice(0, 60)}"` }
++}
++
++/**
++ * Count added/removed lines from a unified diff. Counts content lines (`+`/`-`)
++ * but not the `+++`/`---` file headers or `@@` hunk markers.
++ */
++export function locDeltaFromDiff(diff: string): { added: number; removed: number; delta: number } {
++  let added = 0
++  let removed = 0
++  for (const line of diff.split('\n')) {
++    if (line.startsWith('+++') || line.startsWith('---')) continue
++    if (line.startsWith('+')) added++
++    else if (line.startsWith('-')) removed++
++  }
++  // delta > 0 means the change removed more than it added (denser).
++  return { added, removed, delta: removed - added }
++}
++
++export interface DiffDensityResult {
++  isRefactor: boolean
++  reason: string
++  added: number
++  removed: number
++  densityDelta: number | null // null when not a refactor (n/a)
++  /** Structural pass: refactor AND non-negative delta (didn't bloat). */
++  densityCounted: boolean
++}
++
++/**
++ * Structural density verdict from brief + diff. For a non-refactor, density is
++ * n/a (delta null, counted false but the gate treats non-refactors as a trivial
++ * pass via densitySignal). For a refactor, `densityCounted` is true iff the diff
++ * did not add net lines.
++ */
++export function analyzeDiffDensity(briefText: string, diff: string): DiffDensityResult {
++  const cls = classifyRefactorFromText(briefText)
++  const loc = locDeltaFromDiff(diff)
++  if (!cls.isRefactor) {
++    return {
++      isRefactor: false,
++      reason: cls.reason,
++      added: loc.added,
++      removed: loc.removed,
++      densityDelta: null,
++      densityCounted: false,
++    }
++  }
++  return {
++    isRefactor: true,
++    reason: cls.reason,
++    added: loc.added,
++    removed: loc.removed,
++    densityDelta: loc.delta,
++    densityCounted: loc.delta >= 0,
++  }
++}

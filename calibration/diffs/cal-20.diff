@@ -1,0 +1,121 @@
+diff --git a/src/Tool.ts b/src/Tool.ts
+index be07320..b7730b4 100644
+--- a/src/Tool.ts
++++ b/src/Tool.ts
+@@ -329,6 +329,14 @@ export type ToolUseContext = {
+    * default — configurable via autonomy.checkpointWriteTools). Backs P0 #3.
+    */
+   checkpointWorktreePath?: string
++  /**
++   * True when the tool call's permission was resolved by the L1 verifier
++   * race (verifier-gated fast path, no user prompt). Wired from
++   * `checkPermissionsAndCallTool` into `recordOutcomeToolCall` via the
++   * `l1AutoApproved` parameter so the instrumentation pipeline can count
++   * L1 auto-approve events for the "L1 auto-approve rate" leading indicator.
++   */
++  l1AutoApproved?: boolean
+ }
+ 
+ // Re-export ToolProgressData from centralized location
+diff --git a/src/services/instrumentation/instrumentation.test.ts b/src/services/instrumentation/instrumentation.test.ts
+index ed8948f..77364ce 100644
+--- a/src/services/instrumentation/instrumentation.test.ts
++++ b/src/services/instrumentation/instrumentation.test.ts
+@@ -325,6 +325,48 @@ describe('tool_call writer', () => {
+   })
+ })
+ 
++  test('l1_auto_approved flows through outcomeRecorder -> adaptToolCall -> client.recordToolCall', () => {
++    // End-to-end: outcomeRecorder.recordToolCall -> adaptToolCall -> client.recordToolCall
++    // proving that l1AutoApproved=true produces a row the report counts as auto-approved.
++    const briefId = newBriefId()
++    recordBrief({
++      brief_id: briefId,
++      ts_submitted: Date.now(),
++      project_path: '/p',
++      project_fingerprint: 'fp',
++      user_text: 'x',
++      a16_decision: 'accept',
++    })
++    const runId = newRunId()
++    recordRun({
++      run_id: runId,
++      brief_id: briefId,
++      ts_started: Date.now(),
++      isolation_mode: 'in_process',
++      outcome: 'completed',
++    })
++    // Record via outcomeRecorder (v1) with l1AutoApproved=true
++    const { recordToolCall: recordOutcomeToolCall, beginRun: v1BeginRun } = require('../outcomes/outcomeRecorder.js')
++    // beginRun sets up the in-memory state that recordToolCall checks;
++    // it also inserts a run into v2 with a generated runId.
++    const taskId = v1BeginRun('test-prompt', '/p', 'fp')
++    recordOutcomeToolCall(
++      taskId,
++      'Edit',
++      { file_path: 'src/x.ts', content: 'hello' },
++      true,
++      50,
++      undefined,
++      true, // l1AutoApproved = true
++    )
++    const db = openInstrumentationDb()
++    // The tool_calls row should have l1_auto_approved = 1.
++    // We query by v1 taskId to avoid needing to capture the generated runId.
++    const row = db.query('SELECT l1_auto_approved FROM tool_calls WHERE tc_id IN (SELECT tc_id FROM tool_calls LIMIT 1)').get() as { l1_auto_approved: number }
++    expect(row).toBeDefined()
++    expect(row.l1_auto_approved).toBe(1)
++  })
++
+ describe('judgment writer', () => {
+   test('happy path: insert + read back', () => {
+     const briefId = newBriefId()
+diff --git a/src/services/outcomes/outcomeRecorder.ts b/src/services/outcomes/outcomeRecorder.ts
+index b42c8b4..faf6e64 100644
+--- a/src/services/outcomes/outcomeRecorder.ts
++++ b/src/services/outcomes/outcomeRecorder.ts
+@@ -161,6 +161,7 @@ export function recordToolCall(
+   success: boolean,
+   durationMs: number,
+   errorKind?: ToolCallErrorKind,
++  l1AutoApproved?: boolean,
+ ): void {
+   if (!taskId) return
+   const run = activeRuns.get(taskId)
+@@ -177,6 +178,7 @@ export function recordToolCall(
+     status: success ? 'ok' : 'error',
+     durationMs,
+     errorKind,
++    l1AutoApproved,
+   })
+ }
+ 
+diff --git a/src/services/tools/toolExecution.ts b/src/services/tools/toolExecution.ts
+index 02010ed..3c9f55d 100644
+--- a/src/services/tools/toolExecution.ts
++++ b/src/services/tools/toolExecution.ts
+@@ -609,6 +609,8 @@ export async function* runToolUse(
+       toolInput,
+       !outcomeAnyError,
+       Date.now() - outcomeStartedAt,
++      undefined,
++      toolUseContext.l1AutoApproved,
+     )
+ 
+     // P0 #3 — autocheckpoint trigger. After a successful write-tool call
+@@ -1133,6 +1135,15 @@ async function checkPermissionsAndCallTool(
+     toolUseID,
+   )
+   const permissionDecision = resolved.decision
++  // Thread L1 auto-approve signal: if the permission was resolved by the
++  // verifier race, set l1AutoApproved so runToolUse can pass it through
++  // to recordOutcomeToolCall for instrumentation.
++  if (
++    permissionDecision.behavior === 'allow' &&
++    toolUseContext.toolDecisions?.get(toolUseID)?.source === 'verifier_auto_approve'
++  ) {
++    toolUseContext.l1AutoApproved = true
++  }
+   processedInput = resolved.input
+   const permissionDurationMs = Date.now() - permissionStart
+   // In auto mode, canUseTool awaits the classifier (side_query) — if that's

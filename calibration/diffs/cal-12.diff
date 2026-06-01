@@ -1,0 +1,81 @@
+diff --git a/scripts/asicode-status.test.ts b/scripts/asicode-status.test.ts
+index 2ee3d9e..52878c5 100644
+--- a/scripts/asicode-status.test.ts
++++ b/scripts/asicode-status.test.ts
+@@ -514,6 +514,35 @@ describe('REQ-37 stale in-flight detection', () => {
+     expect(parsed.runs[0].stale).toBe(false)
+   })
+ 
++  // REQ-47: intervention_reason surfacing.
++  test('text: intervention_reason renders when set', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_int1')
++    db.run(`UPDATE briefs SET pr_outcome = 'abandoned', intervention_reason = 'race:budget_exhausted: projected 200000 tokens > 1000' WHERE brief_id = ?`, ['brf_int1'])
++    db.close()
++    const r = run(['brf_int1'])
++    expect(r.stdout).toContain('reason')
++    expect(r.stdout).toContain('race:budget_exhausted')
++  })
++
++  test('text: no reason line when intervention_reason null', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_int2')
++    db.close()
++    const r = run(['brf_int2'])
++    expect(r.stdout).not.toContain('reason ')
++  })
++
++  test('--json: intervention_reason exposed on brief block', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_int3')
++    db.run(`UPDATE briefs SET intervention_reason = 'reviewer caught typo' WHERE brief_id = ?`, ['brf_int3'])
++    db.close()
++    const r = run(['brf_int3', '--json'])
++    const parsed = JSON.parse(r.stdout)
++    expect(parsed.brief.intervention_reason).toBe('reviewer caught typo')
++  })
++
+   // REQ-44: log_path reconstruction
+   test('log_path: single-spawn (in_process) uses brief_id', () => {
+     const db = new Database(dbPath)
+diff --git a/scripts/asicode-status.ts b/scripts/asicode-status.ts
+index bc18b7b..d5f86eb 100644
+--- a/scripts/asicode-status.ts
++++ b/scripts/asicode-status.ts
+@@ -41,6 +41,7 @@ interface BriefRow {
+   a16_decision: string; a16_composite: number | null;
+   pr_sha: string | null; pr_outcome: string | null;
+   pr_number: number | null; pr_url: string | null;
++  intervention_reason: string | null;
+   reverted_within_7d: number; hotpatched_within_7d: number;
+ }
+ interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null; race_strategy: string | null; log_path: string | null }
+@@ -118,7 +119,7 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
+ 
+   const brief = db.query<BriefRow, [string]>(
+     `SELECT brief_id, ts_submitted, ts_completed, project_path, user_text,
+-            a16_decision, a16_composite, pr_sha, pr_outcome, pr_number, pr_url, reverted_within_7d, hotpatched_within_7d
++            a16_decision, a16_composite, pr_sha, pr_outcome, pr_number, pr_url, intervention_reason, reverted_within_7d, hotpatched_within_7d
+      FROM briefs WHERE brief_id = ?`,
+   ).get(args.briefId!)
+   if (!brief) { db.close(); return { notFound: true } }
+@@ -155,6 +156,7 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
+         id: brief.brief_id, ts_submitted: brief.ts_submitted, ts_completed: brief.ts_completed,
+         project_path: brief.project_path, user_text: brief.user_text,
+         a16: { decision: brief.a16_decision, composite: brief.a16_composite },
++        intervention_reason: brief.intervention_reason,
+       },
+       runs: runs.map(r => ({
+         run_id: r.run_id, ts_started: r.ts_started, ts_completed: r.ts_completed,
+@@ -246,6 +248,11 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
+   } else {
+     console.log(`  pr           (none yet — run hasn't shipped a PR)`)
+   }
++  // REQ-47: surface intervention_reason when present — explains
++  // abandoned/intervention briefs without making the user grep the db.
++  if (brief.intervention_reason) {
++    console.log(`  reason       ${brief.intervention_reason}`)
++  }
+   db.close()
+   return { done: isBriefDone(brief, runs) }
+ }

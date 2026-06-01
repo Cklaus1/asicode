@@ -1,0 +1,920 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+new file mode 100644
+index 0000000..b61ef9f
+--- /dev/null
++++ b/ARCHITECTURE.md
+@@ -0,0 +1,187 @@
++# asicode — as-built architecture
++
++> **Current state, not target state.** PLAN.md describes where v2 is going (Rust core, 90% TS cut,
++> asimux substrate). This file describes what exists *today*, across the branches in flight, so a
++> contributor (human or agent) can orient without reverse-engineering four diverging branches. When
++> this file and PLAN.md disagree, PLAN.md is the destination and this file is the map of where we
++> actually are. Updated: 2026-05-31.
++
++---
++
++## One-paragraph shape
++
++asicode is a multi-provider autonomous coding-agent CLI — a fork of Claude Code, re-pointed at the
++asi-family northstar (*hand a brief, walk away, get a verifiably correct PR* — see GOALS.md). It is a
++~610k-LOC TypeScript/Bun process today. The agent loop (`QueryEngine`/`Task`/`Tool`/`query`) drives a
++registry of ~40 tools; everything else is the surface around it: an Ink TUI, a provider-abstraction
++layer (OpenAI-compat / Gemini / Codex / Ollama / …), MCP, OAuth, LSP, and a growing **autonomy
++substrate** (the A-series: brief gate, self-review, 3-panel judges, density A/B, adversarial verifier,
++plan retrieval, best-of-N race, outcome instrumentation). v2 is mid-extraction of the tool hot-path
++into a Rust core (`asicored/`) and mid-decision on a plugin architecture (ADR-0001).
++
++---
++
++## The two things that make this codebase confusing
++
++If you read only one section, read this one.
++
++### 1. Work lives on four unmerged branches that have diverged
++
++None of the v2 work is on `main`. `main` carries the REQ-1..64 ASI instrumentation sprint; everything
++since is branched and **not yet integrated**:
++
++| Branch | +commits vs main | Carries | Notably also deletes |
++|---|---|---|---|
++| `cuts-features-1` | +3 | P1 Batch A cuts (REQ-63–65) | `src/grpc`, `src/proto`, `web/`, `vscode-extension/`, `python/` |
++| `rust-core` | +5 | `asicored/` Rust core + Bash/Read/Write/Edit/Glob/Grep ports (REQ-66–67), **on top of** the cuts | same as above |
++| `asi-a13-recall` | +1 | `/recall` command (REQ-68) | — |
++| `adr-plugin-architecture` | +6 | ADR-0001, chrome seam, plugin availability/system-prompt, L2 production wiring, **autonomyGate** (REQ-69–72 +) | — (still has grpc/proto/buddy/vim/voice) |
++
++**Consequence:** the same file can look different depending on the branch you're on. `src/grpc/` and
++`src/proto/` exist on `adr-plugin-architecture` (HEAD) but were deleted on `rust-core`. `src/buddy`,
++`src/vim`, `src/voice`, `src/native-ts`, `src/upstreamproxy` still exist on the plugin branch but are
++slated for pluginization (per ADR-0001) rather than deletion. **A merge-and-reconcile pass is owed**
++before any of this reaches main; the merge order and conflict surface are the first real integration
++task.
++
++### 2. The autonomy substrate is built but uncomposed (and unmeasured)
++
++Every A-feature ships as an independent trigger behind its own `is*Enabled()` env flag. They were
++wired one at a time and never unified. The new `src/services/autonomyGate/` (this branch) is the first
++thing that composes them into a single pass/fail verdict — see
++[docs/AUTONOMY_CONTRACT.md](./docs/AUTONOMY_CONTRACT.md). Separately, the instrumentation DB on disk is
++at schema v1 while tooling requires ≥9, so **no Autonomy Index has ever been computed on a live DB** —
++the report code exists (`instrumentation-report.ts:743`) but its inputs aren't populated. *Features are
++~90% built; measurement is the binding constraint.*
++
++---
++
++## Process & runtime topology (today)
++
++```
++        ┌─────────────────────────────────────────────────────────┐
++        │  asicode  (single Bun/TS process, ~610k LOC)             │
++        │                                                         │
++        │  Ink TUI ── screens/ components/ hooks/ ink/            │
++        │  agent loop ── QueryEngine.ts Task.ts Tool.ts query/    │
++        │  tool registry ── src/tools/ (~40 tools)                │
++        │  providers ── services/api/ + bridge/                   │
++        │  MCP / OAuth / LSP ── services/{mcp,oauth,lsp}/         │
++        │  autonomy substrate ── services/{brief-gate, selfReview,│
++        │     judges, adversarial, instrumentation, parallel,     │
++        │     plan-retrieval, replay, autonomyGate}/              │
++        │  plugins ── services/plugins/ + src/plugins/            │
++        └───────────────┬─────────────────────────────────────────┘
++                        │  (P3/P4, rust-core branch only) NDJSON over stdin/stdout
++                        ▼
++        ┌─────────────────────────────────────────────────────────┐
++        │  asicored  (Rust, behind ASICODE_RUST_CORE=1)           │
++        │  proto.rs (capability-versioned welcome)                │
++        │  tools/{bash,file,glob,grep}.rs via shared proc::run    │
++        │  binary-absent → always falls back to the TS path       │
++        └─────────────────────────────────────────────────────────┘
++```
++
++Today it is **one process**. The Rust core is an opt-in side-process on the `rust-core` branch only,
++gated by a flag, with TS fallback whenever the binary is absent — so the default path is unchanged.
++asimux (the eventual substrate, PLAN.md P2) is **documented only, not implemented**.
++
++---
++
++## Subsystem map
++
++### The agent loop (the 4k LOC that matters)
++`src/QueryEngine.ts`, `src/Task.ts`, `src/Tool.ts`, `src/query/`. Drives the tool-call/observe loop,
++permission checks (`Tool.canUseTool`), replan/retry policy. Everything else is surface.
++
++### Tools — `src/tools/` (~40)
++Bash/Read/Write/Edit/Glob/Grep/LSP/Monitor/Agent/Task*/WebFetch/WebSearch/… On `rust-core`, Bash and
++the file/search tools route through `asicored` when `ASICODE_RUST_CORE=1` and the binary is present;
++otherwise in-process TS `spawn`. The bridge is `src/services/rustCore/client.ts` +
++`src/utils/Shell.ts`.
++
++### Providers — `src/services/api/` + `src/bridge/`
++The "don't touch" zone (PLAN.md §4): 200+ models' worth of quirks. Provider-agnostic by design
++(GOALS.md anti-goal: "not chasing model leaderboards").
++
++### Autonomy substrate (the A-series) — `src/services/`
++This is the project's reason to exist. Each maps to a GOALS.md success criterion:
++
++| Dir | Feature | Gate role | Enabled by |
++|---|---|---|---|
++| `brief-gate/` | A16 brief evaluation | **input gate** | `BRIEF_GATE_ENABLED=1` |
++| `selfReview/` | L2 self-review loop | output gate (L2) | `ASICODE_SELF_REVIEW` |
++| `judges/` | 3-panel judge (2.8k LOC) | output gate (quality) | `JUDGES_ENABLED=1` |
++| `adversarial/` | A15 adversarial verifier | output gate (security) | `ADVERSARIAL_ENABLED=1` |
++| `instrumentation/` (density-trigger) | density A/B | output gate (refactors) | `DENSITY_ENABLED=1` |
++| `autonomyGate/` | **composes the above** | **the verdict** | `ASICODE_AUTONOMY_GATE` (not yet wired) |
++| `plan-retrieval/`, `memdir-retrieval/` | A8 retrieval prior, A13 recall | plan quality | — |
++| `parallel/` | A10 best-of-N race | speed | `--race N` |
++| `replay/` | A11 outcome replay | regression catch | — |
++| `instrumentation/` (rest) | the 9-table outcome DB + report | **measurement** | always (writes); report reads |
++
++The composition layer (`autonomyGate/`) and its contract are the newest addition; see
++[docs/AUTONOMY_CONTRACT.md](./docs/AUTONOMY_CONTRACT.md).
++
++### Instrumentation — `src/services/instrumentation/` + `scripts/instrumentation-*.ts`
++The 9-table sqlite schema from docs/INSTRUMENTATION.md. `asicode-submit.ts` is the brief→race→PR
++driver; `instrumentation-report.ts` computes the Autonomy Index. **Schema-version mismatch is the
++live blocker** (DB v1, tooling ≥9) — `instrumentation:migrate` is step 0 of any measurement work.
++
++### Plugins — `src/services/plugins/` + `src/plugins/`
++ADR-0001's microkernel + tiered plugin contract. Manifest supports `availability` (provider scope) and
++`systemPrompt` (fragment contribution) as of REQ-70/71. `/chrome` is the reclassified provider-scoped
++exemplar. Pluginization of command-shaped features (advisor/dream/stickers/knowledge/chrome) and Tier-2
++UI (voice/vim/buddy) is **designed, not executed**.
++
++### Slated-for-change (still present on this branch)
++`src/buddy/`, `src/vim/`, `src/voice/`, `src/native-ts/`, `src/upstreamproxy/`, `src/grpc/`,
++`src/proto/`, `src/moreright/`. The cuts branches remove grpc/proto/web/vscode/python; ADR-0001 routes
++buddy/vim/voice to plugins instead of deletion. **Do not assume these are dead** — `upstreamproxy/` is
++live (dynamically imported for the CCR proxy under `CLAUDE_CODE_REMOTE`); verify before removing.
++
++---
++
++## Data & control flow for one autonomous brief
++
++```
++brief text
++  │
++  ▼  A16 (brief-gate)         ── gradeable? ASI-ready? verifier-shaped?  ── reject / clarify / accept
++  ▼  A12 brief-mode expand    ── paragraph → checklist + success criteria + risk class
++  ▼  A8 plan-retrieval        ── top-k past attempts on {plan, fingerprint}
++  ▼  raceAgents (A10)         ── N attempts in worktrees, kill laggards on L1 pass  ── winnerWorktree
++  ▼  L2 self-review           ── reviewer→fixer until converged or escalate
++  ▼  judges / density / A15   ── gather output-gate signals (per risk class)
++  ▼  composeVerdict           ── the Autonomy Contract: mergeable?  ── merged_no_intervention / needs_human
++  ▼  openWinnerPr             ── PR (+ annotate blockers if needs_human)
++  ▼  instrumentation          ── every step above writes a row; report aggregates → Autonomy Index
++```
++
++The `composeVerdict` step is built and unit-tested but **not yet inserted between race and PR** — that
++activation is the next wiring task (annotate-only default; see the contract doc).
++
++---
++
++## Languages & build
++
++- **TypeScript / Bun** — everything user-facing. `bun run build` (esbuild via `scripts/build.ts`),
++  `bun test` (189+ test files), `bun run smoke` (build + `--version`).
++- **Rust / Cargo** — `asicored/` only, on the `rust-core` branch. `cargo build --release -p asicored`,
++  `cargo test`. Capability-versioned NDJSON IPC, additive-only (asimux-shaped, on purpose).
++- The 9 Python utilities and the `web/` + `vscode-extension/` surfaces are **deleted on the cut
++  branches**, present on others.
++
++---
++
++## What is NOT here yet (so you don't go looking)
++
++- **asimux substrate** — documented (docs/asimux-roadmap.md, AM-0..AM-10), zero implementation; blocked
++  on a license decision (PolyForm-Noncommercial vs MIT).
++- **A live Autonomy Index** — code exists; DB schema migration + judge/density population needed.
++- **`bench/` corpus** — GOALS.md v2.0 prereq; currently a README + a 36-byte manifest.
++- **The autonomy gate on the submit path** — composer built, not wired.
++- **A merged main** — the four branches above are the real state; main lags all of it.
++
++For where all of this is *going*, read PLAN.md. For *why* it's shaped this way, read GOALS.md. For
++*how* we build it, read BUILD_PROTOCOL.md and PRACTICES.md.
+diff --git a/PRACTICES.md b/PRACTICES.md
+index 3649646..47c3c85 100644
+--- a/PRACTICES.md
++++ b/PRACTICES.md
+@@ -30,7 +30,7 @@ The fastest way to ship a 100x engineering culture is to put it in `Tool.canUseT
+ 
+ **Build:**
+ - Every PR has an `intent:` line in the description: one sentence stating what's true after the PR that wasn't before. If you can't write it, you don't know what you're building.
+-- Architecture changes get a one-page rationale in `docs/decisions/NNN-title.md` before the code change lands. ADRs aren't bureaucracy when they live in the repo with the diff.
++- Architecture changes get a one-page rationale in `docs/adr/NNNN-title.md` before the code change lands. ADRs aren't bureaucracy when they live in the repo with the diff.
+ 
+ **Run:**
+ - **A16 brief evaluation gate** — see `GOALS.md`. ASI-readiness <3 or verifier-shaped <3 is auto-reject. Brief mode (A12) expands the paragraph; the gate checks the expansion is verifiable.
+@@ -144,7 +144,7 @@ The fastest way to ship a 100x engineering culture is to put it in `Tool.canUseT
+ 
+ **Build:**
+ - PR descriptions without an `intent:` line are blocked at review. Trivial change? Then the intent is one sentence; write it.
+-- Architecture-level work without an ADR (`docs/decisions/`) doesn't merge. The ADR doesn't have to be long; it has to *exist*.
++- Architecture-level work without an ADR (`docs/adr/`) doesn't merge. The ADR doesn't have to be long; it has to *exist*.
+ - "Refactor for clarity" is allowed but must name a specific clarity gain: which file was N LOC and is now N-X, or which symbol was named badly and is now named better. "I prefer this style" is not a clarity gain.
+ 
+ **Run:**
+diff --git a/docs/AUTONOMY_CONTRACT.md b/docs/AUTONOMY_CONTRACT.md
+new file mode 100644
+index 0000000..b357d22
+--- /dev/null
++++ b/docs/AUTONOMY_CONTRACT.md
+@@ -0,0 +1,204 @@
++# The Autonomy Contract — Definition of Done for hands-off work
++
++> The symmetric partner to A16. A16 (`src/services/brief-gate/`) gates the **input**: it refuses
++> briefs that aren't gradeable. This contract gates the **output**: it decides whether a finished
++> change may merge with **zero human intervention**. Together they bound the autonomous loop on both
++> ends — garbage in is refused, ungraded out is held.
++>
++> This document is the *why* and the policy table. The *what* — the executable predicate the agent
++> runs on itself — lives in [`src/services/autonomyGate/contract.ts`](../src/services/autonomyGate/contract.ts),
++> and [`contract.test.ts`](../src/services/autonomyGate/contract.test.ts) pins the two together. Per
++> PRACTICES.md: *a Definition of Done expressed only as prose decays; one expressed as a verifier is
++> durable.* If you change the table here, change `REQUIRED_GATES` there, or the test fails.
++
++---
++
++## Why this doc exists
++
++GOALS.md's northstar is *"a user hands asicode a brief, walks away, and asicode ships a verifiably
++correct PR."* The load-bearing phrase is **verifiably correct** — "removing the human without a
++verifier is unsupervised, not autonomous."
++
++Before this contract, asicode had every verifier it needed but no **stopping rule**. The pieces all
++shipped:
++
++- **L1** — verifier-gated permission racer (typecheck-passes auto-approves a tool call).
++- **L2** — self-review loop (`src/services/selfReview/`), reviewer→fixer, severity-tagged, convergence guard.
++- **3-panel judge** — `src/services/judges/` (2.8k LOC), correctness/code-review/QA-risk, composite 1–5.
++- **Density A/B** — `src/services/instrumentation/density-trigger.ts`, refactor LOC delta gated on test-superset + judge equivalence.
++- **A15 adversarial** — `src/services/adversarial/`, tries to break the patch.
++- **A16 brief gate** — `src/services/brief-gate/`, grades the brief before committing to it.
++
++Each runs behind its own `is*Enabled()` flag and writes its own row. **None of them composed into a
++single pass/fail.** A run could merge having fired only L1 — and nothing recorded that the judge never
++voted. "The judge never ran" looked identical to "the judge approved." That gap is exactly where
++autonomy silently degrades into unsupervised.
++
++The Autonomy Contract closes it with one rule.
++
++---
++
++## The one rule: silence is not a pass
++
++> **A required gate that did not run is a FAIL, not a skip.**
++
++Every required signal must be **present and passing**. A missing required signal fails the verdict
++with reason `gate_missing`. There is no code path by which not-running a verifier yields
++`merged_no_intervention`. This is the single invariant the whole contract exists to enforce, and it is
++the first test in `contract.test.ts`.
++
++Everything else below is which gates are required when.
++
++---
++
++## The policy matrix
++
++Risk class (from A16's risk-class dimension; mirrors the isolation tiers in PLAN.md §8) determines
++which gates are **required to pass**. A gate not listed for a class is **advisory** — it may run and
++its result is recorded, but it does not block the merge.
++
++| Risk class    | L1 typecheck | L2 self-review | 3-panel judge ≥ 4.0 | Density A/B (refactors) | A15 adversarial | Auto-merges to shared branch? |
++|---------------|:---:|:---:|:---:|:---:|:---:|:---:|
++| `throwaway`   | ✅ required | — | — | — | — | **never** |
++| `experimental`| ✅ required | ✅ required | advisory | advisory | — | feature branch only |
++| `production`  | ✅ required | ✅ required | ✅ required | ✅ required | advisory | yes |
++| `security`    | ✅ required | ✅ required | ✅ required | ✅ required | ✅ required | yes |
++
++The table is **monotonic in risk** — each higher class is a strict superset of the one below
++(asserted by `REQUIRED_GATES table is monotonic in risk` in the test). You can only ever add gates as
++blast radius grows; you can never drop one.
++
++**Risk class is assigned by A16**, not by the change itself, so the gate can't lower its own bar. A
++change that touches auth, crypto, input parsing, or the permission system is `security` regardless of
++how small the diff looks.
++
++---
++
++## What "pass" means per gate
++
++The contract owns the interpretation of pass/fail, via the signal adapters in `contract.ts` — not each
++trigger independently. This keeps one definition of "good enough," not five.
++
++| Gate | Source | Passes iff | Adapter |
++|---|---|---|---|
++| **L1** | racer / typecheck | the change typechecks and the L1 verifier auto-approved its tool calls | (call site) |
++| **L2** | `selfReview/briefCompletionHook.ts` | outcome is `converged` **and** zero unresolved findings at/above the `high` bar | `l2Signal()` |
++| **judges** | `judges/dispatcher.ts` | panel is **complete** (all 3 roles responded) **and** composite (mean of 9 sub-scores) ≥ `judgeQualityMin` (default 4.0) | `judgesSignal()` + `composite()` |
++| **density** | `instrumentation/density-trigger.ts` | non-refactor → n/a (passes); refactor → `density_counted` (test-superset ∧ judge-equivalence) **and** `density_delta` ≥ 0 | `densitySignal()` |
++| **adversarial** | `adversarial/trigger.ts` | the adversary failed to break the patch (no counterexample/injection/crash found) | (call site) |
++
++Two deliberate strictnesses:
++
++- **An incomplete judge panel is a fail, not a skip.** A missing judge is missing signal, and missing
++  signal does not pass (`judgesSignal` returns `passed: false` on `complete: false`). This is the one
++  rule applied at the gate level.
++- **A refactor that bloats fails even if tests pass.** `density_delta < 0` on a refactor claiming
++  equivalent functionality is the anti-asi-voice signal; the contract blocks it. (Non-refactors report
++  n/a and never block — the metric is for *changes to existing code*, per GOALS.md.)
++
++---
++
++## The verdict
++
++`composeVerdict(riskClass, signals, thresholds)` returns a `GateVerdict`:
++
++```ts
++{
++  mergeable: boolean,                  // true iff every required gate is present and passing
++  riskClass: RiskClass,
++  recommendedOutcome: 'merged_no_intervention' | 'needs_human',
++  gates: GateOutcome[],                // per-gate disposition: pass | fail | missing | advisory
++  blockers: Array<{ gate, reason: 'gate_missing' | 'gate_failed', detail? }>,
++}
++```
++
++`recommendedOutcome` is the value written to the `briefs.pr_outcome`-shaped record. **Only
++`merged_no_intervention` counts toward the numerator of Metric 1 (hands-off completion rate)** — which
++is the numerator of the Autonomy Index. So this function is, quite literally, the definition of the
++project's primary metric. It is **pure** (no I/O, no clock, no model calls) so the verdict is
++replayable from the recorded signals alone — an auditor can re-derive any historical
++`merged_no_intervention` decision from the row.
++
++---
++
++## How it wires into the run (activation)
++
++The gate is **built and unit-tested but not yet on the submit path** — wiring it is a deliberate,
++reviewable step because it sits in the autonomous merge path. The seam is `scripts/asicode-submit.ts`,
++between `raceAgents` (the winner exists, in `winnerWorktree`) and `openWinnerPr`:
++
++```
++raceAgents → winner worktree
++   │
++   ├─ run the required gates for the brief's risk class (the *OnPrMergeAwait / runBriefReviewIfEnabled
++   │  triggers already exist; gather each into a GateSignal via the adapters)
++   │
++   ├─ composeVerdict(riskClass, signals)
++   │
++   ├─ verdict.mergeable ?
++   │     ├─ true  → openWinnerPr,           record pr_outcome = merged_no_intervention
++   │     └─ false → openWinnerPr (annotate) record pr_outcome = needs_human,
++   │                 thread verdict.blockers into the PR body  ← annotate-only default
++```
++
++**Two activation modes** (the same fork L2 wiring faced):
++
++- **Annotate-only (recommended default, behind `ASICODE_AUTONOMY_GATE=1`):** always open the PR;
++  when `!mergeable`, label it `needs_human` and append `verdict.blockers` to the PR body. Blocks
++  nothing; makes the verdict *visible*. Lowest risk; lets the gate fire and be observed before it
++  gates anything.
++- **Gate-the-PR:** withhold/auto-close the PR when `!mergeable`. Stronger guarantee, but a noisy
++  required gate can stall the walk-away loop. Graduate to this only after annotate-only shows the
++  verdict is trustworthy on real briefs.
++
++Until activated, the contract is enforceable-on-demand (any caller can `composeVerdict`) but not yet
++enforced-by-default.
++
++---
++
++## Thresholds
++
++Defaults track GOALS.md's v2.0 bars; tunable per-repo via `ContractThresholds` without editing the
++composer:
++
++| Threshold | Default | Tracks |
++|---|---|---|
++| `l2BlockingBar` | `high` | asi-roadmap §1.5 severity bar (block on critical/high) |
++| `judgeQualityMin` | `4.0` | GOALS.md v2.0 judge-quality bar |
++| `densityBlocksOnRefactor` | `true` | GOALS.md density secondary-primary |
++
++These are **floors that ratchet with the version bars.** GOALS.md sets judge quality ≥ 3.5 at v1.5,
++≥ 4.0 at v2.0, ≥ 4.2 at v3.0, ≥ 4.5 at northstar. The contract default is the *current target*; raise
++it as the project clears each bar. Do not lower it to make a red run green — that's the gate gaming
++its own metric, the exact failure GOALS.md's judge-rotation rules exist to catch.
++
++---
++
++## What this contract is NOT
++
++- **Not a replacement for the gates.** It composes them; it does not re-implement L2 or the judges.
++- **Not a CI config.** It runs *inside* the autonomous loop, on the agent's own output, before the
++  human would ever see the PR. CI is the human-facing backstop; this is the pre-human stopping rule.
++- **Not the brief gate.** A16 decides *should we attempt this*; the Autonomy Contract decides *may
++  this merge unattended*. A brief can pass A16 and still produce a change that fails the contract —
++  that's a `needs_human` outcome, which is a success of the contract, not a failure of A16.
++- **Not static.** The threshold floors ratchet with the GOALS.md version bars. A contract that never
++  tightens is a contract that stopped meaning anything.
++
++---
++
++## Relationship to the metrics
++
++```
++A16 brief gate ─┐
++                ├─► run brief ─► gather signals ─► composeVerdict ─► pr_outcome
++Autonomy Gate ──┘                                                       │
++                                                                        ▼
++                                          merged_no_intervention ─► numerator of Metric 1
++                                                                  ─► numerator of Autonomy Index
++                                                                       = hands_off × (1−regression) × (judge/5)
++```
++
++The contract is where `merged_no_intervention` is *decided*. INSTRUMENTATION.md's `briefs` table is
++where it's *stored*. `instrumentation-report.ts:743` is where it's *aggregated* into the Autonomy
++Index. This doc is the policy that the first arrow obeys.
+diff --git a/docs/BUILD_PROTOCOL.md b/docs/BUILD_PROTOCOL.md
+new file mode 100644
+index 0000000..94094f6
+--- /dev/null
++++ b/docs/BUILD_PROTOCOL.md
+@@ -0,0 +1,153 @@
++# Build Protocol — how asicode is built (by humans and by asicode)
++
++> asicode is built using asicode (PRACTICES.md: *"we dogfood the asi-engineering loop on the
++> asi-engineering loop"*). That only works if the build loop is **a protocol, not a habit** — explicit
++> enough that the agent can follow it on its own backlog without a human in the room. This file is that
++> protocol. It is the *build* half of PRACTICES.md, made operational.
++
++---
++
++## The unit of work: one REQ, one increment, one commit
++
++Every change lands as a numbered **REQ-N** increment. The repo's history *is* the REQ ledger
++(`git log` shows `feat(x): … (REQ-72)`). The next number is one past the highest in `git log` across
++all active branches. This is not bureaucracy — it's how a self-building agent keeps its own work
++auditable and resumable after a context reset.
++
++**An increment is the smallest change that is independently true and verifiable.** If you can't write
++the one-sentence intent (below), it's not one increment — it's two, or it's unbounded. Split it.
++
++---
++
++## The intent line (Practice 1: bound the problem before solving it)
++
++Every increment states, before any code, one sentence: **what is true after this that wasn't before.**
++
++```
++intent: the L2 self-review reviewer is a real model call, not a mock.
++```
++
++If you can't write it, you don't know what you're building — stop and bound it. The intent line goes
++in the commit body and (when the increment becomes a PR) the PR description. It is the human-readable
++form of the success criterion the verifier will check.
++
++---
++
++## The increment loop
++
++```
++  1. bound      ── write the intent line. Can't? → split or refuse.
++  2. retrieve   ── A8: has this kind of change been attempted? read the prior.
++  3. delete-first ── Practice 2: what can be removed for net-zero functional change? do that first.
++  4. implement  ── smallest diff that makes the intent true. match surrounding style.
++  5. test       ── add/extend tests in the same increment. red→green, not green-only.
++  6. verify     ── run the gate (below). all green, or the increment isn't done.
++  7. commit     ── conventional message + intent + REQ-N + trailer.
++  8. record     ── the increment is now a candidate brief for the dogfood loop.
++```
++
++Steps 2 and 3 are the asi-family differentiators. Most agents skip straight to 4. The retrieval prior
++(A8) and delete-first (Practice 2) are *where the quality comes from* — they're in the loop on purpose.
++
++---
++
++## The verify gate (every increment, before commit)
++
++Run, in order, fast→slow. **Stop at the first red; do not commit over a red gate.**
++
++| Step | Command | Blocks commit? |
++|---|---|---|
++| typecheck | `bun run typecheck` | yes |
++| unit/integration tests | `bun test` (or the touched subset during iteration, full suite before commit) | yes |
++| build | `bun run build` | yes |
++| smoke | `bun run smoke` | yes |
++| Rust (if `asicored/` touched) | `cargo test -p asicored` | yes |
++| substrate intact | `bun run instrumentation:probe` | yes (must still show A-features wired) |
++| privacy (if network/IO touched) | `bun run verify:privacy` | yes |
++
++`hardening:strict` (`typecheck` + `smoke` + `doctor:runtime`) is the convenience bundle for the common
++case. The full suite (`bun test`) is non-negotiable before commit — a subset is fine *during*
++iteration only.
++
++This gate is the **build-time** verifier. It is distinct from — and weaker than — the **run-time**
++Autonomy Contract (docs/AUTONOMY_CONTRACT.md), which adds L2 + judges + density + adversarial on top.
++The build gate keeps the repo green; the Autonomy Contract decides whether the agent's *output* may
++merge unattended. Don't conflate them.
++
++---
++
++## Branch policy
++
++- **One concern per branch.** Don't mix a Rust subsystem into a "cuts" branch — the
++  `rust-core`/`cuts-features-1` split exists because mixing made conflicts unreadable (see
++  ARCHITECTURE.md "four unmerged branches").
++- **Branch from the right base.** Cuts stack on cuts; features branch from `main` unless they depend on
++  an unmerged branch (then say so in the branch's first commit).
++- **Commit only; never push without explicit human request.** This is a hard rule in this repo —
++  honored even under Auto mode. All v2 work is local until the human asks.
++- **Stage explicit paths.** Never `git add -A`. Never stage `.asicode-profile.json`. The agent stages
++  the files it changed, by name.
++- **Reversible deletion.** Prefer `git rm` over `rm -rf` for anything tracked — reviewable in the diff,
++  recoverable from history.
++
++---
++
++## Commit convention
++
++```
++<type>(<scope>): <summary> (REQ-N)
++
++intent: <one sentence — what is now true>
++<optional body: why, tradeoffs, what was deleted>
++
++Co-Authored-By: <model> <noreply@anthropic.com>
++```
++
++`type` ∈ `feat|fix|refactor|docs|cut|test|chore`. `cut` is an asi-family addition for net-negative
++increments (Practice 2) — celebrate deletions, don't hide them. The summary is imperative, present
++tense, lowercase.
++
++---
++
++## Definition of Done (an increment)
++
++An increment is done iff **all** hold:
++
++1. The intent line is true and verifiable.
++2. Tests covering the intent exist and pass (red-before-green demonstrated where practical).
++3. The full verify gate is green.
++4. Net-negative or net-justified LOC (a +>100-LOC increment justifies the lines in its body — Practice 2).
++5. Committed with intent + REQ-N + trailer.
++
++This is the *build* DoD. A brief's *run* DoD — whether the resulting change may merge with no human —
++is the Autonomy Contract, which is strictly stronger.
++
++---
++
++## Self-building specifics (when asicode runs its own backlog)
++
++- **The backlog is the bench seed.** The cuts/plugin/Rust REQs are themselves briefs; running them
++  through `asicode:submit` → race → judge produces the first real Autonomy Index data points
++  (GOALS.md: the dogfood briefs *are* the calibration corpus seed).
++- **Every increment is a candidate replay corpus entry (A11).** A green increment today is a free
++  regression test against tomorrow's model.
++- **Resumability after context reset.** Because each increment is one bounded REQ with an intent line
++  and a green gate, an agent resuming cold reads `git log`, finds the highest REQ-N, and knows exactly
++  what's done and what the next increment is. The protocol is what makes the loop survive a context
++  boundary — which is a hard requirement for hands-off work.
++- **When you can't write the verifier, stop.** Practice 1's run-half: if the increment's success can't
++  be checked, report "this isn't gradeable as stated" rather than guessing. A `needs_human` is a
++  correct outcome, not a failure.
++
++---
++
++## Anti-patterns this protocol rejects
++
++- **Green-only tests.** A test that was never red proves nothing. Demonstrate the failure first.
++- **Commit over red.** Never `--no-verify`, never commit through a failing gate "to fix later."
++- **Unbounded increments.** "Refactor the auth system" is not an increment. "Extract `meetsAvailability`
++  to a shared predicate (REQ-70)" is.
++- **`git add -A`.** Stages secrets, profiles, and unrelated churn. Stage by name.
++- **Silent deletion.** A `cut` that doesn't say what it removed and why is indistinguishable from a
++  mistake in review.
++- **Push without ask.** Outward-facing and hard to reverse; always confirm.
+diff --git a/docs/TECHSPEC-autonomy-index.md b/docs/TECHSPEC-autonomy-index.md
+new file mode 100644
+index 0000000..a3bbc99
+--- /dev/null
++++ b/docs/TECHSPEC-autonomy-index.md
+@@ -0,0 +1,137 @@
++# Tech Spec — producing a live Autonomy Index
++
++> **Status: integration spec, not greenfield.** The naive read of GOALS.md's "first job: instrument the
++> metrics" suggests these subsystems need building. They don't — `services/judges/` (2.8k LOC), the
++> density A/B harness, and the Autonomy Index computation (`instrumentation-report.ts:743`) all exist
++> and are unit-tested. The gap between here and a *live* Autonomy Index is **composition, activation,
++> and data population** — wiring built parts into the running submit path and getting real rows into the
++> DB. This spec is the build order for exactly that gap. It is deliberately small because the code is
++> mostly written; what's missing is that nothing has run end-to-end on a migrated DB.
++
++---
++
++## The problem, stated precisely
++
++GOALS.md's primary metric is the Autonomy Index:
++
++```
++AI = hands_off_rate × (1 − regression_rate) × (judge_quality / 5)
++```
++
++`instrumentation-report.ts` computes it correctly and is honest about gaps (any null component → AI is
++null, not a fake number). **It has never produced a non-null value**, because:
++
++1. **The on-disk DB is schema v1; tooling requires ≥9.** `instrumentation:report` crashes
++   (`no such table: auto_reverts`). No query can run until migration.
++2. **`judge_quality` has no rows.** `judges/` exists but `JUDGES_ENABLED` has never fired on the submit
++   path against a real merged PR, so `judgments` is empty → `judgeQualityMean` is null → AI is null.
++3. **`density_positive` has no rows.** Same: `density-trigger` exists, never fired on real refactor PRs.
++4. **`hands_off_rate` has thin data and no verdict authority.** `pr_outcome` is recorded, but nothing
++   *decides* `merged_no_intervention` on a composed basis — the Autonomy Contract
++   (`services/autonomyGate/`) is built but not wired between race and PR.
++
++So: the formula is right, every input is computable, and **zero inputs are populated**. This is a
++plumbing-and-soak problem, not a design problem.
++
++---
++
++## Build order (the only remaining work)
++
++Mirrors INSTRUMENTATION.md's I-phases, scoped to the live-AI gap. Compute is small; the wall-clock
++floor is real-brief soak.
++
++### S0 — Migrate the DB *(unblocks everything; ~30 min, no soak)*
++- `bun run instrumentation:migrate` (or fresh DB) to bring the on-disk schema from v1 → current.
++- Verify: `instrumentation:status` shows the current version; `instrumentation:report` runs without
++  crashing (will show all-null AI — that's correct, not a bug).
++- **Exit:** the report renders; AI is `n/a` honestly.
++
++### S1 — Wire the Autonomy Contract into submit *(the composition step; ~2-3h + review)*
++- In `scripts/asicode-submit.ts`, between `raceAgents` (→ `winnerWorktree`) and `openWinnerPr`:
++  - Resolve the brief's **risk class** from A16's output (already on the brief row).
++  - Gather each required gate into a `GateSignal` by awaiting the existing triggers:
++    `runBriefReviewIfEnabled` (→ `l2Signal`), `judgeOnPrMergeAwait` (→ `composite` → `judgesSignal`),
++    `densityOnPrMergeAwait` (→ `densitySignal`), `adversarialVerifyOnPrMergeAwait` for `security`.
++  - `composeVerdict(riskClass, signals)` → `GateVerdict`.
++  - Write `verdict.recommendedOutcome` to the brief's `pr_outcome`.
++  - **Annotate-only default** (`ASICODE_AUTONOMY_GATE=1`): always `openWinnerPr`; when `!mergeable`,
++    label `needs_human` and append `verdict.blockers` to the PR body. Do **not** gate the PR yet.
++- The signal adapters already exist in `autonomyGate/contract.ts`; this step is glue + one DB write.
++- **Exit:** a submitted brief produces a `pr_outcome` decided by `composeVerdict`, visible in the PR
++  body, recorded in the DB. AI's `hands_off` numerator now has verdict authority.
++
++### S2 — Turn the gates on, on real briefs *(data population; soak-bound)*
++- Flip `JUDGES_ENABLED=1`, `DENSITY_ENABLED=1`, `ASICODE_SELF_REVIEW=1` on the submit path.
++- Run the **dogfood backlog** (the cuts/plugin/Rust REQs are themselves briefs) through
++  `asicode:submit` → race → gates → PR. Each run writes `judgments`, `density_ab`, `reviews` rows.
++- This is where the judges' balanced panel (Opus correctness / Sonnet code-review / local QA-risk —
++  docs/judges/config.toml) first scores real asicode-authored PRs.
++- **Exit:** `judgments` and `density_ab` have rows; `instrumentation:report` shows a **non-null
++  Autonomy Index** — the first one ever produced. That number is the v1.0 baseline.
++
++### S3 — Calibration + drift *(trust the number; ~1wk soak)*
++- Score the 30 known-tier human PRs through the same panel (`instrumentation:calibrate`); confirm the
++  panel ranks strong/medium/weak tiers correctly before trusting live scores.
++- Turn on `instrumentation:drift` to alert when any calibration tier moves > 0.3.
++- **Exit:** the AI number is calibrated and drift-monitored — it means something, not just exists.
++
++---
++
++## Interfaces (all already in the tree)
++
++| Need | Symbol | File |
++|---|---|---|
++| compose the verdict | `composeVerdict(riskClass, signals, thresholds)` | `src/services/autonomyGate/contract.ts` |
++| L2 → signal | `l2Signal()` | same |
++| judges → signal | `composite()` + `judgesSignal()` | same |
++| density → signal | `densitySignal()` | same |
++| run judges | `judgeOnPrMergeAwait()` | `src/services/judges/trigger.ts` |
++| run density | `densityOnPrMergeAwait()` | `src/services/instrumentation/density-trigger.ts` |
++| run L2 | `runBriefReviewIfEnabled()` | `src/services/selfReview/briefCompletionHook.ts` |
++| run A15 | `adversarialVerifyOnPrMergeAwait()` | `src/services/adversarial/trigger.ts` |
++| compute AI | report aggregation at `:743` | `scripts/instrumentation-report.ts` |
++| the schema | tables 1,4,5,7 | `docs/INSTRUMENTATION.md` |
++
++The only **new** code is S1's glue in `asicode-submit.ts` and the per-gate `GateSignal` assembly. The
++signal adapters that interpret each subsystem's result are already written and tested.
++
++---
++
++## Risk-class → gate wiring (the data the gather step needs)
++
++`composeVerdict` requires the brief's risk class. A16 assigns it (`brief-gate/`), stored on the brief
++row. The submit path reads it back. If A16 didn't run (brief gate disabled), default to `production`
++— the conservative choice: requiring *more* gates than necessary fails safe (a `needs_human` is
++recoverable; a wrongly-auto-merged security change is not).
++
++```
++A16 risk class on brief row ─► REQUIRED_GATES[riskClass] ─► gather those signals ─► composeVerdict
++        (missing? default 'production')
++```
++
++---
++
++## What this spec deliberately does NOT cover
++
++- **Building judges / density / the report** — done. Touching them is out of scope; this spec consumes
++  them.
++- **Gate-the-PR mode** — S1 ships annotate-only. Graduating to withhold-the-PR is a later decision,
++  made only after S2/S3 show the verdict is trustworthy on real briefs.
++- **`bench/` corpus** — separate v2.0 workstream (GOALS.md). The dogfood backlog (S2) is the *seed*,
++  not the published bench.
++- **asimux substrate** — PLAN.md P2; the AI can be produced on worktrees alone (GOALS.md: "asicode v2
++  can ship without asimux").
++
++---
++
++## Definition of Done (this spec)
++
++`instrumentation:report` prints a **non-null Autonomy Index** computed from real `judgments`,
++`density_ab`, and verdict-decided `pr_outcome` rows generated by the dogfood backlog flowing through an
++activated `composeVerdict` on the submit path — and that number is calibration-checked and
++drift-monitored.
++
++That is the single deliverable that turns GOALS.md's entire success-criteria table from `unmeasured`
++into `measured`. Until it exists, every version bar (v1.5 ≥ 30% hands-off, etc.) is unfalsifiable.
++After it exists, the project can finally answer its own founding question: *did the Autonomy Index
++move?*
+diff --git a/docs/TEST_STRATEGY.md b/docs/TEST_STRATEGY.md
+new file mode 100644
+index 0000000..76420e2
+--- /dev/null
++++ b/docs/TEST_STRATEGY.md
+@@ -0,0 +1,135 @@
++# Test Strategy — the test taxonomy and merge-blocking policy
++
++> "Make wrongness fast" (PRACTICES.md Practice 3). A test suite is only leverage if you know which
++> classes of test exist, which ones block a merge, and which ones are catching real defects vs. noise.
++> This file is the QA contract: the taxonomy, the blocking policy, and the falsifiability rules.
++> ~258 TS test files exist today; this is how to reason about them as a system.
++
++---
++
++## The six test classes
++
++| Class | Lives | Runs in | Speed | Blocks? |
++|---|---|---|---|---|
++| **Unit** | `*.test.ts` next to source | `bun test` | ms | yes (build gate) |
++| **Integration** | `*.test.ts`, multi-module | `bun test` | 10s–1s | yes (build gate) |
++| **Smoke** | `bun run smoke` | build + `--version` | seconds | yes (build gate) |
++| **E2E** | `scripts/asicode-e2e.test.ts` | `bun test` (spawns the CLI) | seconds | yes (build gate) |
++| **Dual-run** | `*.test.ts` with `ASICODE_RUST_CORE=1` | `bun test` + `cargo test` | varies | yes when `asicored/` touched |
++| **Replay (A11)** | `src/services/replay/` | scheduled, against prior briefs | minutes | **no** — advisory regression signal |
++| **Bench** | `bench/` (not built yet) | release-tagged | minutes | **no** — published comparison number |
++
++The first four are the **build gate** (BUILD_PROTOCOL.md): green-before-commit, no exceptions. Dual-run
++is conditional. Replay and bench are *measurement*, not gates — they inform whether a primary metric
++will move, they don't block an individual change.
++
++---
++
++## What each class is *for* (and is not)
++
++- **Unit** — pure logic, one module. The Autonomy Contract composer (`autonomyGate/contract.test.ts`)
++  is the model: pure function, exhaustive table, the load-bearing invariant tested first. Unit tests
++  are where *policy* is pinned — if a doc states a rule, a unit test asserts it (e.g. "the
++  REQUIRED_GATES table is monotonic in risk").
++- **Integration** — module seams. Does `composeVerdict` read the real `Severity` ranks? Does the
++  selfReview loop wire the reviewer through to a parsed `ReviewResult`? Integration tests catch the
++  bugs that unit mocks hide.
++- **Smoke** — "does it boot." Cheap, catches build/packaging regressions a unit test can't.
++- **E2E** — the CLI as a user runs it. `asicode-e2e.test.ts` drives `asicode:submit` with a real
++  `ASICODE_VERIFY_CMD`. This is the only class that exercises the *whole* brief→verify path.
++- **Dual-run** — parity between the TS path and the Rust core. The rule (PLAN.md §P3/P4): **never
++  delete the TS path until the Rust path has passed dual-run for one release.** Both paths run the same
++  assertions; output must match.
++- **Replay (A11)** — past briefs re-run against the current model/code to catch silent regressions
++  ("the new model got worse at refactors"). Advisory by design: a replay failure opens an
++  investigation, it doesn't block today's commit.
++- **Bench** — the stable, public, release-tagged corpus (GOALS.md v2.0 prereq; `bench/` is currently a
++  stub). Its number is for *comparing versions*, not gating one.
++
++---
++
++## The merge-blocking policy
++
++There are **two** merge gates and they are not the same thing. Conflating them is the most common QA
++error in this repo.
++
++### Gate 1 — build gate (keeps the repo green)
++Defined in BUILD_PROTOCOL.md. Blocks an increment from being committed: typecheck + `bun test` + build
+++ smoke (+ `cargo test` if Rust touched, + `instrumentation:probe`, + `verify:privacy` if IO touched).
++This is about **the change being well-formed.**
++
++### Gate 2 — Autonomy Contract (keeps autonomy honest)
++Defined in docs/AUTONOMY_CONTRACT.md, implemented in `src/services/autonomyGate/`. Blocks an
++*autonomously-produced* change from merging with no human: L1 + L2 + judges + density + adversarial,
++per risk class. This is about **the output being correct enough to trust unattended.**
++
++```
++build gate     ── is the change well-formed?         ── runs on every commit, human or agent
++Autonomy gate  ── may this merge with no human?       ── runs on agent output, before the human sees it
++```
++
++A change can pass the build gate (compiles, tests green) and still fail the Autonomy Contract (judge
++panel scored it 3.4, or it bloated a refactor). That's a `needs_human` — a **success** of the QA
++system, not a failure.
++
++---
++
++## Coverage philosophy (not a percentage)
++
++We do not chase a coverage number. We chase **policy coverage**: every rule stated in a governance doc
++has a test that fails if the rule is violated. Examples that must always hold:
++
++- Every risk class in the Autonomy Contract → a test that a missing required gate fails the verdict.
++- Every A-feature success criterion in GOALS.md → a query or test that can compute it (INSTRUMENTATION:
++  *"if a primary metric can't be answered by a query against this schema, the schema is wrong"*).
++- Every dual-run tool → a test asserting TS/Rust output parity.
++
++`bun run test:coverage` renders a heatmap for finding *untested* surface, but the heatmap is a tool for
++finding gaps, not a target to optimize. A 100%-covered module that doesn't test its policy is worse
++than an 80%-covered one that does.
++
++---
++
++## Test hygiene rules (Practice 3 + the triage history)
++
++This repo has been bitten by test-suite pollution (see `docs/triage/test-suite-pollution-2026-05.md`).
++The rules that came out of it:
++
++- **No shared mutable global state between tests.** Triggers expose `_reset*ForTest()` helpers
++  (`_resetJudgesTriggerForTest`, `_resetAdversarialTriggerForTest`, …) — call them in `beforeEach`.
++- **No real network, no real `$HOME` writes.** Use temp dirs (`mkdtempSync`) and the privacy verifier
++  (`verify:privacy`) as the backstop. The contract/selfReview tests model this: git fixtures in
++  `mkdtempSync`, cleaned in `afterAll`.
++- **No clock/random dependence in pure logic.** `composeVerdict` is pure on purpose — its verdict must
++  be replayable from recorded signals alone, so a test can't depend on wall-clock.
++- **Red before green.** A test that never failed proves nothing (BUILD_PROTOCOL anti-patterns).
++
++---
++
++## False-positive budgets (the measurement classes)
++
++The advisory classes have explicit noise ceilings from GOALS.md — above them, the signal gets ignored
++and the feature is failing its own bar:
++
++| Signal | Max false-positive | Source |
++|---|---|---|
++| A11 replay flagged regressions | ≤ 10% | GOALS.md A11 |
++| A15 adversarial flags | ≤ 15% | GOALS.md A15 |
++| A16 veto appeals upheld | ≤ 10% | GOALS.md A16 |
++
++If a measurement class exceeds its budget, the fix is to **tune the class, not to silence it** — a
++muted verifier is worse than none, because it reads as "covered" when it isn't.
++
++---
++
++## What's missing (honest gaps)
++
++- **Rust has no test files in `asicored/tests/` on this branch** — they live on `rust-core`. Dual-run
++  parity tests are branch-local until the merge.
++- **`bench/` does not exist** — the published-number class is a stub (README + 36-byte manifest). v2.0
++  blocker.
++- **No load/perf test class** — tool-call latency p50/p99 is a GOALS.md leading indicator but has no
++  automated test; it's measured ad hoc. Add when the Rust core's perf claim needs defending.
++
++For how these run in the build loop, see BUILD_PROTOCOL.md. For what they ultimately protect, see
++docs/AUTONOMY_CONTRACT.md and GOALS.md.
+diff --git a/src/services/autonomyGate/contract.test.ts b/src/services/autonomyGate/contract.test.ts
+new file mode 100644
+index 0000000..248d77a
+--- /dev/null
++++ b/src/services/autonomyGate/contract.test.ts
+@@ -0,0 +1,169 @@
++import { describe, expect, test } from 'bun:test'
++import {
++  composeVerdict,
++  composite,
++  densitySignal,
++  judgesSignal,
++  l2Signal,
++  DEFAULT_THRESHOLDS,
++  GATE_NAMES,
++  REQUIRED_GATES,
++  RISK_CLASSES,
++  type GateSignals,
++} from './contract.js'
++
++describe('composeVerdict — the load-bearing invariant: silence is not a pass', () => {
++  test('a required gate that never ran fails the verdict (gate_missing)', () => {
++    // production requires l1+l2+judges+density; provide only l1.
++    const v = composeVerdict('production', { l1: { ran: true, passed: true } })
++    expect(v.mergeable).toBe(false)
++    expect(v.recommendedOutcome).toBe('needs_human')
++    const missing = v.blockers.filter(b => b.reason === 'gate_missing').map(b => b.gate)
++    expect(missing.sort()).toEqual(['density', 'judges', 'l2'])
++  })
++
++  test('all required gates present and passing → merged_no_intervention', () => {
++    const signals: GateSignals = {
++      l1: { ran: true, passed: true },
++      l2: { ran: true, passed: true },
++      judges: { ran: true, passed: true, value: 4.3 },
++      density: { ran: true, passed: true },
++    }
++    const v = composeVerdict('production', signals)
++    expect(v.mergeable).toBe(true)
++    expect(v.recommendedOutcome).toBe('merged_no_intervention')
++    expect(v.blockers).toEqual([])
++  })
++
++  test('a required gate that ran and failed blocks with gate_failed', () => {
++    const v = composeVerdict('experimental', {
++      l1: { ran: true, passed: true },
++      l2: { ran: true, passed: false, detail: '1 high finding' },
++    })
++    expect(v.mergeable).toBe(false)
++    expect(v.bl
+
+... [diff truncated for calibration: 67104 chars total, first 50000 shown — tier signal preserved]

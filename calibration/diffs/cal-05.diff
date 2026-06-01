@@ -1,0 +1,22 @@
+diff --git a/scripts/asicode-submit.ts b/scripts/asicode-submit.ts
+index f893363..0a06d97 100644
+--- a/scripts/asicode-submit.ts
++++ b/scripts/asicode-submit.ts
+@@ -360,12 +360,14 @@ async function main() {
+       // Record the verdict on the brief row. A mergeable verdict sets
+       // pr_outcome=merged_no_intervention (the Metric 1 numerator); a needs_human
+       // verdict leaves pr_outcome unset (the brief is held, not terminal) and
+-      // records why. When a PR opens, the PR-success path re-asserts pr_outcome
+-      // alongside pr_number; when no PR opens this is where the verdict lands.
++      // records why. ts_completed is required for the report's window queries to
++      // count the brief — set it whenever the gate reaches a terminal verdict.
++      // When a PR opens, the PR-success path re-asserts pr_outcome alongside
++      // pr_number; when no PR opens this is where the verdict lands.
+       try {
+         updateBrief({
+           brief_id: briefId,
+-          ...(gatePrOutcome ? { pr_outcome: gatePrOutcome } : {}),
++          ...(gatePrOutcome ? { pr_outcome: gatePrOutcome, ts_completed: Date.now() } : {}),
+           ...(verdict.mergeable ? {} : { intervention_reason: verdictInterventionReason(verdict) ?? 'autonomy-gate' }),
+         })
+       } catch (e) { console.error(`[autonomy-gate] updateBrief failed: ${e instanceof Error ? e.message : String(e)}`) }

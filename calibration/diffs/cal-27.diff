@@ -1,0 +1,422 @@
+diff --git a/scripts/provider-bootstrap.ts b/scripts/provider-bootstrap.ts
+index 404bcb3..a18c4bc 100644
+--- a/scripts/provider-bootstrap.ts
++++ b/scripts/provider-bootstrap.ts
+@@ -1,4 +1,5 @@
+ // @ts-nocheck
++import { asicodeEnv } from '../src/utils/envCompat.js'
+ import {
+   resolveCodexApiCredentials,
+ } from '../src/services/api/providerConfig.js'
+@@ -60,7 +61,7 @@ async function main(): Promise<void> {
+   const argBaseUrl = parseArg('--base-url')
+   const argApiKey = parseArg('--api-key')
+   const goal = normalizeRecommendationGoal(
+-    parseArg('--goal') || process.env.OPENCLAUDE_PROFILE_GOAL,
++    parseArg('--goal') || asicodeEnv('PROFILE_GOAL'),
+   )
+ 
+   let selected: ProviderProfile
+diff --git a/scripts/provider-launch.ts b/scripts/provider-launch.ts
+index 21a04ec..9b244b0 100644
+--- a/scripts/provider-launch.ts
++++ b/scripts/provider-launch.ts
+@@ -1,5 +1,6 @@
+ // @ts-nocheck
+ import { spawn } from 'node:child_process'
++import { asicodeEnv } from '../src/utils/envCompat.js'
+ import {
+   resolveCodexApiCredentials,
+ } from '../src/services/api/providerConfig.js'
+@@ -34,7 +35,7 @@ function parseLaunchOptions(argv: string[]): LaunchOptions {
+   let requestedProfile: ProviderProfile | 'auto' | null = 'auto'
+   const passthroughArgs: string[] = []
+   let fast = false
+-  let goal = normalizeRecommendationGoal(process.env.OPENCLAUDE_PROFILE_GOAL)
++  let goal = normalizeRecommendationGoal(asicodeEnv('PROFILE_GOAL'))
+ 
+   for (let i = 0; i < argv.length; i++) {
+     const arg = argv[i]!
+diff --git a/scripts/provider-recommend.ts b/scripts/provider-recommend.ts
+index 8dc2383..0425992 100644
+--- a/scripts/provider-recommend.ts
++++ b/scripts/provider-recommend.ts
+@@ -1,5 +1,6 @@
+ // @ts-nocheck
+ 
++import { asicodeEnv } from '../src/utils/envCompat.js'
+ import {
+   applyBenchmarkLatency,
+   getGoalDefaultOpenAIModel,
+@@ -39,7 +40,7 @@ function parseOptions(argv: string[]): CliOptions {
+   const options: CliOptions = {
+     apply: false,
+     benchmark: false,
+-    goal: normalizeRecommendationGoal(process.env.OPENCLAUDE_PROFILE_GOAL),
++    goal: normalizeRecommendationGoal(asicodeEnv('PROFILE_GOAL')),
+     json: false,
+     provider: 'auto',
+     baseUrl: null,
+diff --git a/src/cost-tracker.ts b/src/cost-tracker.ts
+index 1e3f123..00e1ed4 100644
+--- a/src/cost-tracker.ts
++++ b/src/cost-tracker.ts
+@@ -42,6 +42,7 @@ import {
+   logEvent,
+ } from './services/analytics/index.js'
+ import { getAdvisorUsage } from './utils/advisor.js'
++import { asicodeEnv } from './utils/envCompat.js'
+ import {
+   getCurrentProjectConfig,
+   saveCurrentProjectConfig,
+@@ -275,7 +276,7 @@ function round(number: number, precision: number): number {
+ // documented keyword but we accept `1`/`true` for ergonomic parity with
+ // other OPENCLAUDE_* flags.
+ function shouldLogTokenUsageVerbose(): boolean {
+-  const v = (process.env.OPENCLAUDE_LOG_TOKEN_USAGE ?? '').trim().toLowerCase()
++  const v = (asicodeEnv('LOG_TOKEN_USAGE') ?? '').trim().toLowerCase()
+   if (!v) return false
+   return v !== '0' && v !== 'false' && v !== 'off'
+ }
+diff --git a/src/entrypoints/cli.tsx b/src/entrypoints/cli.tsx
+index 0f6260b..bbfbf72 100644
+--- a/src/entrypoints/cli.tsx
++++ b/src/entrypoints/cli.tsx
+@@ -1,4 +1,5 @@
+ import { feature } from 'bun:bundle';
++import { asicodeEnv } from '../utils/envCompat.js'
+ import {
+   applyProfileEnvToProcessEnv,
+   buildStartupEnvFromProfile,
+@@ -386,7 +387,7 @@ async function main(): Promise<void> {
+   }
+ 
+   // No special flags detected, load and run the full CLI
+-  if (process.env.OPENCLAUDE_DISABLE_EARLY_INPUT !== '1') {
++  if (asicodeEnv('DISABLE_EARLY_INPUT') !== '1') {
+     const {
+       startCapturingEarlyInput
+     } = await import('../utils/earlyInput.js');
+diff --git a/src/ink/components/App.tsx b/src/ink/components/App.tsx
+index e2846f2..81c8473 100644
+--- a/src/ink/components/App.tsx
++++ b/src/ink/components/App.tsx
+@@ -1,6 +1,7 @@
+ import React, { PureComponent, type ReactNode } from 'react';
+ import { updateLastInteractionTime } from '../../bootstrap/state.js';
+ import { stopCapturingEarlyInput } from '../../utils/earlyInput.js';
++import { asicodeEnv } from '../../utils/envCompat.js';
+ import { isEnvTruthy } from '../../utils/envUtils.js';
+ import { isMouseClicksDisabled } from '../../utils/fullscreen.js';
+ import { logError } from '../../utils/log.js';
+@@ -118,7 +119,7 @@ export default class App extends PureComponent<Props, State> {
+   // Default to readable-mode stdin (legacy Ink behavior). The data-mode path
+   // is kept as an explicit opt-in because some terminals can enter a state
+   // where startup input appears frozen when data mode is the default.
+-  stdinMode: 'readable' | 'data' = process.env.OPENCLAUDE_USE_DATA_STDIN === '1' || process.env.OPENCLAUDE_USE_READABLE_STDIN === '0' ? 'data' : 'readable';
++  stdinMode: 'readable' | 'data' = asicodeEnv('USE_DATA_STDIN') === '1' || asicodeEnv('USE_READABLE_STDIN') === '0' ? 'data' : 'readable';
+   // Timeout durations for incomplete sequences (ms)
+   readonly NORMAL_TIMEOUT = 50; // Short timeout for regular esc sequences
+   readonly PASTE_TIMEOUT = 500; // Longer timeout for paste operations
+diff --git a/src/ink/terminal.ts b/src/ink/terminal.ts
+index d3e6b1e..65e343d 100644
+--- a/src/ink/terminal.ts
++++ b/src/ink/terminal.ts
+@@ -1,5 +1,6 @@
+ import { coerce } from 'semver'
+ import type { Writable } from 'stream'
++import { asicodeEnv } from '../utils/envCompat.js'
+ import { env } from '../utils/env.js'
+ import { gte } from '../utils/semver.js'
+ import { getClearTerminalSequence } from './clearTerminal.js'
+@@ -189,7 +190,7 @@ export function supportsExtendedKeys(): boolean {
+   // Open Claude defaults this off because some real terminals render the UI
+   // but stop delivering normal typing once kitty/modifyOtherKeys negotiation
+   // is enabled. Power users can opt back in explicitly.
+-  if (process.env.OPENCLAUDE_ENABLE_EXTENDED_KEYS !== '1') {
++  if (asicodeEnv('ENABLE_EXTENDED_KEYS') !== '1') {
+     return false
+   }
+   return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+diff --git a/src/services/api/openaiShim.ts b/src/services/api/openaiShim.ts
+index 7dd7c3a..4816290 100644
+--- a/src/services/api/openaiShim.ts
++++ b/src/services/api/openaiShim.ts
+@@ -31,6 +31,7 @@ import {
+   refreshCodexAccessTokenIfNeeded,
+ } from '../../utils/codexCredentials.js'
+ import { logForDebugging } from '../../utils/debug.js'
++import { asicodeEnv } from '../../utils/envCompat.js'
+ import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
+ import { resolveGeminiCredential } from '../../utils/geminiAuth.js'
+ import { hydrateGeminiAccessTokenFromSecureStorage } from '../../utils/geminiCredentials.js'
+@@ -807,7 +808,7 @@ function convertTools(
+           description: t.description ?? '',
+           parameters: normalizeSchemaForOpenAI(
+             schema,
+-            !isGemini && !isEnvTruthy(process.env.OPENCLAUDE_DISABLE_STRICT_TOOLS),
++            !isGemini && !isEnvTruthy(asicodeEnv('DISABLE_STRICT_TOOLS')),
+           ),
+         },
+       }
+diff --git a/src/tools/FileReadTool/FileReadTool.ts b/src/tools/FileReadTool/FileReadTool.ts
+index 90781ef..261bc81 100644
+--- a/src/tools/FileReadTool/FileReadTool.ts
++++ b/src/tools/FileReadTool/FileReadTool.ts
+@@ -28,6 +28,7 @@ import {
+ import type { ToolUseContext } from '../../Tool.js'
+ import { buildTool, type ToolDef } from '../../Tool.js'
+ import { getCwd } from '../../utils/cwd.js'
++import { asicodeEnv } from '../../utils/envCompat.js'
+ import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
+ import { getErrnoCode, isENOENT } from '../../utils/errors.js'
+ import {
+@@ -733,7 +734,7 @@ export const CYBER_RISK_MITIGATION_REMINDER =
+ const MITIGATION_EXEMPT_MODELS = new Set(['claude-opus-4-6'])
+ 
+ function shouldIncludeFileReadMitigation(): boolean {
+-  if (isEnvTruthy(process.env.OPENCLAUDE_DISABLE_TOOL_REMINDERS)) {
++  if (isEnvTruthy(asicodeEnv('DISABLE_TOOL_REMINDERS'))) {
+     return false
+   }
+   const shortName = getCanonicalName(getMainLoopModel())
+diff --git a/src/utils/attribution.ts b/src/utils/attribution.ts
+index aab4f93..b7c10f3 100644
+--- a/src/utils/attribution.ts
++++ b/src/utils/attribution.ts
+@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
+ import { stat } from 'fs/promises'
+ import { getClientType } from '../bootstrap/state.js'
+ import { getRemoteSessionUrl, isRemoteSessionLocal } from '../constants/product.js'
++import { asicodeEnv } from './envCompat.js'
+ import { isEnvTruthy } from './envUtils.js'
+ import { TERMINAL_OUTPUT_TAGS } from '../constants/xml.js'
+ import type { AppState } from '../state/AppState.js'
+@@ -78,9 +79,7 @@ export function getAttributionTexts(): AttributionTexts {
+     '🤖 Generated with [OpenClaude](https://github.com/Gitlawb/openclaude)'
+   const coAuthorDomain =
+     getAPIProvider() === 'firstParty' ? 'anthropic.com' : 'openclaude.dev'
+-  const defaultCommit = isEnvTruthy(
+-    process.env.OPENCLAUDE_DISABLE_CO_AUTHORED_BY,
+-  )
++  const defaultCommit = isEnvTruthy(asicodeEnv('DISABLE_CO_AUTHORED_BY'))
+     ? ''
+     : `Co-Authored-By: ${modelName} <noreply@${coAuthorDomain}>`
+ 
+diff --git a/src/utils/envCompat.test.ts b/src/utils/envCompat.test.ts
+new file mode 100644
+index 0000000..d8a0602
+--- /dev/null
++++ b/src/utils/envCompat.test.ts
+@@ -0,0 +1,87 @@
++import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
++import { _resetAsicodeEnvWarnings, asicodeEnv } from './envCompat'
++
++const TEST_KEY = 'TEST_FLAG_XYZ'
++let savedNew: string | undefined, savedOld: string | undefined
++let origWarn: typeof console.warn
++let warnedMessages: string[] = []
++
++beforeEach(() => {
++  savedNew = process.env[`ASICODE_${TEST_KEY}`]
++  savedOld = process.env[`OPENCLAUDE_${TEST_KEY}`]
++  delete process.env[`ASICODE_${TEST_KEY}`]
++  delete process.env[`OPENCLAUDE_${TEST_KEY}`]
++  _resetAsicodeEnvWarnings()
++  warnedMessages = []
++  origWarn = console.warn
++  console.warn = (msg: string) => { warnedMessages.push(msg) }
++})
++afterEach(() => {
++  if (savedNew === undefined) delete process.env[`ASICODE_${TEST_KEY}`]
++  else process.env[`ASICODE_${TEST_KEY}`] = savedNew
++  if (savedOld === undefined) delete process.env[`OPENCLAUDE_${TEST_KEY}`]
++  else process.env[`OPENCLAUDE_${TEST_KEY}`] = savedOld
++  console.warn = origWarn
++})
++
++describe('asicodeEnv', () => {
++  test('prefers ASICODE_<NAME> over OPENCLAUDE_<NAME>', () => {
++    process.env[`ASICODE_${TEST_KEY}`] = 'new-value'
++    process.env[`OPENCLAUDE_${TEST_KEY}`] = 'old-value'
++    expect(asicodeEnv(TEST_KEY)).toBe('new-value')
++    // Using new key → no deprecation warning
++    expect(warnedMessages).toEqual([])
++  })
++
++  test('falls back to OPENCLAUDE_<NAME> when ASICODE_<NAME> unset', () => {
++    process.env[`OPENCLAUDE_${TEST_KEY}`] = 'old-value'
++    expect(asicodeEnv(TEST_KEY)).toBe('old-value')
++  })
++
++  test('emits a deprecation warning when falling back to OPENCLAUDE_<NAME>', () => {
++    process.env[`OPENCLAUDE_${TEST_KEY}`] = 'old-value'
++    asicodeEnv(TEST_KEY)
++    expect(warnedMessages.length).toBe(1)
++    expect(warnedMessages[0]).toContain('OPENCLAUDE_TEST_FLAG_XYZ')
++    expect(warnedMessages[0]).toContain('ASICODE_TEST_FLAG_XYZ')
++    expect(warnedMessages[0]).toContain('deprecated')
++  })
++
++  test('deprecation warning fires only once per name (no spam)', () => {
++    process.env[`OPENCLAUDE_${TEST_KEY}`] = 'old'
++    asicodeEnv(TEST_KEY)
++    asicodeEnv(TEST_KEY)
++    asicodeEnv(TEST_KEY)
++    expect(warnedMessages.length).toBe(1)
++  })
++
++  test('quiet=true suppresses the warning', () => {
++    process.env[`OPENCLAUDE_${TEST_KEY}`] = 'old'
++    asicodeEnv(TEST_KEY, { quiet: true })
++    expect(warnedMessages).toEqual([])
++  })
++
++  test('returns undefined when neither name set', () => {
++    expect(asicodeEnv(TEST_KEY)).toBeUndefined()
++  })
++
++  test('returns defaultValue when neither name set', () => {
++    expect(asicodeEnv(TEST_KEY, { defaultValue: 'fallback' })).toBe('fallback')
++  })
++
++  test('ASICODE empty-string is still a value (overrides default)', () => {
++    process.env[`ASICODE_${TEST_KEY}`] = ''
++    expect(asicodeEnv(TEST_KEY, { defaultValue: 'nope' })).toBe('')
++  })
++
++  test('different names track independently for warning dedup', () => {
++    process.env['OPENCLAUDE_FLAG_A'] = '1'
++    process.env['OPENCLAUDE_FLAG_B'] = '1'
++    asicodeEnv('FLAG_A')
++    asicodeEnv('FLAG_B')
++    asicodeEnv('FLAG_A')
++    expect(warnedMessages.length).toBe(2)
++    delete process.env['OPENCLAUDE_FLAG_A']
++    delete process.env['OPENCLAUDE_FLAG_B']
++  })
++})
+diff --git a/src/utils/envCompat.ts b/src/utils/envCompat.ts
+new file mode 100644
+index 0000000..9161ed9
+--- /dev/null
++++ b/src/utils/envCompat.ts
+@@ -0,0 +1,38 @@
++// REQ-8.3: ASICODE_* env vars with OPENCLAUDE_* back-compat shim.
++//
++// Lookup order: ASICODE_<NAME>, then OPENCLAUDE_<NAME>. When the old
++// name is used, emit a one-time deprecation warning per name (so a
++// process that reads the same flag in a loop doesn't spam stderr).
++//
++// Use:
++//   import { asicodeEnv } from './envCompat.js'
++//   const v = asicodeEnv('DISABLE_CO_AUTHORED_BY')
++//
++// The `name` argument is the UPPER suffix only; both prefixes get
++// applied in turn.
++
++const warned = new Set<string>()
++
++export function asicodeEnv(
++  name: string,
++  opts: { defaultValue?: string; quiet?: boolean; env?: NodeJS.ProcessEnv } = {},
++): string | undefined {
++  const e = opts.env ?? process.env
++  const newKey = `ASICODE_${name}`
++  const oldKey = `OPENCLAUDE_${name}`
++  const fromNew = e[newKey]
++  if (fromNew !== undefined) return fromNew
++  const fromOld = e[oldKey]
++  if (fromOld !== undefined) {
++    if (!opts.quiet && !warned.has(oldKey)) {
++      warned.add(oldKey)
++      // eslint-disable-next-line no-console
++      console.warn(`[asicode] env var ${oldKey} is deprecated; rename to ${newKey}. Falls through for now.`)
++    }
++    return fromOld
++  }
++  return opts.defaultValue
++}
++
++// Test helper: reset the warned-set so each test starts fresh.
++export function _resetAsicodeEnvWarnings(): void { warned.clear() }
+diff --git a/src/utils/messages.ts b/src/utils/messages.ts
+index 0597fd8..953ed63 100644
+--- a/src/utils/messages.ts
++++ b/src/utils/messages.ts
+@@ -75,6 +75,7 @@ import type {
+ import { isAdvisorBlock } from './advisor.js'
+ import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
+ import { count } from './array.js'
++import { asicodeEnv } from './envCompat.js'
+ import { isEnvTruthy } from './envUtils.js'
+ import {
+   type Attachment,
+@@ -3667,7 +3668,7 @@ Read the team config to discover your teammates' names. Check the task list peri
+       ])
+     }
+     case 'todo_reminder': {
+-      if (isEnvTruthy(process.env.OPENCLAUDE_DISABLE_TOOL_REMINDERS)) {
++      if (isEnvTruthy(asicodeEnv('DISABLE_TOOL_REMINDERS'))) {
+         return []
+       }
+       const todoItems = attachment.content
+@@ -3690,7 +3691,7 @@ Read the team config to discover your teammates' names. Check the task list peri
+       if (!isTodoV2Enabled()) {
+         return []
+       }
+-      if (isEnvTruthy(process.env.OPENCLAUDE_DISABLE_TOOL_REMINDERS)) {
++      if (isEnvTruthy(asicodeEnv('DISABLE_TOOL_REMINDERS'))) {
+         return []
+       }
+       const taskItems = attachment.content
+diff --git a/src/utils/providerProfile.ts b/src/utils/providerProfile.ts
+index ecbc2a6..97c23e0 100644
+--- a/src/utils/providerProfile.ts
++++ b/src/utils/providerProfile.ts
+@@ -30,6 +30,7 @@ export {
+   sanitizeApiKey,
+   sanitizeProviderConfigValue,
+ } from './providerSecrets.js'
++import { asicodeEnv } from './envCompat.ts'
+ import { isEnvTruthy } from './envUtils.ts'
+ 
+ import { PROVIDERS } from './configConstants.js'
+@@ -1056,7 +1057,7 @@ export async function buildStartupEnvFromProfile(options?: {
+     persisted,
+     goal:
+       options?.goal ??
+-      normalizeRecommendationGoal(processEnv.OPENCLAUDE_PROFILE_GOAL),
++      normalizeRecommendationGoal(asicodeEnv('PROFILE_GOAL', { env: processEnv })),
+     processEnv,
+     getOllamaChatBaseUrl:
+       options?.getOllamaChatBaseUrl ?? getOllamaChatBaseUrl,
+@@ -1097,7 +1098,7 @@ export async function applySavedProfileToCurrentSession(options: {
+   const nextEnv = await buildLaunchEnv({
+     profile: options.profileFile.profile,
+     persisted: options.profileFile,
+-    goal: normalizeRecommendationGoal(processEnv.OPENCLAUDE_PROFILE_GOAL),
++    goal: normalizeRecommendationGoal(asicodeEnv('PROFILE_GOAL', { env: processEnv })),
+     processEnv: baseEnv,
+     getOllamaChatBaseUrl,
+     readGeminiAccessToken,
+diff --git a/src/utils/secureStorage/windowsCredentialStorage.ts b/src/utils/secureStorage/windowsCredentialStorage.ts
+index fdccc56..902e759 100644
+--- a/src/utils/secureStorage/windowsCredentialStorage.ts
++++ b/src/utils/secureStorage/windowsCredentialStorage.ts
+@@ -1,5 +1,6 @@
+ import { execaSync } from 'execa'
+ import { join } from 'path'
++import { asicodeEnv } from '../envCompat.js'
+ import { getClaudeConfigHomeDir } from '../envUtils.js'
+ import { jsonParse, jsonStringify } from '../slowOperations.js'
+ import {
+@@ -31,7 +32,7 @@ function getWindowsSecureStorageFilePath(): string {
+ }
+ 
+ function shouldUseLegacyPasswordVault(): boolean {
+-  return process.env.OPENCLAUDE_ENABLE_LEGACY_WINDOWS_PASSWORDVAULT === '1'
++  return asicodeEnv('ENABLE_LEGACY_WINDOWS_PASSWORDVAULT') === '1'
+ }
+ 
+ function runPowerShell(

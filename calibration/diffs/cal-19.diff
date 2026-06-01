@@ -1,0 +1,122 @@
+diff --git a/src/main.tsx b/src/main.tsx
+index 87d8605..10cf2bf 100644
+--- a/src/main.tsx
++++ b/src/main.tsx
+@@ -104,6 +104,7 @@ import type { Message as MessageType } from './types/message.js';
+ import { assertMinVersion } from './utils/autoUpdater.js';
+ import { shouldAutoEnableClaudeInChrome, shouldEnableClaudeInChrome } from './utils/claudeInChrome/setup.js';
+ import { mergeSystemPromptFragment, resolveClaudeInChromeContribution } from './utils/claudeInChrome/integration.js';
++import { getPluginSystemPromptFragments } from './utils/plugins/loadPluginSystemPrompt.js';
+ import { getContextWindowForModel } from './utils/context.js';
+ import { loadConversationForResume } from './utils/conversationRecovery.js';
+ import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
+@@ -1573,6 +1574,13 @@ async function run(): Promise<CommanderCommand> {
+       }
+     }
+ 
++    // ADR-0001 system-prompt fragments: enabled, in-scope plugins can append
++    // instructions to the system prompt (e.g. to teach the model about tools
++    // they contribute). Appended after chrome so an explicit chrome prepend keeps priority.
++    for (const fragment of await getPluginSystemPromptFragments()) {
++      appendSystemPrompt = mergeSystemPromptFragment(appendSystemPrompt, { text: fragment, position: 'append' });
++    }
++
+     // Extract strict MCP config flag
+     const strictMcpConfig = options.strictMcpConfig || false;
+ 
+diff --git a/src/utils/plugins/loadPluginSystemPrompt.test.ts b/src/utils/plugins/loadPluginSystemPrompt.test.ts
+new file mode 100644
+index 0000000..2f32dac
+--- /dev/null
++++ b/src/utils/plugins/loadPluginSystemPrompt.test.ts
+@@ -0,0 +1,28 @@
++import { describe, expect, test } from 'bun:test'
++import type { LoadedPlugin } from '../../types/plugin.js'
++import { collectSystemPromptFragments } from './loadPluginSystemPrompt.js'
++
++// Minimal stand-ins: the collector only reads `manifest.systemPrompt`.
++const plugin = (systemPrompt?: string): Pick<LoadedPlugin, 'manifest'> =>
++  ({ manifest: { name: 'p', systemPrompt } }) as Pick<LoadedPlugin, 'manifest'>
++
++describe('collectSystemPromptFragments', () => {
++  test('includes declared fragments in order', () => {
++    expect(collectSystemPromptFragments([plugin('first'), plugin('second')])).toEqual([
++      'first',
++      'second',
++    ])
++  })
++
++  test('skips plugins without a systemPrompt', () => {
++    expect(collectSystemPromptFragments([plugin(undefined), plugin('only')])).toEqual(['only'])
++  })
++
++  test('skips empty / whitespace-only fragments and trims', () => {
++    expect(collectSystemPromptFragments([plugin('   '), plugin('  kept  ')])).toEqual(['kept'])
++  })
++
++  test('empty input yields no fragments', () => {
++    expect(collectSystemPromptFragments([])).toEqual([])
++  })
++})
+diff --git a/src/utils/plugins/loadPluginSystemPrompt.ts b/src/utils/plugins/loadPluginSystemPrompt.ts
+new file mode 100644
+index 0000000..ab38a43
+--- /dev/null
++++ b/src/utils/plugins/loadPluginSystemPrompt.ts
+@@ -0,0 +1,37 @@
++// ADR-0001 system-prompt fragments: enabled plugins can append text to the
++// system prompt via the manifest `systemPrompt` field. Mirrors the other
++// loadPlugin* collectors. `enabled` already excludes out-of-scope plugins
++// (availability demotion in the loader), so a fragment never leaks from a
++// plugin that shouldn't run in this provider/auth environment.
++
++import memoize from 'lodash-es/memoize.js'
++import type { LoadedPlugin } from '../../types/plugin.js'
++import { loadAllPluginsCacheOnly } from './pluginLoader.js'
++
++/**
++ * Pure: collect non-empty, trimmed system-prompt fragments from the given
++ * plugins, preserving load order. Separated from the async loader so it is
++ * unit-testable without plugin fixtures.
++ */
++export function collectSystemPromptFragments(
++  plugins: Pick<LoadedPlugin, 'manifest'>[],
++): string[] {
++  const fragments: string[] = []
++  for (const plugin of plugins) {
++    const fragment = plugin.manifest.systemPrompt
++    if (typeof fragment === 'string' && fragment.trim().length > 0) {
++      fragments.push(fragment.trim())
++    }
++  }
++  return fragments
++}
++
++/** System-prompt fragments contributed by enabled (in-scope) plugins. */
++export const getPluginSystemPromptFragments = memoize(async (): Promise<string[]> => {
++  const { enabled } = await loadAllPluginsCacheOnly()
++  return collectSystemPromptFragments(enabled)
++})
++
++export function clearPluginSystemPromptCache(): void {
++  getPluginSystemPromptFragments.cache.clear?.()
++}
+diff --git a/src/utils/plugins/schemas.ts b/src/utils/plugins/schemas.ts
+index a1a88c2..15c9c5a 100644
+--- a/src/utils/plugins/schemas.ts
++++ b/src/utils/plugins/schemas.ts
+@@ -318,6 +318,14 @@ const PluginManifestMetadataSchema = lazySchema(() =>
+           'Omit for "available everywhere". A plugin out of scope for the current ' +
+           'provider/auth is not loaded (ADR-0001 availability/provider scope).',
+       ),
++    systemPrompt: z
++      .string()
++      .optional()
++      .describe(
++        'Text appended to the system prompt when this plugin is enabled ' +
++          '(ADR-0001 system-prompt fragment) — e.g. to teach the model about the ' +
++          'tools or behavior this plugin contributes.',
++      ),
+     dependencies: z
+       .array(DependencyRefSchema())
+       .optional()

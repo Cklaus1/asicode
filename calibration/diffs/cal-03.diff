@@ -1,0 +1,222 @@
+diff --git a/src/main.tsx b/src/main.tsx
+index 1b84c93..87d8605 100644
+--- a/src/main.tsx
++++ b/src/main.tsx
+@@ -102,8 +102,8 @@ import { getActiveAgentsFromList, getAgentDefinitionsWithOverrides, isBuiltInAge
+ import type { LogOption } from './types/logs.js';
+ import type { Message as MessageType } from './types/message.js';
+ import { assertMinVersion } from './utils/autoUpdater.js';
+-import { CLAUDE_IN_CHROME_SKILL_HINT, CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER } from './utils/claudeInChrome/prompt.js';
+-import { setupClaudeInChrome, shouldAutoEnableClaudeInChrome, shouldEnableClaudeInChrome } from './utils/claudeInChrome/setup.js';
++import { shouldAutoEnableClaudeInChrome, shouldEnableClaudeInChrome } from './utils/claudeInChrome/setup.js';
++import { mergeSystemPromptFragment, resolveClaudeInChromeContribution } from './utils/claudeInChrome/integration.js';
+ import { getContextWindowForModel } from './utils/context.js';
+ import { loadConversationForResume } from './utils/conversationRecovery.js';
+ import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
+@@ -1549,49 +1549,27 @@ async function run(): Promise<CommanderCommand> {
+     setChromeFlagOverride(chromeOpts.chrome);
+     const enableClaudeInChrome = shouldEnableClaudeInChrome(chromeOpts.chrome) && ("external" === 'ant' || isClaudeAISubscriber());
+     const autoEnableClaudeInChrome = !enableClaudeInChrome && shouldAutoEnableClaudeInChrome();
+-    if (enableClaudeInChrome) {
+-      const platform = getPlatform();
+-      try {
+-        logEvent('tengu_claude_in_chrome_setup', {
+-          platform: platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+-        });
+-        const {
+-          mcpConfig: chromeMcpConfig,
+-          allowedTools: chromeMcpTools,
+-          systemPrompt: chromeSystemPrompt
+-        } = setupClaudeInChrome();
+-        dynamicMcpConfig = {
+-          ...dynamicMcpConfig,
+-          ...chromeMcpConfig
+-        };
+-        allowedTools.push(...chromeMcpTools);
+-        if (chromeSystemPrompt) {
+-          appendSystemPrompt = appendSystemPrompt ? `${chromeSystemPrompt}\n\n${appendSystemPrompt}` : chromeSystemPrompt;
++    // Claude-in-Chrome is an Anthropic-only integration; all of its MCP / tool /
++    // system-prompt + analytics policy lives behind resolveClaudeInChromeContribution
++    // (ADR-0001 step 2b — the seam a provider-scoped plugin will own). The kernel here
++    // only merges the generic contribution deltas.
++    if (enableClaudeInChrome || autoEnableClaudeInChrome) {
++      const mode = enableClaudeInChrome ? 'enabled' : 'auto';
++      const contribution = await resolveClaudeInChromeContribution(mode);
++      if (!contribution) {
++        // 'enabled' setup failure is fatal (matches prior behavior); 'auto' is a silent skip.
++        if (mode === 'enabled') {
++          // biome-ignore lint/suspicious/noConsole:: intentional console output
++          console.error(`Error: Failed to run with Claude in Chrome.`);
++          process.exit(1);
+         }
+-      } catch (error) {
+-        logEvent('tengu_claude_in_chrome_setup_failed', {
+-          platform: platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+-        });
+-        logForDebugging(`[Claude in Chrome] Error: ${error}`);
+-        logError(error);
+-        // biome-ignore lint/suspicious/noConsole:: intentional console output
+-        console.error(`Error: Failed to run with Claude in Chrome.`);
+-        process.exit(1);
+-      }
+-    } else if (autoEnableClaudeInChrome) {
+-      try {
+-        const {
+-          mcpConfig: chromeMcpConfig
+-        } = setupClaudeInChrome();
++      } else {
+         dynamicMcpConfig = {
+           ...dynamicMcpConfig,
+-          ...chromeMcpConfig
++          ...contribution.mcpConfig
+         };
+-        const hint = feature('WEB_BROWSER_TOOL') && typeof Bun !== 'undefined' && 'WebView' in Bun ? CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER : CLAUDE_IN_CHROME_SKILL_HINT;
+-        appendSystemPrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${hint}` : hint;
+-      } catch (error) {
+-        // Silently skip any errors for the auto-enable
+-        logForDebugging(`[Claude in Chrome] Error (auto-enable): ${error}`);
++        allowedTools.push(...contribution.allowedTools);
++        appendSystemPrompt = mergeSystemPromptFragment(appendSystemPrompt, contribution.systemPrompt);
+       }
+     }
+ 
+diff --git a/src/utils/claudeInChrome/integration.test.ts b/src/utils/claudeInChrome/integration.test.ts
+new file mode 100644
+index 0000000..e380795
+--- /dev/null
++++ b/src/utils/claudeInChrome/integration.test.ts
+@@ -0,0 +1,26 @@
++import { describe, expect, test } from 'bun:test'
++import { mergeSystemPromptFragment } from './integration.js'
++
++describe('mergeSystemPromptFragment', () => {
++  test('null fragment leaves the existing prompt unchanged', () => {
++    expect(mergeSystemPromptFragment('keep me', null)).toBe('keep me')
++    expect(mergeSystemPromptFragment(undefined, null)).toBeUndefined()
++  })
++
++  test('no existing prompt returns the fragment text verbatim', () => {
++    expect(mergeSystemPromptFragment(undefined, { text: 'frag', position: 'prepend' })).toBe('frag')
++    expect(mergeSystemPromptFragment('', { text: 'frag', position: 'append' })).toBe('frag')
++  })
++
++  test('enabled mode prepends (fragment before existing)', () => {
++    expect(mergeSystemPromptFragment('BASE', { text: 'CHROME', position: 'prepend' })).toBe(
++      'CHROME\n\nBASE',
++    )
++  })
++
++  test('auto-enable mode appends (hint after existing)', () => {
++    expect(mergeSystemPromptFragment('BASE', { text: 'HINT', position: 'append' })).toBe(
++      'BASE\n\nHINT',
++    )
++  })
++})
+diff --git a/src/utils/claudeInChrome/integration.ts b/src/utils/claudeInChrome/integration.ts
+new file mode 100644
+index 0000000..c25db33
+--- /dev/null
++++ b/src/utils/claudeInChrome/integration.ts
+@@ -0,0 +1,102 @@
++// ADR-0001 step 2b: the Claude-in-Chrome integration seam.
++//
++// Claude-in-Chrome is an Anthropic-only integration (gated to claude.ai
++// subscribers; its setup module even depends on the Anthropic-private
++// `@ant/claude-for-chrome-mcp` package, absent from external builds). This
++// module concentrates ALL of its provider-specific policy — MCP server config,
++// allowed tools, system-prompt fragment, analytics, error handling — behind one
++// function, and **lazy-loads** the heavy/private implementation so merely
++// importing the seam never drags those deps into the graph. That makes the
++// later move into a provider-scoped plugin a relocation, not a rewrite.
++
++import { feature } from 'bun:bundle'
++import {
++  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
++  logEvent,
++} from '../../services/analytics/index.js'
++import type { ScopedMcpServerConfig } from '../../services/mcp/types.js'
++import { logForDebugging } from '../debug.js'
++import { logError } from '../log.js'
++import { getPlatform } from '../platform.js'
++
++export interface SystemPromptFragment {
++  text: string
++  /** 'prepend' for an explicitly-enabled session, 'append' for auto-enable. */
++  position: 'prepend' | 'append'
++}
++
++export interface ClaudeInChromeContribution {
++  mcpConfig: Record<string, ScopedMcpServerConfig>
++  allowedTools: string[]
++  systemPrompt: SystemPromptFragment | null
++}
++
++/**
++ * Resolve the Claude-in-Chrome contribution for a session.
++ *
++ * Returns null on setup failure; the caller interprets that by mode:
++ *   - 'enabled' → fatal (caller prints + exits 1, preserving prior behavior)
++ *   - 'auto'    → silent skip
++ *
++ * `'enabled'` contributes MCP + tools + a prepended system prompt; `'auto'`
++ * contributes MCP only + an appended skill hint. The Anthropic-specific setup
++ * module is imported dynamically so it loads only when chrome is actually used.
++ */
++export async function resolveClaudeInChromeContribution(
++  mode: 'enabled' | 'auto',
++): Promise<ClaudeInChromeContribution | null> {
++  const platform = getPlatform()
++  const { setupClaudeInChrome } = await import('./setup.js')
++
++  if (mode === 'enabled') {
++    logEvent('tengu_claude_in_chrome_setup', {
++      platform: platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
++    })
++    try {
++      const { mcpConfig, allowedTools, systemPrompt } = setupClaudeInChrome()
++      return {
++        mcpConfig,
++        allowedTools,
++        systemPrompt: systemPrompt ? { text: systemPrompt, position: 'prepend' } : null,
++      }
++    } catch (error) {
++      logEvent('tengu_claude_in_chrome_setup_failed', {
++        platform: platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
++      })
++      logForDebugging(`[Claude in Chrome] Error: ${error}`)
++      logError(error)
++      return null
++    }
++  }
++
++  // auto-enable: MCP only, append a skill hint, swallow errors.
++  try {
++    const { mcpConfig } = setupClaudeInChrome()
++    const { CLAUDE_IN_CHROME_SKILL_HINT, CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER } =
++      await import('./prompt.js')
++    const hint =
++      feature('WEB_BROWSER_TOOL') && typeof Bun !== 'undefined' && 'WebView' in Bun
++        ? CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER
++        : CLAUDE_IN_CHROME_SKILL_HINT
++    return { mcpConfig, allowedTools: [], systemPrompt: { text: hint, position: 'append' } }
++  } catch (error) {
++    logForDebugging(`[Claude in Chrome] Error (auto-enable): ${error}`)
++    return null
++  }
++}
++
++/**
++ * Merge a system-prompt fragment into the existing append-string, honoring
++ * position. Pure — the one piece of the seam with subtle prepend/append
++ * behavior, so it is unit-tested directly.
++ */
++export function mergeSystemPromptFragment(
++  existing: string | undefined,
++  fragment: SystemPromptFragment | null,
++): string | undefined {
++  if (!fragment) return existing
++  if (!existing) return fragment.text
++  return fragment.position === 'prepend'
++    ? `${fragment.text}\n\n${existing}`
++    : `${existing}\n\n${fragment.text}`
++}

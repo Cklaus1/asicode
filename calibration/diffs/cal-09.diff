@@ -1,0 +1,35 @@
+diff --git a/src/utils/asicodePaths.test.ts b/src/utils/asicodePaths.test.ts
+index e302550..2f6bc86 100644
+--- a/src/utils/asicodePaths.test.ts
++++ b/src/utils/asicodePaths.test.ts
+@@ -86,15 +86,6 @@ describe('Asicode paths', () => {
+     )
+   })
+ 
+-  test('local installer exposes asicode wrapper path alongside asicode (REQ-8.2)', async () => {
+-    process.env.CLAUDE_CONFIG_DIR = join(homedir(), '.asicode')
+-    const { getLocalAsicodePath } = await importFreshLocalInstaller()
+-
+-    expect(getLocalAsicodePath()).toBe(
+-      join(homedir(), '.asicode', 'local', 'asicode'),
+-    )
+-  })
+-
+   test('local installation detection matches .asicode path', async () => {
+     const { isManagedLocalInstallationPath } =
+       await importFreshLocalInstaller()
+diff --git a/src/utils/localInstaller.ts b/src/utils/localInstaller.ts
+index 020617e..50abfdb 100644
+--- a/src/utils/localInstaller.ts
++++ b/src/utils/localInstaller.ts
+@@ -56,10 +56,6 @@ export function getLocalClaudePath(): string {
+   return join(getLocalInstallDir(), 'asicode')
+ }
+ 
+-// Alias retained for callers that imported it before the REQ-34
+-// rename collapsed the two paths into one.
+-export const getLocalAsicodePath = getLocalClaudePath
+-
+ /**
+  * Check if we're running from our managed local installation
+  */

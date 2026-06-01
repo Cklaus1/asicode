@@ -1,0 +1,95 @@
+diff --git a/scripts/asicode-submit.ts b/scripts/asicode-submit.ts
+index aecc4d2..c007dda 100644
+--- a/scripts/asicode-submit.ts
++++ b/scripts/asicode-submit.ts
+@@ -5,6 +5,10 @@
+ // Northstar use: `asicode-submit.ts brief.md && walk-away`.
+ // Exit: 0 ok, 1 brief unreadable, 2 setup/env error.
+ 
++// Install the MACRO.* runtime shim BEFORE any import that may transitively read
++// a build-time macro (e.g. the L2 reviewer's model call → fingerprint.ts). This
++// script runs unbuilt under `bun run`, so esbuild's define never substituted it.
++import '../src/utils/macroRuntimeShim'
+ import { spawn, spawnSync } from 'node:child_process'
+ import { createHash } from 'node:crypto'
+ import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+@@ -316,6 +320,12 @@ async function main() {
+   let gateVerdict: 'merged_no_intervention' | 'needs_human' | null = null
+   if (race && asicodeEnv('AUTONOMY_GATE') === '1') {
+     try {
++      // The L2 gatherer makes a real model call (queryHaiku/queryWithModel),
++      // which reads the global config (user id, api metadata). Unbuilt
++      // entrypoints must opt into config access before that guard fires;
++      // enableConfigs() is idempotent and a no-op once initialized.
++      const { enableConfigs } = await import('../src/utils/config.js')
++      enableConfigs()
+       const { runAutonomyGate, createGateGatherers } = await import('../src/services/autonomyGate/gather')
+       const { renderVerdictMarkdown, verdictInterventionReason } = await import('../src/services/autonomyGate/annotate')
+       // Risk class from A16 (a16_risk_class on the brief row); default to the
+diff --git a/src/utils/macroRuntimeShim.ts b/src/utils/macroRuntimeShim.ts
+new file mode 100644
+index 0000000..0f985a5
+--- /dev/null
++++ b/src/utils/macroRuntimeShim.ts
+@@ -0,0 +1,61 @@
++/**
++ * Runtime shim for the build-time `MACRO.*` globals.
++ *
++ * `MACRO.*` references are substituted by esbuild's `define` at build time (see
++ * scripts/build.ts) — in `dist/cli.mjs` they're inlined string literals. But
++ * unbuilt entrypoints run directly under `bun run` (e.g. scripts/asicode-submit.ts
++ * and the instrumentation CLIs), and any module they transitively import that
++ * reads `MACRO.VERSION` (e.g. src/utils/fingerprint.ts, reached via the L2
++ * self-review reviewer's model call) throws `ReferenceError: MACRO is not
++ * defined` because no bundler ran.
++ *
++ * Importing this module *first* installs a `globalThis.MACRO` with the same
++ * values build.ts defines, so those code paths work identically built or unbuilt.
++ * Idempotent: a real (build-injected) MACRO is left untouched, and a second
++ * import is a no-op.
++ *
++ * Usage: `import '../src/utils/macroRuntimeShim.js'` as the *first* import in an
++ * unbuilt entrypoint, before anything that might read MACRO.
++ */
++
++// Values mirror scripts/build.ts `define`. VERSION stays the high internal
++// compatibility version (passes first-party minimum-version guards); the
++// human-facing version is read from package.json for DISPLAY_VERSION.
++function resolveDisplayVersion(): string {
++  try {
++    // package.json sits at the repo root; resolve relative to this file.
++    // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
++    const pkg = require('../../package.json') as { version?: string }
++    return pkg.version ?? '0.0.0'
++  } catch {
++    return '0.0.0'
++  }
++}
++
++interface MacroShape {
++  VERSION: string
++  DISPLAY_VERSION: string
++  BUILD_TIME: string
++  ISSUES_EXPLAINER: string
++  PACKAGE_URL: string
++  NATIVE_PACKAGE_URL: string | undefined
++  FEEDBACK_CHANNEL?: string
++  VERSION_CHANGELOG?: Record<string, string[]>
++}
++
++const g = globalThis as typeof globalThis & { MACRO?: MacroShape }
++
++if (typeof g.MACRO === 'undefined') {
++  g.MACRO = {
++    VERSION: '99.0.0',
++    DISPLAY_VERSION: resolveDisplayVersion(),
++    BUILD_TIME: new Date(0).toISOString(),
++    ISSUES_EXPLAINER: 'report the issue at https://github.com/anthropics/claude-code/issues',
++    PACKAGE_URL: '@gitlawb/asicode',
++    NATIVE_PACKAGE_URL: undefined,
++    FEEDBACK_CHANNEL: undefined,
++    VERSION_CHANGELOG: {},
++  }
++}
++
++export {}

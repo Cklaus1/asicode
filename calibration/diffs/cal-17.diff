@@ -1,0 +1,209 @@
+diff --git a/migrations/instrumentation/0007-verify-stderr-on-runs.sql b/migrations/instrumentation/0007-verify-stderr-on-runs.sql
+new file mode 100644
+index 0000000..fa167ab
+--- /dev/null
++++ b/migrations/instrumentation/0007-verify-stderr-on-runs.sql
+@@ -0,0 +1,40 @@
++-- Migration 0007: REQ-21. Persist verifier stderr tail per run.
++--
++-- REQ-20 gates auto-PR when the verifier fails. But the user sees
++-- "verify=failed" with no diagnostic — they have to grep run logs to
++-- find what actually broke. The dispatcher already captures a 2k
++-- stderr tail (REQ-18); we just need to write it.
++--
++-- Additive-only TEXT column; null for runs that didn't run a verifier
++-- (pre-REQ-18) and for runs where the verifier passed cleanly with
++-- nothing on stderr.
++
++PRAGMA journal_mode = WAL;
++PRAGMA foreign_keys = ON;
++
++BEGIN;
++
++ALTER TABLE runs ADD COLUMN verify_stderr_tail TEXT;
++
++INSERT INTO _schema_version (version, applied_at, description)
++VALUES (
++  7,
++  CAST((julianday('now') - 2440587.5) * 86400 * 1000 AS INTEGER),
++  'verify_stderr_tail column on runs — REQ-21, surfaces verifier failure detail'
++);
++
++COMMIT;
++
++-- Post-migration sanity check
++SELECT CASE
++  WHEN COUNT(*) = 1 THEN 'ok: verify_stderr_tail column added'
++  ELSE 'FAIL: column missing'
++END AS column_check
++FROM pragma_table_info('runs')
++WHERE name = 'verify_stderr_tail';
++
++SELECT CASE
++  WHEN MAX(version) = 7 THEN 'ok: schema at version 7'
++  ELSE 'FAIL: schema version not advanced'
++END AS version_check
++FROM _schema_version;
+diff --git a/scripts/asicode-status.test.ts b/scripts/asicode-status.test.ts
+index b9a9044..e3389d9 100644
+--- a/scripts/asicode-status.test.ts
++++ b/scripts/asicode-status.test.ts
+@@ -328,3 +328,68 @@ describe('REQ-19 verify_outcome', () => {
+     expect(parsed.runs[0].verify).toBeNull()
+   })
+ })
++
++// REQ-21: stderr tail persistence + surfacing.
++describe('REQ-21 verify_stderr_tail', () => {
++  function seedRacerWithStderr(db: Database, runId: string, briefId: string, attempt: number, winner: boolean, verify: 'passed' | 'failed' | 'verifier_error', stderrTail: string | null) {
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome, attempt_index, was_race_winner,
++                         verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail)
++       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++      [runId, briefId, Date.now() - 5000 + attempt, Date.now() - 1000 + attempt, 'worktree', 'completed', attempt, winner ? 1 : 0,
++       verify, verify === 'passed' ? 0 : 1, 200, stderrTail],
++    )
++  }
++
++  test('text: failing winner shows first stderr line as snippet', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_s1')
++    seedRacerWithStderr(db, 'run_w', 'brf_s1', 0, true, 'failed', 'TypeError: cannot read property foo of undefined\n  at line 42\n')
++    seedRacerWithStderr(db, 'run_l', 'brf_s1', 1, false, 'failed', 'other error')
++    db.close()
++    const r = run(['brf_s1'])
++    expect(r.code).toBe(0)
++    expect(r.stdout).toContain('stderr:')
++    expect(r.stdout).toContain('TypeError: cannot read property foo')
++    // 2nd line / loser's stderr not surfaced in text
++    expect(r.stdout).not.toContain('other error')
++  })
++
++  test('text: passing winner does NOT emit stderr line', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_s2')
++    seedRacerWithStderr(db, 'run_a', 'brf_s2', 0, true, 'passed', null)
++    seedRacerWithStderr(db, 'run_b', 'brf_s2', 1, false, 'failed', 'some failure')
++    db.close()
++    const r = run(['brf_s2'])
++    expect(r.code).toBe(0)
++    expect(r.stdout).not.toContain('stderr:')
++  })
++
++  test('text: snippet truncated to 200 chars + ellipsis', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_s3')
++    const long = 'X'.repeat(300)
++    seedRacerWithStderr(db, 'run_a', 'brf_s3', 0, true, 'failed', long)
++    seedRacerWithStderr(db, 'run_b', 'brf_s3', 1, false, 'failed', 'shorter')
++    db.close()
++    const r = run(['brf_s3'])
++    // Snippet should fit in 200 chars, ending with '…'
++    const m = r.stdout.match(/stderr: (.*)$/m)
++    expect(m).not.toBeNull()
++    expect(m![1].length).toBeLessThanOrEqual(200)
++    expect(m![1].endsWith('…')).toBe(true)
++  })
++
++  test('--json: full stderr_tail exposed in runs[].verify', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_s4')
++    seedRacerWithStderr(db, 'run_a', 'brf_s4', 0, true, 'failed', 'big stack trace\n  here\n')
++    seedRacerWithStderr(db, 'run_b', 'brf_s4', 1, false, 'failed', null)
++    db.close()
++    const r = run(['brf_s4', '--json'])
++    const parsed = JSON.parse(r.stdout)
++    const winner = parsed.runs.find((rr: { run_id: string }) => rr.run_id === 'run_a')
++    expect(winner.verify.stderr_tail).toContain('big stack trace')
++  })
++})
+diff --git a/scripts/asicode-status.ts b/scripts/asicode-status.ts
+index ecf6099..53f5560 100644
+--- a/scripts/asicode-status.ts
++++ b/scripts/asicode-status.ts
+@@ -33,7 +33,7 @@ interface BriefRow {
+   pr_number: number | null;
+   reverted_within_7d: number; hotpatched_within_7d: number;
+ }
+-interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null }
++interface RunRow { run_id: string; ts_started: number; ts_completed: number | null; outcome: string; isolation_mode: string; wall_clock_ms: number | null; tokens_used: number | null; was_race_winner: number; attempt_index: number; verify_outcome: string | null; verify_exit_code: number | null; verify_duration_ms: number | null; verify_stderr_tail: string | null }
+ interface JudgeSummary { rows: number; composite: number | null }
+ type ShipItSummary = { verdict: 'ship_it' | 'hold' | 'rollback'; reasons: string[]; signalsAvailable: number } | null
+ 
+@@ -82,7 +82,7 @@ function main() {
+ 
+   const runs = db.query<RunRow, [string]>(
+     `SELECT run_id, ts_started, ts_completed, outcome, isolation_mode, wall_clock_ms, tokens_used, was_race_winner, attempt_index,
+-            verify_outcome, verify_exit_code, verify_duration_ms
++            verify_outcome, verify_exit_code, verify_duration_ms, verify_stderr_tail
+      FROM runs WHERE brief_id = ? ORDER BY ts_started DESC`,
+   ).all(args.briefId!)
+ 
+@@ -113,7 +113,7 @@ function main() {
+         outcome: r.outcome, isolation_mode: r.isolation_mode,
+         wall_clock_ms: r.wall_clock_ms, tokens_used: r.tokens_used,
+         was_race_winner: r.was_race_winner === 1, attempt_index: r.attempt_index,
+-        verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms } : null,
++        verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms, stderr_tail: r.verify_stderr_tail } : null,
+       })),
+       pr: (brief.pr_sha || brief.pr_number !== null) ? {
+         sha: brief.pr_sha, outcome: brief.pr_outcome,
+@@ -155,6 +155,17 @@ function main() {
+       if (failed) parts.push(`${failed} failed`)
+       if (errored) parts.push(`${errored} errored`)
+       console.log(`  verify       ${parts.join(', ')}`)
++      // REQ-21: when the winner failed, show a short stderr snippet so
++      // the user can debug without grepping run logs. First non-empty
++      // line, capped at 200 chars.
++      const winner = winnerRun
++      if (winner && winner.verify_outcome && winner.verify_outcome !== 'passed' && winner.verify_stderr_tail) {
++        const firstLine = winner.verify_stderr_tail.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''
++        if (firstLine) {
++          const snippet = firstLine.length > 200 ? `${firstLine.slice(0, 197)}…` : firstLine
++          console.log(`               stderr: ${snippet}`)
++        }
++      }
+     }
+   }
+   if (brief.pr_number !== null && !brief.pr_sha) {
+diff --git a/src/services/instrumentation/client.ts b/src/services/instrumentation/client.ts
+index 152b077..ff73039 100644
+--- a/src/services/instrumentation/client.ts
++++ b/src/services/instrumentation/client.ts
+@@ -36,7 +36,7 @@ import {
+   type ToolCallRecord,
+ } from './types'
+ 
+-const SCHEMA_VERSION_REQUIRED = 6
++const SCHEMA_VERSION_REQUIRED = 7
+ 
+ let _db: Database | null = null
+ 
+diff --git a/src/services/instrumentation/types.ts b/src/services/instrumentation/types.ts
+index 952d0fd..2b1eedd 100644
+--- a/src/services/instrumentation/types.ts
++++ b/src/services/instrumentation/types.ts
+@@ -263,6 +263,9 @@ export const RunUpdateSchema = z.object({
+   verify_outcome: VerifyOutcomeSchema.optional(),
+   verify_exit_code: z.number().int().optional(),
+   verify_duration_ms: z.number().int().nonnegative().optional(),
++  // REQ-21: truncated stderr tail (≤2k) captured by the verifier. Null
++  // when no verifier ran or the verifier had no stderr output.
++  verify_stderr_tail: z.string().optional(),
+ })
+ 
+ export type RunUpdate = z.infer<typeof RunUpdateSchema>
+diff --git a/src/services/parallel/dispatcher.ts b/src/services/parallel/dispatcher.ts
+index b9064e2..bba5046 100644
+--- a/src/services/parallel/dispatcher.ts
++++ b/src/services/parallel/dispatcher.ts
+@@ -239,6 +239,9 @@ export async function raceAgents(input: RaceInput): Promise<RaceResult> {
+           verify_outcome: r.verify.outcome,
+           verify_exit_code: r.verify.exitCode ?? undefined,
+           verify_duration_ms: r.verify.durationMs,
++          // REQ-21: persist stderr tail only when non-empty so passed
++          // racers don't bloat the runs table with empty strings.
++          ...(r.verify.stderrTail.length > 0 ? { verify_stderr_tail: r.verify.stderrTail } : {}),
+         } : {}),
+       })
+     } catch { /* db unavailable */ }

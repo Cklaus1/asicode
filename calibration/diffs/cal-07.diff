@@ -1,0 +1,66 @@
+diff --git a/bin/asicode b/bin/asicode
+index 0806c48..cac4966 100755
+--- a/bin/asicode
++++ b/bin/asicode
+@@ -1,8 +1,8 @@
+-#!/usr/bin/env node
+-// REQ-8.2: asicode CLI binary. Delegates to the openclaude entrypoint
+-// so existing dist/cli.mjs is the single bundle; the alias is just a
+-// different bin name on PATH. Both `asicode` and `openclaude` invoke
+-// the same compiled CLI until the openclaude alias is retired.
++#!/usr/bin/env bun
++// asicode CLI bin. Bundled dist/cli.mjs contains `import "bun:sqlite"`
++// (instrumentation client), which Node refuses to resolve — so the
++// shim runs under bun. `bun` is already a hard engine requirement per
++// package.json.
+ import { existsSync } from 'fs'
+ import { join, dirname } from 'path'
+ import { fileURLToPath, pathToFileURL } from 'url'
+diff --git a/package.json b/package.json
+index 47a59c4..c885661 100644
+--- a/package.json
++++ b/package.json
+@@ -13,7 +13,7 @@
+   ],
+   "scripts": {
+     "build": "bun run scripts/build.ts",
+-    "dev": "bun run build && node dist/cli.mjs",
++    "dev": "bun run build && bun dist/cli.mjs",
+     "dev:profile": "bun run scripts/provider-launch.ts",
+     "dev:profile:fast": "bun run scripts/provider-launch.ts auto --fast --bare",
+     "dev:codex": "bun run scripts/provider-launch.ts codex",
+@@ -32,7 +32,7 @@
+     "dev:code": "bun run profile:code && bun run dev:profile",
+     "dev:grpc": "bun run scripts/start-grpc.ts",
+     "dev:grpc:cli": "bun run scripts/grpc-cli.ts",
+-    "start": "node dist/cli.mjs",
++    "start": "bun dist/cli.mjs",
+     "web:dev": "bun run --cwd web dev",
+     "web:build": "bun run --cwd web build",
+     "web:preview": "bun run --cwd web preview",
+@@ -43,7 +43,7 @@
+     "security:pr-scan": "bun run scripts/pr-intent-scan.ts",
+     "test:provider-recommendation": "bun test src/utils/providerRecommendation.test.ts src/utils/providerProfile.test.ts",
+     "typecheck": "tsc --noEmit",
+-    "smoke": "bun run build && node dist/cli.mjs --version",
++    "smoke": "bun run build && bun dist/cli.mjs --version",
+     "verify:privacy": "bun run scripts/verify-no-phone-home.ts",
+     "build:verified": "bun run build && bun run verify:privacy",
+     "test:provider": "bun test src/services/api/*.test.ts src/utils/context.test.ts",
+diff --git a/src/bin-alias.test.ts b/src/bin-alias.test.ts
+index 9e22eb2..2f65da2 100644
+--- a/src/bin-alias.test.ts
++++ b/src/bin-alias.test.ts
+@@ -15,6 +15,12 @@ describe('bin/asicode', () => {
+     const a = readFileSync(join(ROOT, 'bin', 'asicode'), 'utf-8')
+     expect(a).toContain("'cli.mjs'")
+   })
++  // REQ-57: dist/cli.mjs uses bun:sqlite (instrumentation) which Node
++  // refuses to resolve. Shim must use bun, not node.
++  test('shebang uses bun (bun:sqlite is bundled in dist)', () => {
++    const a = readFileSync(join(ROOT, 'bin', 'asicode'), 'utf-8')
++    expect(a.split('\n')[0]).toBe('#!/usr/bin/env bun')
++  })
+   test('package.json bin map points to it', () => {
+     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'))
+     expect(pkg.bin?.asicode).toBe('./bin/asicode')

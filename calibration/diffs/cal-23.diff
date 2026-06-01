@@ -1,0 +1,667 @@
+diff --git a/docs/AUTONOMY_CONTRACT.md b/docs/AUTONOMY_CONTRACT.md
+index b357d22..b9f16e4 100644
+--- a/docs/AUTONOMY_CONTRACT.md
++++ b/docs/AUTONOMY_CONTRACT.md
+@@ -123,9 +123,12 @@ replayable from the recorded signals alone — an auditor can re-derive any hist
+ 
+ ## How it wires into the run (activation)
+ 
+-The gate is **built and unit-tested but not yet on the submit path** — wiring it is a deliberate,
+-reviewable step because it sits in the autonomous merge path. The seam is `scripts/asicode-submit.ts`,
+-between `raceAgents` (the winner exists, in `winnerWorktree`) and `openWinnerPr`:
++**Status: wired (REQ-74), annotate-only, behind `ASICODE_AUTONOMY_GATE=1`.** The gate runs on the
++submit path between `raceAgents` (the winner exists, in `winnerWorktree`) and `openWinnerPr`. It is
++default-off; when the flag is set it composes the verdict, threads `renderVerdictMarkdown(verdict)` into
++the PR body, and records `pr_outcome` (`merged_no_intervention` / `needs_human`) plus an
++`intervention_reason` on the brief row. The PR still opens regardless (annotate-only — no gate-the-PR
++yet). The seam:
+ 
+ ```
+ raceAgents → winner worktree
+@@ -151,8 +154,12 @@ raceAgents → winner worktree
+   required gate can stall the walk-away loop. Graduate to this only after annotate-only shows the
+   verdict is trustworthy on real briefs.
+ 
+-Until activated, the contract is enforceable-on-demand (any caller can `composeVerdict`) but not yet
+-enforced-by-default.
++**Known limitation (REQ-74):** the L1, L2, and judges gatherers evaluate the winner's pre-merge diff
++directly. Density and adversarial are partially blind pre-merge — the density harness is sha-keyed
++(reads a committed sha, not a worktree diff), so on a candidate refactor the density gatherer returns a
++*missing* signal, which (correctly, per the one rule) holds `production`/`security` refactors for human
++review rather than fabricating a pass. Making density diff-driven is the follow-up that lets refactors
++clear the gate hands-off. Until then, the gate fails safe.
+ 
+ ---
+ 
+diff --git a/scripts/asicode-submit.ts b/scripts/asicode-submit.ts
+index 84f953a..2934c8a 100644
+--- a/scripts/asicode-submit.ts
++++ b/scripts/asicode-submit.ts
+@@ -233,6 +233,8 @@ async function main() {
+     racerCount: number
+     verifyCmd: string | null
+     baselineVerify: string | null
++    // REQ-74: winner diff for the autonomy gate (L2/judges run on it)
++    winnerDiff: string
+   } | null = null
+   let raceError: string | null = null
+   if (shouldStart && args.race >= 2) {
+@@ -259,6 +261,7 @@ async function main() {
+           racerCount: r.racers.length,
+           verifyCmd: r.verifyCmd,
+           baselineVerify: r.baselineVerify,
++          winnerDiff: r.winnerDiff,
+         }
+       }
+       else {
+@@ -296,11 +299,55 @@ async function main() {
+       prGated = `winner verify=${race.winnerVerify}; pass --force-pr or ASICODE_AUTO_PR_FORCE=1 to open anyway`
+     }
+   }
++  // REQ-74: Autonomy Contract gate. When ASICODE_AUTONOMY_GATE=1, compose the
++  // per-risk-class verifier signals into one verdict between the race and the
++  // PR. Annotate-only: the verdict + blockers are threaded into the PR body and
++  // the brief's pr_outcome is set to merged_no_intervention / needs_human, but
++  // the PR still opens (no gate-the-PR yet — see docs/AUTONOMY_CONTRACT.md).
++  let gateAnnotation: string | undefined
++  let gateOutcome: 'merged_no_intervention' | 'needs_human' | null = null
++  if (race && args.autoPr && !prGated && asicodeEnv('AUTONOMY_GATE') === '1') {
++    try {
++      const { runAutonomyGate, createGateGatherers } = await import('../src/services/autonomyGate/gather')
++      const { renderVerdictMarkdown, verdictInterventionReason } = await import('../src/services/autonomyGate/annotate')
++      // Risk class from A16 (a16_risk_class on the brief row); default to the
++      // conservative 'production' when A16 didn't classify — more gates, fails
++      // safe (a needs_human is recoverable; a wrong auto-merge is not).
++      const { lookupRiskClass } = await import('../src/services/adversarial/trigger')
++      const riskClass = (lookupRiskClass(briefId) ?? 'production') as 'throwaway' | 'experimental' | 'production' | 'security'
++      const changedFiles = race.winnerDiff
++        .split('\n')
++        .filter(l => l.startsWith('+++ b/') || l.startsWith('--- a/'))
++        .map(l => l.replace(/^[+-]{3} [ab]\//, '').trim())
++        .filter((f, i, a) => f && f !== '/dev/null' && a.indexOf(f) === i)
++      const verdict = await runAutonomyGate(
++        {
++          briefId, briefText, diff: race.winnerDiff, changedFiles,
++          cwd: race.winnerWorktree, l1Passed: race.winnerVerify === 'passed', riskClass,
++        },
++        createGateGatherers(),
++      )
++      gateAnnotation = renderVerdictMarkdown(verdict)
++      gateOutcome = verdict.recommendedOutcome
++      // Record the verdict on the brief row (the merged_no_intervention numerator
++      // of Metric 1 is decided here). Soft-fail — never undo a real PR.
++      try {
++        updateBrief({
++          brief_id: briefId,
++          ...(verdict.mergeable ? {} : { intervention_reason: verdictInterventionReason(verdict) ?? 'autonomy-gate' }),
++        })
++      } catch (e) { console.error(`[autonomy-gate] updateBrief failed: ${e instanceof Error ? e.message : String(e)}`) }
++    } catch (e) {
++      console.error(`[autonomy-gate] failed (continuing without gate): ${e instanceof Error ? e.message : String(e)}`)
++    }
++  }
++
+   if (race && args.autoPr && !prGated) {
+     try {
+       const r = await openWinnerPr({
+         branch: race.winnerBranch, repoPath: args.cwd, worktreePath: race.winnerWorktree,
+         briefText, briefId, racerRunIds: race.racerRunIds,
++        ...(gateAnnotation ? { annotation: gateAnnotation } : {}),
+         // REQ-25: surface the verifier signal in the PR body when we
+         // ran one + know the winner's outcome.
+         ...(race.verifyCmd && race.winnerVerify && race.winnerVerifyDurationMs !== null
+@@ -320,7 +367,9 @@ async function main() {
+         // REQ-16: persist pr_number on the brief row so watch-merges
+         // links the merge sha back deterministically. Soft-fail: a db
+         // hiccup must not undo the actual PR that's already open.
+-        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber, pr_url: r.url }) }
++        // REQ-74: persist the autonomy-gate verdict as pr_outcome when the gate
++        // ran (annotate-only still records the decision for the Autonomy Index).
++        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber, pr_url: r.url, ...(gateOutcome ? { pr_outcome: gateOutcome } : {}) }) }
+         catch (e) { console.error(`[auto-pr] updateBrief(pr_number/url) failed (PR still open at ${r.url}): ${e instanceof Error ? e.message : String(e)}`) }
+       } else prError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
+     } catch (e) { prError = e instanceof Error ? e.message : String(e) }
+@@ -337,6 +386,7 @@ async function main() {
+     if (pr) out.pr = pr
+     else if (prGated) out.pr_gated = prGated
+     else if (prError) out.pr_error = prError
++    if (gateOutcome) out.autonomy_gate = gateOutcome
+     console.log(JSON.stringify(out))
+   }
+   else {
+diff --git a/src/services/autonomyGate/annotate.test.ts b/src/services/autonomyGate/annotate.test.ts
+new file mode 100644
+index 0000000..a41bc7f
+--- /dev/null
++++ b/src/services/autonomyGate/annotate.test.ts
+@@ -0,0 +1,49 @@
++import { describe, expect, test } from 'bun:test'
++import { renderVerdictMarkdown, verdictInterventionReason } from './annotate.js'
++import { composeVerdict } from './contract.js'
++
++describe('renderVerdictMarkdown', () => {
++  test('mergeable verdict renders a PASS headline and no blockers section', () => {
++    const v = composeVerdict('experimental', {
++      l1: { ran: true, passed: true },
++      l2: { ran: true, passed: true, detail: 'converged' },
++    })
++    const md = renderVerdictMarkdown(v)
++    expect(md).toContain('Autonomy gate: PASS')
++    expect(md).toContain('risk: experimental')
++    expect(md).not.toContain('### Blockers')
++  })
++
++  test('needs-human verdict renders blockers with reasons', () => {
++    const v = composeVerdict('production', {
++      l1: { ran: true, passed: true },
++      l2: { ran: true, passed: false, detail: '1 high finding' },
++      // judges + density missing
++    })
++    const md = renderVerdictMarkdown(v)
++    expect(md).toContain('NEEDS HUMAN')
++    expect(md).toContain('### Blockers')
++    expect(md).toContain('**l2** — failed: 1 high finding')
++    expect(md).toContain('**judges** — did not run')
++    expect(md).toContain('**density** — did not run')
++    expect(md).toContain('docs/AUTONOMY_CONTRACT.md')
++  })
++})
++
++describe('verdictInterventionReason', () => {
++  test('null when mergeable', () => {
++    const v = composeVerdict('throwaway', { l1: { ran: true, passed: true } })
++    expect(verdictInterventionReason(v)).toBeNull()
++  })
++  test('compact gate:reason list when blocked', () => {
++    const v = composeVerdict('production', {
++      l1: { ran: true, passed: true },
++      l2: { ran: true, passed: false },
++      // judges + density missing
++    })
++    const reason = verdictInterventionReason(v)
++    expect(reason).toContain('autonomy-gate:')
++    expect(reason).toContain('l2:failed')
++    expect(reason).toContain('judges:missing')
++  })
++})
+diff --git a/src/services/autonomyGate/annotate.ts b/src/services/autonomyGate/annotate.ts
+new file mode 100644
+index 0000000..1975f18
+--- /dev/null
++++ b/src/services/autonomyGate/annotate.ts
+@@ -0,0 +1,58 @@
++/**
++ * Render a GateVerdict into a markdown block for the PR body (annotate-only
++ * mode) and into a short `intervention_reason` string for the outcome row.
++ *
++ * Pure formatting — no policy. The verdict already decided; this just makes it
++ * legible to a human reviewer and to `instrumentation:report`.
++ */
++import type { GateVerdict } from './contract.js'
++
++const GLYPH: Record<string, string> = {
++  pass: '✓',
++  fail: '✗',
++  missing: '∅',
++  advisory: '·',
++}
++
++/**
++ * Markdown verdict block for the PR body. Leads with the headline (mergeable or
++ * needs-human), then a per-gate table, then the blocker reasons.
++ */
++export function renderVerdictMarkdown(verdict: GateVerdict): string {
++  const headline = verdict.mergeable
++    ? `## ✅ Autonomy gate: PASS — hands-off mergeable (risk: ${verdict.riskClass})`
++    : `## 🚧 Autonomy gate: NEEDS HUMAN (risk: ${verdict.riskClass})`
++
++  const rows = verdict.gates
++    .map(g => {
++      const req = g.required ? 'required' : 'advisory'
++      const detail = g.detail ? ` — ${g.detail}` : ''
++      return `| ${GLYPH[g.disposition] ?? '?'} ${g.gate} | ${g.disposition} | ${req}${detail} |`
++    })
++    .join('\n')
++
++  const table = `| gate | disposition | |\n|---|---|---|\n${rows}`
++
++  let blockers = ''
++  if (verdict.blockers.length > 0) {
++    const lines = verdict.blockers
++      .map(b => {
++        const why =
++          b.reason === 'gate_missing'
++            ? 'did not run (a required gate that does not run fails the verdict)'
++            : `failed${b.detail ? `: ${b.detail}` : ''}`
++        return `- **${b.gate}** — ${why}`
++      })
++      .join('\n')
++    blockers = `\n\n### Blockers\n\n${lines}\n\n> Per the Autonomy Contract, this change is held for human review. See docs/AUTONOMY_CONTRACT.md.`
++  }
++
++  return `${headline}\n\n${table}${blockers}`
++}
++
++/** Short one-line reason for the `briefs.intervention_reason` column. */
++export function verdictInterventionReason(verdict: GateVerdict): string | null {
++  if (verdict.mergeable) return null
++  const parts = verdict.blockers.map(b => `${b.gate}:${b.reason === 'gate_missing' ? 'missing' : 'failed'}`)
++  return `autonomy-gate: ${parts.join(', ')}`
++}
+diff --git a/src/services/autonomyGate/gather.test.ts b/src/services/autonomyGate/gather.test.ts
+new file mode 100644
+index 0000000..0418f61
+--- /dev/null
++++ b/src/services/autonomyGate/gather.test.ts
+@@ -0,0 +1,98 @@
++import { describe, expect, test } from 'bun:test'
++import { runAutonomyGate, type GateContext, type GateGatherers } from './gather.js'
++import type { GateSignal } from './contract.js'
++
++const ctx = (riskClass: GateContext['riskClass']): GateContext => ({
++  briefId: 'b1',
++  briefText: 'do the thing',
++  diff: 'diff --git a b',
++  changedFiles: ['a.ts'],
++  cwd: '/tmp/wt',
++  l1Passed: true,
++  riskClass,
++})
++
++const pass: GateSignal = { ran: true, passed: true }
++const fail: GateSignal = { ran: true, passed: false, detail: 'nope' }
++const missing: GateSignal = { ran: false }
++
++/** Build gatherers that record which gates were invoked. */
++function trackingGatherers(
++  overrides: Partial<Record<keyof GateGatherers, GateSignal>> = {},
++): { gatherers: GateGatherers; invoked: Set<string> } {
++  const invoked = new Set<string>()
++  const mk =
++    (name: keyof GateGatherers) =>
++    async (): Promise<GateSignal> => {
++      invoked.add(name)
++      return overrides[name] ?? pass
++    }
++  return {
++    invoked,
++    gatherers: {
++      l1: mk('l1'),
++      l2: mk('l2'),
++      judges: mk('judges'),
++      density: mk('density'),
++      adversarial: mk('adversarial'),
++    },
++  }
++}
++
++describe('runAutonomyGate — gathers only the required gates', () => {
++  test('throwaway gathers only l1', async () => {
++    const { gatherers, invoked } = trackingGatherers()
++    await runAutonomyGate(ctx('throwaway'), gatherers)
++    expect([...invoked].sort()).toEqual(['l1'])
++  })
++
++  test('production gathers l1+l2+judges+density, not adversarial', async () => {
++    const { gatherers, invoked } = trackingGatherers()
++    await runAutonomyGate(ctx('production'), gatherers)
++    expect([...invoked].sort()).toEqual(['density', 'judges', 'l1', 'l2'])
++  })
++
++  test('security gathers the full stack', async () => {
++    const { gatherers, invoked } = trackingGatherers()
++    await runAutonomyGate(ctx('security'), gatherers)
++    expect([...invoked].sort()).toEqual(['adversarial', 'density', 'judges', 'l1', 'l2'])
++  })
++})
++
++describe('runAutonomyGate — composes the verdict', () => {
++  test('all required pass → mergeable', async () => {
++    const { gatherers } = trackingGatherers()
++    const v = await runAutonomyGate(ctx('production'), gatherers)
++    expect(v.mergeable).toBe(true)
++    expect(v.recommendedOutcome).toBe('merged_no_intervention')
++  })
++
++  test('a required gatherer returning missing blocks (gate_missing)', async () => {
++    const { gatherers } = trackingGatherers({ density: missing })
++    const v = await runAutonomyGate(ctx('production'), gatherers)
++    expect(v.mergeable).toBe(false)
++    expect(v.blockers).toContainEqual({ gate: 'density', reason: 'gate_missing' })
++  })
++
++  test('a required gatherer returning fail blocks (gate_failed)', async () => {
++    const { gatherers } = trackingGatherers({ l2: fail })
++    const v = await runAutonomyGate(ctx('experimental'), gatherers)
++    expect(v.mergeable).toBe(false)
++    expect(v.blockers).toContainEqual({ gate: 'l2', reason: 'gate_failed', detail: 'nope' })
++  })
++
++  test('a gatherer that throws is coerced to missing (never a pass)', async () => {
++    const throwing: GateGatherers = {
++      l1: async () => pass,
++      l2: async () => {
++        throw new Error('boom')
++      },
++      judges: async () => pass,
++      density: async () => pass,
++      adversarial: async () => pass,
++    }
++    const v = await runAutonomyGate(ctx('experimental'), throwing)
++    expect(v.mergeable).toBe(false)
++    expect(v.blockers).toContainEqual({ gate: 'l2', reason: 'gate_missing' })
++  })
++})
+diff --git a/src/services/autonomyGate/gather.ts b/src/services/autonomyGate/gather.ts
+new file mode 100644
+index 0000000..1dab04f
+--- /dev/null
++++ b/src/services/autonomyGate/gather.ts
+@@ -0,0 +1,262 @@
++/**
++ * Signal gathering + orchestration for the Autonomy Contract.
++ *
++ * `contract.ts` is pure policy: given signals, decide. This module is the
++ * bridge from the live subsystems (L2 self-review, the 3-panel judge, density
++ * A/B, A15 adversarial) to those signals, and then to a verdict.
++ *
++ * Dependency-injection on purpose (mirrors selfReview/production.ts's
++ * `createSelfReviewDeps`): the gatherers are seams. Tests inject deterministic
++ * gatherers; the production factory (`createGateGatherers`) wires the real
++ * `*Await` triggers. That keeps the orchestration logic unit-testable without
++ * spinning up model calls, and keeps the heavy trigger imports lazy so the
++ * submit script doesn't pull the whole judge pipeline at module load.
++ *
++ * The contract's invariant carries through here unchanged: a gatherer that
++ * returns `{ ran: false }` (gate disabled, no diff, lookup failed) produces a
++ * missing signal, which `composeVerdict` fails when that gate is required. We
++ * never synthesize a passing signal from absence.
++ */
++import {
++  composeVerdict,
++  composite,
++  densitySignal,
++  judgesSignal,
++  l2Signal,
++  DEFAULT_THRESHOLDS,
++  REQUIRED_GATES,
++  type ContractThresholds,
++  type GateName,
++  type GateSignal,
++  type GateSignals,
++  type GateVerdict,
++  type RiskClass,
++} from './contract.js'
++
++/** Everything the gatherers need to evaluate one candidate merge. */
++export interface GateContext {
++  briefId: string
++  briefText: string
++  /** The winner's uncommitted diff vs base (race.winnerDiff). */
++  diff: string
++  changedFiles: string[]
++  /** The winner worktree path — where L2's recompute + git operations run. */
++  cwd: string
++  /** L1 verifier outcome from the race (winner verify). */
++  l1Passed: boolean
++  riskClass: RiskClass
++  /**
++   * Optional pre-computed density A/B result. The live density harness is
++   * sha-keyed (reads a committed sha), so it can't evaluate a pre-merge
++   * worktree diff; until a diff-driven harness lands, a caller that has a real
++   * result (e.g. post-merge, or a future diff-driven path) supplies it here.
++   * Absent → the density gatherer returns a missing signal (blocks where
++   * required, rather than fabricating a pass).
++   */
++  densityAb?: { isRefactor: boolean; densityCounted?: boolean; densityDelta?: number }
++}
++
++/**
++ * One gatherer per gate. Each returns a GateSignal (or `{ ran: false }`). They
++ * are independent and may run concurrently; none may throw — a gatherer that
++ * hits an error returns `{ ran: false }` so the contract treats it as missing
++ * signal, never as a pass.
++ */
++export interface GateGatherers {
++  l1: (ctx: GateContext) => Promise<GateSignal>
++  l2: (ctx: GateContext) => Promise<GateSignal>
++  judges: (ctx: GateContext) => Promise<GateSignal>
++  density: (ctx: GateContext) => Promise<GateSignal>
++  adversarial: (ctx: GateContext) => Promise<GateSignal>
++}
++
++/**
++ * Run the gatherers required for the context's risk class, compose the verdict.
++ *
++ * Only the *required* gates for the risk class are gathered — there's no point
++ * paying judge latency on a `throwaway`. Advisory gates are left unmeasured
++ * (the contract records them as `advisory`, not `missing`, since they're not
++ * required). Required gatherers run concurrently; a gatherer that rejects is
++ * coerced to a missing signal (defence in depth — gatherers shouldn't throw).
++ */
++export async function runAutonomyGate(
++  ctx: GateContext,
++  gatherers: GateGatherers,
++  thresholds: ContractThresholds = DEFAULT_THRESHOLDS,
++): Promise<GateVerdict> {
++  const required = REQUIRED_GATES[ctx.riskClass]
++  const signals: GateSignals = {}
++
++  await Promise.all(
++    required.map(async (gate: GateName) => {
++      try {
++        signals[gate] = await gatherers[gate](ctx)
++      } catch {
++        signals[gate] = { ran: false }
++      }
++    }),
++  )
++
++  return composeVerdict(ctx.riskClass, signals, thresholds)
++}
++
++// ─── Production gatherers ────────────────────────────────────────────────────
++// Thin adapters from each live `*Await` trigger to a GateSignal. Heavy imports
++// are dynamic so this module stays light until a gate actually runs.
++
++/**
++ * L1: the race already ran the verifier on the winner; we just lift its
++ * pass/fail into a signal. No subsystem call needed.
++ */
++async function gatherL1(ctx: GateContext): Promise<GateSignal> {
++  return { ran: true, passed: ctx.l1Passed, detail: ctx.l1Passed ? 'verifier passed' : 'verifier did not pass' }
++}
++
++/**
++ * L2: run the self-review loop on the winner diff via the production deps
++ * (real reviewer invoker, git recompute, review-only fixer). Maps the
++ * BriefReviewOutcome into a signal through `l2Signal`.
++ */
++async function gatherL2(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
++  const { runBriefReviewIfEnabled } = await import('../selfReview/briefCompletionHook.js')
++  const { createSelfReviewDeps } = await import('../selfReview/production.js')
++  const { meetsBar } = await import('../selfReview/findingsSchema.js')
++
++  const review = await runBriefReviewIfEnabled({
++    taskId: ctx.briefId,
++    diff: ctx.diff,
++    changedFiles: ctx.changedFiles,
++    // Honour the L2 blocking bar from the contract thresholds.
++    settings: { enabled: true, severityBar: thresholds.l2BlockingBar },
++    cwd: ctx.cwd,
++    deps: createSelfReviewDeps({ cwd: ctx.cwd }),
++  })
++
++  if (!review.ran) return { ran: false }
++  const unresolvedBlocking = review.unresolvedFindings.filter(f =>
++    meetsBar(f.severity, thresholds.l2BlockingBar),
++  ).length
++  return l2Signal({
++    ran: true,
++    outcome: review.outcome,
++    unresolvedBlocking,
++  })
++}
++
++/**
++ * Judges: run the 3-panel judge on the winner diff. We pass the diff directly
++ * (the trigger's `prSha` is only used to fetch a diff when none is supplied),
++ * so the panel scores the pre-merge winner rather than a merged sha.
++ */
++async function gatherJudges(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
++  const { judgeOnPrMergeAwait } = await import('../judges/trigger.js')
++  // prSha is required by the input type but unused when diff is provided; a
++  // stable synthetic value keeps any caching keyed per-brief.
++  const result = await judgeOnPrMergeAwait({
++    briefId: ctx.briefId,
++    prSha: `pre-merge-${ctx.briefId}`,
++    briefText: ctx.briefText,
++    diff: ctx.diff,
++    cwd: ctx.cwd,
++  })
++  if (!result) return { ran: false } // judges disabled or no registry
++  const scores = result.judges.map(j => ({
++    ok: j.ok,
++    scores: j.ok
++      ? {
++          correctness: j.response.scores.correctness,
++          code_review: j.response.scores.code_review,
++          qa_risk: j.response.scores.qa_risk,
++        }
++      : undefined,
++  }))
++  return judgesSignal({ complete: result.complete, composite: composite(scores) }, thresholds)
++}
++
++/**
++ * Density: required for `production`/`security` on refactors.
++ *
++ * The live density harness (`classifyRefactor` + `recordDensity`) is sha-keyed:
++ * it reads a *committed* sha via `git log`/`git show`, not a worktree's
++ * uncommitted diff. The pre-merge gate runs before the winner is committed to a
++ * landable sha, so the harness can't evaluate it here without a refactor to
++ * make it diff-driven (tracked as follow-up; see AUTONOMY_CONTRACT.md "S1").
++ *
++ * Until that lands, density is gathered post-merge by the existing
++ * `densityOnPrMerge` trigger, and the pre-merge gate returns a **missing
++ * signal** when density is required and the change is a candidate refactor. Per
++ * the contract that fails the verdict → `needs_human`, which is the safe
++ * reading: we don't fabricate a density pass we couldn't actually measure.
++ *
++ * `injectedAb` lets the call site (or a future diff-driven harness) supply a
++ * real result; when present we score it properly.
++ */
++async function gatherDensity(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
++  const { isDensityEnabled } = await import('../instrumentation/density-trigger.js')
++  if (!isDensityEnabled()) return { ran: false }
++  if (ctx.densityAb) {
++    return densitySignal(ctx.densityAb, thresholds)
++  }
++  // No diff-driven A/B result available pre-merge — missing signal, blocks
++  // where required. Honest over a fabricated pass.
++  return { ran: false }
++}
++
++/**
++ * A15 adversarial: only required for `security`. Runs the adversarial verifier
++ * directly on the winner diff so we can read its severity counts (the sha-keyed
++ * `*OnPrMergeAwait` trigger returns `{ persisted }` without a verdict). The
++ * adversary "passes" iff it found nothing at or above the blocking bar.
++ *
++ * If the verifier can't run (disabled, no provider, error), this returns a
++ * missing signal — which fails the security gate. Security changes do not
++ * auto-merge on an unrun adversary.
++ */
++async function gatherAdversarial(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
++  const { isAdversarialEnabled } = await import('../adversarial/trigger.js')
++  if (!isAdversarialEnabled()) return { ran: false }
++  const { createCachedProvider } = await import('../trigger-shared/cachedProvider.js')
++  const provider = createCachedProvider({ warnTag: 'autonomy-gate-adversarial' }).getProvider()
++  if (!provider) return { ran: false }
++  const { adversarialVerify } = await import('../adversarial/verifier.js')
++  const { meetsBar, SEVERITIES } = await import('../selfReview/findingsSchema.js')
++
++  const result = await adversarialVerify({
++    briefText: ctx.briefText,
++    diff: ctx.diff,
++    provider,
++  }).catch(() => null)
++  if (!result || !result.ok) return { ran: false }
++
++  // Block iff the adversary surfaced any finding at/above the blocking bar.
++  const counts = result.counts
++  const blocking = SEVERITIES.filter(sev => meetsBar(sev, thresholds.l2BlockingBar)).reduce(
++    (n, sev) => n + (counts[sev] ?? 0),
++    0,
++  )
++  const passed = blocking === 0
++  return {
++    ran: true,
++    passed,
++    value: blocking,
++    detail: passed
++      ? 'adversary found no blocking exploit'
++      : `adversary found ${blocking} finding(s) at/above the ${thresholds.l2BlockingBar} bar`,
++  }
++}
++
++/**
++ * Production gatherer bundle. Each adapter lazy-imports its subsystem and maps
++ * the native result to a signal via the contract's adapters.
++ */
++export function createGateGatherers(
++  thresholds: ContractThresholds = DEFAULT_THRESHOLDS,
++): GateGatherers {
++  return {
++    l1: gatherL1,
++    l2: ctx => gatherL2(ctx, thresholds),
++    judges: ctx => gatherJudges(ctx, thresholds),
++    density: ctx => gatherDensity(ctx, thresholds),
++    adversarial: ctx => gatherAdversarial(ctx, thresholds),
++  }
++}
+diff --git a/src/services/parallel/openWinnerPr.ts b/src/services/parallel/openWinnerPr.ts
+index d67d663..699a69d 100644
+--- a/src/services/parallel/openWinnerPr.ts
++++ b/src/services/parallel/openWinnerPr.ts
+@@ -57,6 +57,11 @@ export interface OpenWinnerPrInput {
+      *  failure is inherited red, not a regression introduced by this PR. */
+     baselineOutcome?: 'passed' | 'failed' | 'verifier_error' | null
+   }
++  /** REQ-74: Autonomy Contract verdict block, rendered verbatim into the PR
++   *  body. Annotate-only mode threads the gate's mergeable/needs-human verdict
++   *  and its blockers here so a human (or a merge bot) sees exactly why the
++   *  change did or didn't clear the bar. Markdown; rendered after Verification. */
++  annotation?: string
+ }
+ 
+ export function isAutoPrEnabled(): boolean {
+@@ -86,6 +91,7 @@ export function buildPrBody(input: {
+   briefText: string
+   racerRunIds?: string[]
+   verify?: OpenWinnerPrInput['verify']
++  annotation?: string
+ }): string {
+   const head = input.briefText.split('\n').slice(0, 20).join('\n')
+   // REQ-25: verifier section. Renders first when present — reviewers
+@@ -122,7 +128,10 @@ ${input.verify.cmd}
+   const racers = input.racerRunIds && input.racerRunIds.length > 0
+     ? `\n\n## Race\n\n${input.racerRunIds.length} racers, winner picked by verifier rank (REQ-18) → tiebreak/FCFS.\nRacer run ids: ${input.racerRunIds.join(', ')}`
+     : ''
+-  return `Brief: \`${input.briefId}\`\n\n${verifySection}## Original brief\n\n${head}${racers}\n\n---\n\n🤖 Opened by asicode (REQ-15 auto-PR).`
++  // REQ-74: Autonomy Contract verdict, rendered right after Verification so
++  // the hands-off decision is up front.
++  const annotation = input.annotation ? `${input.annotation}\n\n` : ''
++  return `Brief: \`${input.briefId}\`\n\n${verifySection}${annotation}## Original brief\n\n${head}${racers}\n\n---\n\n🤖 Opened by asicode (REQ-15 auto-PR).`
+ }
+ 
+ export async function openWinnerPr(input: OpenWinnerPrInput): Promise<OpenWinnerPrResult> {
+@@ -139,7 +148,7 @@ export async function openWinnerPr(input: OpenWinnerPrInput): Promise<OpenWinner
+   // 3. Open the PR via gh.
+   const base = input.base ?? 'main'
+   const title = buildPrTitle(input.briefText)
+-  const body = buildPrBody({ briefId: input.briefId, briefText: input.briefText, racerRunIds: input.racerRunIds, verify: input.verify })
++  const body = buildPrBody({ briefId: input.briefId, briefText: input.briefText, racerRunIds: input.racerRunIds, verify: input.verify, annotation: input.annotation })
+   const r = await createPrFromBranch({ branch: input.branch, base, title, body, repoPath: input.repoPath, timeoutMs })
+   if (!r.ok) {
+     if (r.reason === 'already_exists') return { ok: false, reason: 'gh_failed', detail: 'pr already exists for branch', branch: input.branch }

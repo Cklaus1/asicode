@@ -1,0 +1,106 @@
+diff --git a/scripts/asicode-status.test.ts b/scripts/asicode-status.test.ts
+index de2d2b1..2ee3d9e 100644
+--- a/scripts/asicode-status.test.ts
++++ b/scripts/asicode-status.test.ts
+@@ -514,6 +514,52 @@ describe('REQ-37 stale in-flight detection', () => {
+     expect(parsed.runs[0].stale).toBe(false)
+   })
+ 
++  // REQ-44: log_path reconstruction
++  test('log_path: single-spawn (in_process) uses brief_id', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_log1')
++    seedRun(db, 'run_l1', 'brf_log1', { outcome: 'in_flight' })
++    db.close()
++    const r = run(['brf_log1', '--json'])
++    const parsed = JSON.parse(r.stdout)
++    expect(parsed.runs[0].log_path).toContain('brf_log1.log')
++  })
++
++  test('log_path: race (worktree isolation) uses run_id', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_log2')
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome)
++       VALUES (?, ?, ?, ?, ?)`,
++      ['run_w_abc', 'brf_log2', Date.now(), 'worktree', 'completed'],
++    )
++    db.close()
++    const r = run(['brf_log2', '--json'])
++    const parsed = JSON.parse(r.stdout)
++    expect(parsed.runs[0].log_path).toContain('run_w_abc.log')
++    expect(parsed.runs[0].log_path).not.toContain('brf_log2.log')
++  })
++
++  test('log_path: ASICODE_RUN_LOG_DIR override honored', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_log3')
++    seedRun(db, 'run_l3', 'brf_log3', { outcome: 'in_flight' })
++    db.close()
++    const r = run(['brf_log3', '--json'], { ASICODE_RUN_LOG_DIR: '/custom/logs' })
++    const parsed = JSON.parse(r.stdout)
++    expect(parsed.runs[0].log_path).toBe('/custom/logs/brf_log3.log')
++  })
++
++  test('log_path surfaces in text output too', () => {
++    const db = new Database(dbPath)
++    seedBrief(db, 'brf_log4')
++    seedRun(db, 'run_l4', 'brf_log4', { outcome: 'completed' })
++    db.close()
++    const r = run(['brf_log4'])
++    expect(r.stdout).toContain('log:')
++    expect(r.stdout).toContain('brf_log4.log')
++  })
++
+   test('REQ-41: pr_url surfaces in text + JSON when set', () => {
+     const db = new Database(dbPath)
+     seedBrief(db, 'brf_url1')
+diff --git a/scripts/asicode-status.ts b/scripts/asicode-status.ts
+index e31add0..b2e39a7 100644
+--- a/scripts/asicode-status.ts
++++ b/scripts/asicode-status.ts
+@@ -5,6 +5,8 @@
+ // Exit: 0 found, 1 not found, 2 setup error.
+ 
+ import { Database } from 'bun:sqlite'
++import { homedir } from 'node:os'
++import { resolve } from 'node:path'
+ 
+ interface Args { briefId: string | null; json: boolean; watch: boolean; watchIntervalMs: number }
+ 
+@@ -53,6 +55,17 @@ function fmtAge(tsMs: number): string {
+   return `${Math.floor(ms / 86_400_000)}d ago`
+ }
+ 
++// REQ-44: reconstruct the per-run log path. Submit (single-spawn)
++// writes ~/.asicode/runs/<brief_id>.log; dispatcher (race) writes
++// .../<run_id>.log. We can't tell from the runs row which writer it
++// was, but isolation_mode='worktree' implies race; 'in_process'
++// implies single-spawn.
++function logPathFor(briefId: string, runId: string, isolationMode: string): string {
++  const dir = process.env.ASICODE_RUN_LOG_DIR ?? resolve(homedir(), '.asicode', 'runs')
++  const base = isolationMode === 'worktree' ? runId : briefId
++  return resolve(dir, `${base}.log`)
++}
++
+ // REQ-37: a run is "stale" when it never completed AND its ts_started
+ // is older than the threshold (default 30 min). The latest run's
+ // outcome='in_flight' for hours/days usually means the agent crashed
+@@ -150,6 +163,8 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
+         was_race_winner: r.was_race_winner === 1, attempt_index: r.attempt_index,
+         // REQ-37: stale=true when in_flight + ts_started exceeds threshold
+         stale: isStaleInFlight(r.outcome, r.ts_started),
++        // REQ-44: deterministic log path the user can tail -f.
++        log_path: logPathFor(brief.brief_id, r.run_id, r.isolation_mode),
+         verify: r.verify_outcome ? { outcome: r.verify_outcome, exit_code: r.verify_exit_code, duration_ms: r.verify_duration_ms, stderr_tail: r.verify_stderr_tail } : null,
+       })),
+       pr: (brief.pr_sha || brief.pr_number !== null) ? {
+@@ -180,6 +195,8 @@ function renderStatusOnce(args: Args): { done: boolean } | { notFound: true } {
+     const dur = r.wall_clock_ms !== null ? `${(r.wall_clock_ms / 1000).toFixed(1)}s` : '?'
+     const stale = isStaleInFlight(r.outcome, r.ts_started) ? ` ⚠ stale (started ${fmtAge(r.ts_started)})` : ''
+     console.log(`    ${r.run_id}  ${r.outcome}${stale}  ${r.isolation_mode}  ${dur}${r.tokens_used !== null ? `  ${r.tokens_used}tok` : ''}`)
++    // REQ-44: log path for the latest run (tail -f hint).
++    console.log(`    log:         ${logPathFor(brief.brief_id, r.run_id, r.isolation_mode)}`)
+   }
+   if (race) {
+     console.log(`  race         ${race.count} racers${race.winner_run_id ? `, winner=${race.winner_run_id}` : ''}${race.strategy ? ` (${race.strategy})` : ''}`)

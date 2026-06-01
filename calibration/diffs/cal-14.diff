@@ -1,0 +1,122 @@
+diff --git a/src/services/instrumentation/watch-merges.test.ts b/src/services/instrumentation/watch-merges.test.ts
+index a6fc508..6fc8d59 100644
+--- a/src/services/instrumentation/watch-merges.test.ts
++++ b/src/services/instrumentation/watch-merges.test.ts
+@@ -220,3 +220,70 @@ describe('pollMergedPrs — pending ship-it processing (iter 60)', () => {
+     expect(r.revertsOpened).toEqual([])
+   })
+ })
++
++// REQ-38: reap stale in_flight runs each poll tick.
++describe('reapStaleRuns (REQ-38)', () => {
++  function seedRun(runId: string, briefId: string, outcome: string, tsStarted: number) {
++    const db = openInstrumentationDb()
++    db.run(
++      `INSERT OR IGNORE INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
++       VALUES (?, ?, ?, ?, ?, ?)`,
++      [briefId, tsStarted, repoDir, 'fp', 't', 'accept'],
++    )
++    db.run(
++      `INSERT INTO runs (run_id, brief_id, ts_started, isolation_mode, outcome)
++       VALUES (?, ?, ?, ?, ?)`,
++      [runId, briefId, tsStarted, 'in_process', outcome],
++    )
++  }
++
++  test('updates in_flight + old → crashed + stale_no_recorder_update', async () => {
++    const { reapStaleRuns } = await import('./watch-merges.js')
++    seedRun('run_old', 'brf_r1', 'in_flight', Date.now() - 7 * 60 * 60_000)  // 7h ago, > 6h default
++    const { reaped } = reapStaleRuns()
++    expect(reaped).toBe(1)
++    const db = openInstrumentationDb()
++    const row = db.query<{ outcome: string; abort_reason: string | null; ts_completed: number | null }, [string]>(
++      `SELECT outcome, abort_reason, ts_completed FROM runs WHERE run_id = ?`,
++    ).get('run_old')
++    expect(row?.outcome).toBe('crashed')
++    expect(row?.abort_reason).toBe('stale_no_recorder_update')
++    expect(typeof row?.ts_completed).toBe('number')
++  })
++
++  test('leaves fresh in_flight alone (<6h)', async () => {
++    const { reapStaleRuns } = await import('./watch-merges.js')
++    seedRun('run_fresh', 'brf_r2', 'in_flight', Date.now() - 30 * 60_000)  // 30m ago
++    const { reaped } = reapStaleRuns()
++    expect(reaped).toBe(0)
++    const db = openInstrumentationDb()
++    const row = db.query<{ outcome: string }, [string]>(
++      `SELECT outcome FROM runs WHERE run_id = ?`,
++    ).get('run_fresh')
++    expect(row?.outcome).toBe('in_flight')
++  })
++
++  test('leaves completed runs alone (regardless of age)', async () => {
++    const { reapStaleRuns } = await import('./watch-merges.js')
++    seedRun('run_done', 'brf_r3', 'completed', Date.now() - 7 * 24 * 60 * 60_000)  // 7d ago
++    const { reaped } = reapStaleRuns()
++    expect(reaped).toBe(0)
++  })
++
++  test('ASICODE_REAP_THRESHOLD_MS tightens the threshold', async () => {
++    process.env.ASICODE_REAP_THRESHOLD_MS = '60000'  // 1min
++    try {
++      const { reapStaleRuns } = await import('./watch-merges.js')
++      seedRun('run_2m', 'brf_r4', 'in_flight', Date.now() - 2 * 60_000)  // 2m ago
++      const { reaped } = reapStaleRuns()
++      expect(reaped).toBe(1)
++    } finally { delete process.env.ASICODE_REAP_THRESHOLD_MS }
++  })
++
++  test('pollMergedPrs surfaces staleRunsReaped in result', async () => {
++    seedRun('run_old_poll', 'brf_rp', 'in_flight', Date.now() - 7 * 60 * 60_000)
++    const { pollMergedPrs } = await import('./watch-merges.js')
++    const r = await pollMergedPrs(repoDir)
++    expect(r.staleRunsReaped).toBe(1)
++  })
++})
+diff --git a/src/services/instrumentation/watch-merges.ts b/src/services/instrumentation/watch-merges.ts
+index 261818d..824b758 100644
+--- a/src/services/instrumentation/watch-merges.ts
++++ b/src/services/instrumentation/watch-merges.ts
+@@ -106,10 +106,34 @@ export interface PollResult {
+   shipItPending: number
+   /** Auto-revert PRs opened this tick (iter 69, REQ-2.3). */
+   revertsOpened: Array<{ prSha: string; revertPrNumber: number; url: string }>
++  /** REQ-38: stale in-flight runs reaped this tick (set outcome=crashed). */
++  staleRunsReaped: number
+   /** Errors that surfaced. */
+   errors: string[]
+ }
+ 
++// REQ-38: a run is reapable when it has been in_flight past the daemon
++// threshold AND the recorder-adapter never wrote a terminal outcome.
++// Default 6h (vs status's 30min staleness flag — daemon is conservative
++// to leave room for legitimately slow agents).
++const REAP_THRESHOLD_MS_DEFAULT = 6 * 60 * 60_000
++
++export function reapStaleRuns(): { reaped: number } {
++  // Soft-fail: if db unreachable, return zero. Caller absorbs into PollResult.
++  try {
++    const db = openInstrumentationDb()
++    const thresh = parseInt(process.env.ASICODE_REAP_THRESHOLD_MS ?? '', 10)
++    const limit = Number.isFinite(thresh) && thresh > 0 ? thresh : REAP_THRESHOLD_MS_DEFAULT
++    const cutoff = Date.now() - limit
++    const result = db.run(
++      `UPDATE runs SET outcome = 'crashed', abort_reason = 'stale_no_recorder_update', ts_completed = ?
++       WHERE outcome = 'in_flight' AND ts_started < ?`,
++      [Date.now(), cutoff],
++    )
++    return { reaped: result.changes }
++  } catch { return { reaped: 0 } }
++}
++
+ // ─── Pending ship-it tracker (iter 60) ───────────────────────────────
+ //
+ // When watch-merges matches a PR, the merge-time triggers (judges /
+@@ -167,6 +191,7 @@ export async function pollMergedPrs(projectPath: string): Promise<PollResult> {
+     shipItPosted: [],
+     shipItPending: 0,
+     revertsOpened: [],
++    staleRunsReaped: reapStaleRuns().reaped,
+     errors: [],
+   }
+ 
