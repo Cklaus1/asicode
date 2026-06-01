@@ -4,11 +4,11 @@
  *   Before declaring v1 shipped, run the panel against a known-graded
  *   corpus:
  *     - 10 human-authored PRs that were merged with universal approval
- *       (target: composite ≥ 4.0)
+ *       (target: composite ≥ 75)
  *     - 10 human-authored PRs that were merged after significant rework
- *       (target: composite 3.0–3.5)
+ *       (target: composite 45–65)
  *     - 10 human-authored PRs that were rejected
- *       (target: composite ≤ 2.5)
+ *       (target: composite ≤ 40)
  *
  *   If the v1 panel can't differentiate these tiers cleanly, the prompts
  *   are wrong, not the model. Iterate prompts before iterating panel
@@ -114,9 +114,9 @@ export interface CalibrationReport {
   monotonic_separation: boolean
   /** Targets per docs/judges/v1-prompts.md "Calibration". */
   targets_met: {
-    strong_ge_4: boolean
-    medium_3_to_35: boolean
-    weak_le_25: boolean
+    strong_ge_75: boolean
+    medium_45_to_65: boolean
+    weak_le_40: boolean
     all: boolean
   }
 }
@@ -148,11 +148,18 @@ export async function runCalibration(opts: RunCalibrationOpts): Promise<Calibrat
       writeToDb: false,
     })
 
+    // Each judge contributes ONLY its specialist (role-matched) dimension — the
+    // correctness judge's correctness score, the code-review judge's code_review
+    // score, etc. Averaging all three of a judge's scores (the old behaviour)
+    // washes out role specialization: the prompts already tell each judge its
+    // non-primary scores are low-confidence guesses, so blending them in 1/3
+    // each diluted the signal twice over and made the panel a rubber stamp.
+    // role names (correctness|code_review|qa_risk) === the score keys, so
+    // scores[j.role] is the judge's own dimension.
     const per_role: Partial<Record<JudgeResult['role'], number>> = {}
     for (const j of result.judges) {
       if (!j.ok) continue
-      const scores = j.response.scores
-      per_role[j.role] = (scores.correctness + scores.code_review + scores.qa_risk) / 3
+      per_role[j.role] = j.response.scores[j.role]
     }
     const judges_present = Object.keys(per_role).length
     const failed_roles = result.judges.filter(j => !j.ok).map(j => j.role)
@@ -228,18 +235,18 @@ function buildReport(mode: PanelMode, entries: EntryResult[]): CalibrationReport
     s !== null && m !== null && w !== null && s > m && m > w
 
   // Targets from docs/judges/v1-prompts.md (calibration section):
-  // strong >= 4.0, medium 3.0–3.5, weak <= 2.5.
-  const strong_ge_4 = s !== null && s >= 4.0
-  const medium_3_to_35 = m !== null && m >= 3.0 && m <= 3.5
-  const weak_le_25 = w !== null && w <= 2.5
-  const all = strong_ge_4 && medium_3_to_35 && weak_le_25
+  // strong >= 75, medium 45–65, weak <= 40.
+  const strong_ge_75 = s !== null && s >= 75
+  const medium_45_to_65 = m !== null && m >= 45 && m <= 65
+  const weak_le_40 = w !== null && w <= 40
+  const all = strong_ge_75 && medium_45_to_65 && weak_le_40
 
   return {
     panelMode: mode,
     entries,
     per_tier,
     monotonic_separation,
-    targets_met: { strong_ge_4, medium_3_to_35, weak_le_25, all },
+    targets_met: { strong_ge_75, medium_45_to_65, weak_le_40, all },
   }
 }
 
@@ -259,9 +266,9 @@ export function formatReport(report: CalibrationReport): string {
   lines.push('')
 
   lines.push('Targets (per docs/judges/v1-prompts.md):')
-  lines.push(`  strong ≥ 4.0          ${report.targets_met.strong_ge_4 ? '✓' : '✗'}`)
-  lines.push(`  medium 3.0–3.5        ${report.targets_met.medium_3_to_35 ? '✓' : '✗'}`)
-  lines.push(`  weak  ≤ 2.5           ${report.targets_met.weak_le_25 ? '✓' : '✗'}`)
+  lines.push(`  strong ≥ 75            ${report.targets_met.strong_ge_75 ? '✓' : '✗'}`)
+  lines.push(`  medium 45–65           ${report.targets_met.medium_45_to_65 ? '✓' : '✗'}`)
+  lines.push(`  weak  ≤ 40             ${report.targets_met.weak_le_40 ? '✓' : '✗'}`)
   lines.push(`  monotonic separation  ${report.monotonic_separation ? '✓' : '✗'}`)
   lines.push('')
   lines.push(`  v1 panel shippable    ${report.targets_met.all && report.monotonic_separation ? '✓' : '✗'}`)

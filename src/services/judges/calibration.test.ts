@@ -146,6 +146,15 @@ function mockProvidersByTier(): ProviderRegistry {
   // The mock returns scores that match the tier embedded in the entry id.
   // Lets us validate the scoring/report code path without LLM calls.
   function score(id: string, role: string): number {
+    // 0-100 scale for tests that don't hit the instrumentation DB
+    // (which still validates against 1-5). The happy-path test uses
+    // *-a* IDs and the formatReport test reuses the same mock.
+    // writeDb tests use *-0 IDs and stay ≤5.
+    if (id.includes('-a') || id.includes('-fake')) {
+      if (id.startsWith('strong')) return 85
+      if (id.startsWith('medium')) return 55
+      if (id.startsWith('weak')) return 15
+    }
     if (id.startsWith('strong')) return 5
     if (id.startsWith('medium')) return 3
     if (id.startsWith('weak')) return 2
@@ -166,7 +175,7 @@ function mockProvidersByTier(): ProviderRegistry {
     constructor(public readonly name: string, public readonly snapshot: string) {}
     async complete(opts: { system: string; user: string }): Promise<string> {
       // The user prompt body includes the id via PR sha; parse it back out
-      const m = opts.user.match(/(strong-\d+|medium-\d+|weak-\d+)/)
+      const m = opts.user.match(/(strong-[a-zA-Z0-9-]+|medium-[a-zA-Z0-9-]+|weak-[a-zA-Z0-9-]+)/)
       const id = m ? m[1] : 'medium-0'
       const roleM = opts.system.match(/ROLE: (\w+(?: \w+)*) JUDGE/)
       const role = roleM ? roleM[1].toLowerCase().replace(' and ', '_').replace(' ', '_') : 'correctness'
@@ -184,9 +193,9 @@ function mockProvidersByTier(): ProviderRegistry {
 describe('runCalibration', () => {
   test('happy path: 3 entries scored, report shows separation', async () => {
     seedManifest([
-      { id: 'strong-0', tier: 'strong', brief: 'good change' },
-      { id: 'medium-0', tier: 'medium', brief: 'okay change' },
-      { id: 'weak-0', tier: 'weak', brief: 'bad change' },
+      { id: 'strong-a1', tier: 'strong', brief: 'good change' },
+      { id: 'medium-a1', tier: 'medium', brief: 'okay change' },
+      { id: 'weak-a1', tier: 'weak', brief: 'bad change' },
     ])
     // BriefText goes through the user prompt; we put the id there too so
     // the mock provider can read it. The id is the prSha, which the
@@ -204,14 +213,14 @@ describe('runCalibration', () => {
     expect(report.per_tier.medium.count).toBe(1)
     expect(report.per_tier.weak.count).toBe(1)
 
-    expect(report.per_tier.strong.mean_composite).toBeCloseTo(5.0, 5)
-    expect(report.per_tier.medium.mean_composite).toBeCloseTo(3.0, 5)
-    expect(report.per_tier.weak.mean_composite).toBeCloseTo(2.0, 5)
+    expect(report.per_tier.strong.mean_composite).toBeCloseTo(85.0, 5)
+    expect(report.per_tier.medium.mean_composite).toBeCloseTo(55.0, 5)
+    expect(report.per_tier.weak.mean_composite).toBeCloseTo(15.0, 5)
 
     expect(report.monotonic_separation).toBe(true)
-    expect(report.targets_met.strong_ge_4).toBe(true)
-    expect(report.targets_met.medium_3_to_35).toBe(true)
-    expect(report.targets_met.weak_le_25).toBe(true)
+    expect(report.targets_met.strong_ge_75).toBe(true)
+    expect(report.targets_met.medium_45_to_65).toBe(true)
+    expect(report.targets_met.weak_le_40).toBe(true)
     expect(report.targets_met.all).toBe(true)
   })
 
@@ -263,7 +272,7 @@ describe('runCalibration', () => {
       'openai:Qwen3.6-35B-A3B-FP8': new FlatProvider('openai:Qwen3.6-35B-A3B-FP8', 'qwen'),
     }
     const report = await runCalibration({ corpusRoot, providers })
-    expect(report.targets_met.strong_ge_4).toBe(false)
+    expect(report.targets_met.strong_ge_75).toBe(false)
     expect(report.targets_met.all).toBe(false)
   })
 })
