@@ -247,9 +247,18 @@ async function main() {
     // dispatcher; submit only overrides when env vars are set.
     const settleMs = parseInt(process.env.ASICODE_RACE_SETTLE_MS ?? '', 10)
     const maxMs = parseInt(process.env.ASICODE_RACE_MAX_MS ?? '', 10)
+    // Base the race off the CURRENT branch (HEAD), not the hardcoded 'main'.
+    // Branching off main when the working branch is ahead makes `git diff
+    // base..HEAD` capture the entire main→branch gap — for asicode's own
+    // dev branch that's ~700KB / ~170k tokens, which buried the judge panel's
+    // prompt and made each judge fetch take ~107s (REQ-79). The racer's diff
+    // must contain only what the racer changed. Override with ASICODE_RACE_BASE.
+    const headBranch = spawnSync('git', ['-C', args.cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' }).stdout?.trim()
+    const raceBase = process.env.ASICODE_RACE_BASE || (headBranch && headBranch !== 'HEAD' ? headBranch : undefined)
     try {
       const r = await raceAgents({
         briefId, briefText: enrichedBrief, repoPath: args.cwd, count: args.race,
+        ...(raceBase ? { base: raceBase } : {}),
         ...(Number.isFinite(settleMs) && settleMs > 0 ? { settleMs } : {}),
         ...(Number.isFinite(maxMs) && maxMs > 0 ? { maxRaceMs: maxMs } : {}),
       })

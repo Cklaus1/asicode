@@ -173,13 +173,23 @@ async function gatherL2(ctx: GateContext, thresholds: ContractThresholds): Promi
  */
 async function gatherJudges(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
   const { judgeOnPrMergeAwait } = await import('../judges/trigger.js')
+  // Defence-in-depth: cap the diff fed to the panel. A pathological diff (e.g. a
+  // race mis-based off a far-behind branch — the REQ-79 bug — or a genuinely huge
+  // change) would otherwise make the prefill dominate and stall a local model.
+  // The judges see a representative head of the diff plus a truncation marker.
+  // Override the cap with ASICODE_JUDGE_DIFF_CHAR_CAP.
+  const cap = Number(process.env.ASICODE_JUDGE_DIFF_CHAR_CAP) || 60_000
+  const diff =
+    ctx.diff.length > cap
+      ? `${ctx.diff.slice(0, cap)}\n\n…[diff truncated: ${ctx.diff.length} chars total, showing first ${cap}]`
+      : ctx.diff
   // prSha is required by the input type but unused when diff is provided; a
   // stable synthetic value keeps any caching keyed per-brief.
   const result = await judgeOnPrMergeAwait({
     briefId: ctx.briefId,
     prSha: `pre-merge-${ctx.briefId}`,
     briefText: ctx.briefText,
-    diff: ctx.diff,
+    diff,
     cwd: ctx.cwd,
   })
   if (!result) return { ran: false } // judges disabled or no registry

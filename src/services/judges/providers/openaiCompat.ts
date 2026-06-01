@@ -97,7 +97,8 @@ export class OpenAICompatProvider implements Provider {
 
     const dbg = process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1'
     const t0 = dbg ? Date.now() : 0
-    if (dbg) console.error(`[openaiCompat] ${this.modelId} fetch START`)
+    const promptChars = args.system.length + args.user.length
+    if (dbg) console.error(`[openaiCompat] ${this.modelId} fetch START prompt_chars=${promptChars}`)
     const res = await fetch(`${this.baseURL}/chat/completions`, {
       method: 'POST',
       headers,
@@ -129,6 +130,11 @@ export class OpenAICompatProvider implements Provider {
     if (data.error) {
       const msg = typeof data.error === 'string' ? data.error : (data.error.message ?? 'unknown error')
       throw new Error(`OpenAI-compat ${this.modelId} error: ${msg}`)
+    }
+    if (dbg) {
+      const u = (data as { usage?: { completion_tokens?: number } }).usage
+      const fr = (data as { choices?: Array<{ finish_reason?: string }> }).choices?.[0]?.finish_reason
+      console.error(`[openaiCompat] ${this.modelId} completion_tokens=${u?.completion_tokens} finish_reason=${fr}`)
     }
     return stripThink(data.choices?.[0]?.message?.content ?? '')
   }
