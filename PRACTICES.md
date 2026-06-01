@@ -30,7 +30,7 @@ The fastest way to ship a 100x engineering culture is to put it in `Tool.canUseT
 
 **Build:**
 - Every PR has an `intent:` line in the description: one sentence stating what's true after the PR that wasn't before. If you can't write it, you don't know what you're building.
-- Architecture changes get a one-page rationale in `docs/decisions/NNN-title.md` before the code change lands. ADRs aren't bureaucracy when they live in the repo with the diff.
+- Architecture changes get a one-page rationale in `docs/adr/NNNN-title.md` before the code change lands. ADRs aren't bureaucracy when they live in the repo with the diff.
 
 **Run:**
 - **A16 brief evaluation gate** — see `GOALS.md`. ASI-readiness <3 or verifier-shaped <3 is auto-reject. Brief mode (A12) expands the paragraph; the gate checks the expansion is verifiable.
@@ -144,7 +144,7 @@ The fastest way to ship a 100x engineering culture is to put it in `Tool.canUseT
 
 **Build:**
 - PR descriptions without an `intent:` line are blocked at review. Trivial change? Then the intent is one sentence; write it.
-- Architecture-level work without an ADR (`docs/decisions/`) doesn't merge. The ADR doesn't have to be long; it has to *exist*.
+- Architecture-level work without an ADR (`docs/adr/`) doesn't merge. The ADR doesn't have to be long; it has to *exist*.
 - "Refactor for clarity" is allowed but must name a specific clarity gain: which file was N LOC and is now N-X, or which symbol was named badly and is now named better. "I prefer this style" is not a clarity gain.
 
 **Run:**
