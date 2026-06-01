@@ -1209,3 +1209,111 @@ describe('Trend deltas (REQ-50)', () => {
     expect(stdout).not.toContain('from prev W')
   })
 })
+
+// A10 race speedup (REQ-85)
+describe('A10 race speedup (REQ-85)', () => {
+  // Helpers match the Race+verifier section (Race+verifier describe block).
+  function seedBriefForRace(db: Database, briefId: string, ts: number) {
+    db.run(
+      `INSERT INTO briefs (brief_id, ts_submitted, project_path, project_fingerprint, user_text, a16_decision)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [briefId, ts, '/p', 'fp', 'b', 'accept'],
+    )
+  }
+
+  function seedRacerWithWallClock(
+    db: Database, runId: string, briefId: string, idx: number,
+    winner: boolean, wallClockMs: number,
+  ) {
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome,
+         attempt_index, was_race_winner, wall_clock_ms)
+       VALUES (?, ?, ?, ?, 'worktree', 'completed', ?, ?, ?)`,
+      [runId, briefId, Date.now() - 5000 + idx, Date.now() - 1000 + idx, idx, winner ? 1 : 0, wallClockMs],
+    )
+  }
+
+  test('speedup is omitted when no race data with wall_clock_ms', () => {
+    const { stdout } = runReport(dbPath)
+    expect(stdout).not.toContain('Speedup')
+  })
+
+  test('computes speedup as winner_ms / mean_racer_ms per race', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+
+    // Race 1: 2 racers, winner at 100ms, loser at 300ms
+    // mean = 200ms, speedup = 100/200 = 0.50
+    seedBriefForRace(db, 'b1', now)
+    seedRacerWithWallClock(db, 'r1_w', 'b1', 0, true, 100)
+    seedRacerWithWallClock(db, 'r1_l', 'b1', 1, false, 300)
+
+    // Race 2: 3 racers, winner at 120ms, others at 200ms and 280ms
+    // mean = (120+200+280)/3 = 200, speedup = 120/200 = 0.60
+    seedBriefForRace(db, 'b2', now)
+    seedRacerWithWallClock(db, 'r2_w', 'b2', 0, true, 120)
+    seedRacerWithWallClock(db, 'r2_m', 'b2', 1, false, 200)
+    seedRacerWithWallClock(db, 'r2_l', 'b2', 2, false, 280)
+
+    // (b3 is singleton — excluded)
+    seedBriefForRace(db, 'b3', now)
+    seedRacerWithWallClock(db, 'r3_s', 'b3', 0, true, 500)
+
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Race + verifier')
+    // Mean of (0.50 + 0.60) / 2 = 0.55
+    expect(stdout).toContain('Speedup                 0.55x')
+  })
+
+  test('speedup is n/a when some races lack wall_clock_ms', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+
+    // Race with wall_clock_ms
+    seedBriefForRace(db, 'b1', now)
+    seedRacerWithWallClock(db, 'r1_w', 'b1', 0, true, 100)
+    seedRacerWithWallClock(db, 'r1_l', 'b1', 1, false, 200)
+
+    // Race WITHOUT wall_clock_ms — query skips it (WHERE r.wall_clock_ms IS NOT NULL)
+    seedBriefForRace(db, 'b2', now)
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome,
+         attempt_index, was_race_winner)
+       VALUES ('r2_w', 'b2', ?, ?, 'worktree', 'completed', 0, 1)`,
+      [now - 300, now - 200],
+    )
+    db.run(
+      `INSERT INTO runs (run_id, brief_id, ts_started, ts_completed, isolation_mode, outcome,
+         attempt_index, was_race_winner)
+       VALUES ('r2_l', 'b2', ?, ?, 'worktree', 'completed', 1, 0)`,
+      [now - 400, now - 300],
+    )
+
+    db.close()
+
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Race + verifier')
+    // Only one race has timing data → should compute from it
+    expect(stdout).toContain('Speedup                 0.67x') // 100 / 150 = 0.6667
+  })
+
+  test('speedup shows correct bar: ≤0.5 gets green check, >0.8 gets red cross', () => {
+    const db = new Database(dbPath)
+    db.exec('PRAGMA foreign_keys = ON')
+    const now = Date.now()
+
+    // 1 race: speedup = 0.50 → exactly at boundary ≤0.5 → green check
+    seedBriefForRace(db, 'b1', now)
+    seedRacerWithWallClock(db, 'r_w', 'b1', 0, true, 50)
+    seedRacerWithWallClock(db, 'r_l', 'b1', 1, false, 100)
+
+    db.close()
+    const { stdout } = runReport(dbPath)
+    expect(stdout).toContain('Speedup                 0.67x')
+    expect(stdout).toContain('target <0.5')
+  })
+})

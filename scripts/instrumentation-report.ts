@@ -160,7 +160,13 @@ interface Metrics {
   raceStrategyVerifier: number
   raceStrategyLlmTiebreak: number
   raceStrategyFcfs: number
-  raceStrategyUnset: number  // older races before REQ-30 wired writes
+  raceStrategyUnset: number // older races before REQ-30 wired writes
+  // A10 race speedup (REQ-85): mean best-of-N speedup across all races.
+  // Baseline proxy = mean wall_clock_ms of all racers in the same race
+  // (a singleton attempt is one random racer, so the expected
+  // singleton time ~ mean racer time). speedup = winner_ms / mean_racer_ms.
+  // <0.5 target (race pays for itself); >0.8 race isn't worth it.
+  raceSpeedupMean: number | null
   // REQ-49: top abandonment reasons.
   abandonedTotal: number
   abandonedUnattributed: number  // pr_outcome=abandoned + intervention_reason IS NULL
@@ -740,6 +746,43 @@ function compute(db: Database, sinceMs: number): Metrics {
   const raceWinnerPassRate = raceVerifyMeasured > 0 ? raceWinnerPassed / raceVerifyMeasured : null
   const raceRacerPassRate = raceTotalRacers > 0 ? raceTotalRacersPassed / raceTotalRacers : null
 
+  // A10 race speedup (REQ-85). Per race, mean wall_clock_ms of all
+  // worktree racers is the proxy for a singleton baseline (a singleton
+  // is one random racer, so E[singleton] ~ mean racer time).
+  // speedup = winner_ms / mean_racer_ms; lower = better.
+  // Averages across races with ≥2 racers that have wall_clock_ms data.
+  let raceSpeedupMean: number | null = null
+  try {
+    const speedRows = db.query<
+      { brief_id: string; winner_ms: number; mean_ms: number },
+      [number]
+    >(
+      `WITH race_briefs AS (
+         SELECT brief_id FROM runs
+         WHERE isolation_mode='worktree' AND ts_started >= ?
+         GROUP BY brief_id HAVING COUNT(*) >= 2
+       ),
+       race_data AS (
+         SELECT r.brief_id, r.wall_clock_ms, r.was_race_winner
+         FROM runs r JOIN race_briefs USING (brief_id)
+         WHERE r.wall_clock_ms IS NOT NULL
+       )
+       SELECT brief_id,
+              MAX(CASE WHEN was_race_winner THEN wall_clock_ms END) AS winner_ms,
+              AVG(wall_clock_ms) AS mean_ms
+       FROM race_data
+       GROUP BY brief_id
+       HAVING winner_ms IS NOT NULL`,
+    ).all(sinceMs)
+    if (speedRows.length > 0) {
+      const ratios = speedRows.map(
+        r => r.winner_ms / r.mean_ms,
+      )
+      raceSpeedupMean =
+        ratios.reduce((a, b) => a + b, 0) / ratios.length
+    }
+  } catch { /* wall_clock_ms missing — pre-0002 schema, leave null */ }
+
   // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 5)
   // Components that are null become 0 in the composite (be honest about gaps).
   const aiComponents =
@@ -817,6 +860,7 @@ function compute(db: Database, sinceMs: number): Metrics {
     raceStrategyLlmTiebreak,
     raceStrategyFcfs,
     raceStrategyUnset,
+    raceSpeedupMean,
     abandonedTotal,
     abandonedUnattributed,
     abandonReasons,
@@ -1035,7 +1079,12 @@ function render(m: Metrics, sinceDays: number, prev?: TrendSnapshot): string {
       if (m.raceStrategyFcfs > 0) parts.push(`fcfs ${m.raceStrategyFcfs}`)
       lines.push(`  Strategy                ${parts.join(', ')}`)
     }
-    lines.push('')
+    // A10: race speedup — wall-clock(best-of-N winner) / wall-clock(singletons).
+    // Baseline proxy = mean racer time per race (see raceSpeedupMean docs).
+    if (m.raceSpeedupMean !== null) {
+      const bar = m.raceSpeedupMean <= 0.5 ? '✓ <0.5' : '✗ >0.8'
+      lines.push(`  Speedup                 ${m.raceSpeedupMean.toFixed(2)}x    (winner vs mean-racer proxy, target <0.5) ${bar}`)
+    }
   }
 
   // REQ-49: abandonment reasons. Renders when ≥1 abandoned brief in
