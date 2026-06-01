@@ -36,9 +36,9 @@ describe('defaults', () => {
     expect(DEFAULT_CONFIG.panel.mode).toBe('balanced')
   })
 
-  test('balanced uses Opus + Sonnet + local-qwen', () => {
-    expect(DEFAULT_CONFIG.panel.balanced.correctness).toBe('claude-opus-4-7')
-    expect(DEFAULT_CONFIG.panel.balanced.code_review).toBe('claude-sonnet-4-6')
+  test('balanced runs Qwen3.6 on all three roles (single-model, role-prompt diversity)', () => {
+    expect(DEFAULT_CONFIG.panel.balanced.correctness).toBe('openai:Qwen3.6-35B-A3B-FP8')
+    expect(DEFAULT_CONFIG.panel.balanced.code_review).toBe('openai:Qwen3.6-35B-A3B-FP8')
     expect(DEFAULT_CONFIG.panel.balanced.qa_risk).toBe('openai:Qwen3.6-35B-A3B-FP8')
   })
 })
@@ -55,7 +55,7 @@ mode = "fast"
     process.env.ASICODE_JUDGES_CONFIG = cfgPath
     const cfg = loadJudgesConfig({ cwd: tempDir })
     expect(cfg.panel.mode).toBe('fast')
-    expect(cfg.panel.balanced.correctness).toBe('claude-opus-4-7') // default preserved
+    expect(cfg.panel.balanced.correctness).toBe('openai:Qwen3.6-35B-A3B-FP8') // default preserved
   })
 
   test('project-local .asicode/judges.toml is discovered', () => {
@@ -95,7 +95,7 @@ qa_risk = "ollama:deepseek-coder:33b"
     // overridden
     expect(cfg.panel.balanced.qa_risk).toBe('ollama:deepseek-coder:33b')
     // unchanged defaults
-    expect(cfg.panel.balanced.correctness).toBe('claude-opus-4-7')
+    expect(cfg.panel.balanced.correctness).toBe('openai:Qwen3.6-35B-A3B-FP8')
     expect(cfg.panel.mode).toBe('balanced')
     expect(cfg.timeouts.per_judge_seconds).toBe(30)
   })
@@ -109,8 +109,8 @@ describe('resolvePanel', () => {
   test('returns role-to-model assignment for active mode', () => {
     const panel = resolvePanel({ cwd: tempDir, env: {} })
     expect(panel.mode).toBe('balanced')
-    expect(panel.roles.correctness).toBe('claude-opus-4-7')
-    expect(panel.roles.code_review).toBe('claude-sonnet-4-6')
+    expect(panel.roles.correctness).toBe('openai:Qwen3.6-35B-A3B-FP8')
+    expect(panel.roles.code_review).toBe('openai:Qwen3.6-35B-A3B-FP8')
     expect(panel.roles.qa_risk).toBe('openai:Qwen3.6-35B-A3B-FP8')
   })
 
@@ -141,6 +141,6 @@ describe('panelAssignments', () => {
     expect(pairs[0][0]).toBe('correctness')
     expect(pairs[1][0]).toBe('code_review')
     expect(pairs[2][0]).toBe('qa_risk')
-    expect(pairs[0][1]).toBe('claude-opus-4-7')
+    expect(pairs[0][1]).toBe('openai:Qwen3.6-35B-A3B-FP8')
   })
 })

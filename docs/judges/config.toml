@@ -17,20 +17,26 @@ mode = "balanced"
 # Roles rotate monthly to surface model-specific biases — see "Role
 # rotation cadence" in docs/judges/v1-prompts.md.
 
+# balanced (default) + fast run Qwen3.6 on all three roles. Role diversity comes
+# from the role PROMPTS (correctness/code-review/qa-risk lenses), not model
+# diversity — one local model, three specialist views. Single-model panels rank
+# quality but don't hit absolute bands (a 35B-judge limit); the family-diverse
+# panel below in `quality` is the upgrade path when an Anthropic key is present.
 [panel.balanced]
-correctness = "claude-opus-4-7"
-code_review = "claude-sonnet-4-6"
-qa_risk     = "openai:Qwen3.6-35B-A3B-FP8"   # local vLLM t3 tier; fallback: "claude-sonnet-4-6"
+correctness = "openai:Qwen3.6-35B-A3B-FP8"   # local vLLM t3 tier
+code_review = "openai:Qwen3.6-35B-A3B-FP8"
+qa_risk     = "openai:Qwen3.6-35B-A3B-FP8"
 
+# quality = all-Opus high-stakes upgrade (needs ANTHROPIC_API_KEY).
 [panel.quality]
 correctness = "claude-opus-4-7"
 code_review = "claude-opus-4-7"
 qa_risk     = "claude-opus-4-7"
 
 [panel.fast]
-correctness = "claude-sonnet-4-6"
-code_review = "claude-sonnet-4-6"
-qa_risk     = "openai:Qwen3.6-35B-A3B-FP8"   # local vLLM t3 tier; fallback: "claude-sonnet-4-6"
+correctness = "openai:Qwen3.6-35B-A3B-FP8"   # local vLLM t3 tier
+code_review = "openai:Qwen3.6-35B-A3B-FP8"
+qa_risk     = "openai:Qwen3.6-35B-A3B-FP8"
 
 [timeouts]
 # Per-judge timeout. A judge that exceeds this contributes nothing to

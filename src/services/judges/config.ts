@@ -28,19 +28,29 @@ import { JudgeRoleSchema, PanelModeSchema, type JudgeRole, type PanelMode } from
 export const DEFAULT_CONFIG: JudgesConfig = {
   panel: {
     mode: 'balanced',
+    // The operative modes (balanced = default, fast) run Qwen3.6 (local vLLM) on
+    // ALL THREE judge roles. Role diversity comes from the role PROMPTS, not from
+    // model diversity — one model, three specialist lenses. This is a single-model
+    // panel: it RANKS quality reliably (calibration: strong>medium>weak, stable)
+    // but does not hit absolute target bands (REQ-86/88) — a known limitation of a
+    // 35B judge. The family-diverse ideal (Opus + Sonnet + local) remains the
+    // documented aspiration for when those models are reachable; see
+    // docs/judges/config.toml and GOALS.md Metric 3.
     balanced: {
-      correctness: 'claude-opus-4-7',
-      code_review: 'claude-sonnet-4-6',
+      correctness: 'openai:Qwen3.6-35B-A3B-FP8',
+      code_review: 'openai:Qwen3.6-35B-A3B-FP8',
       qa_risk: 'openai:Qwen3.6-35B-A3B-FP8',
     },
+    // quality mode stays the all-Opus high-stakes upgrade path (requires an
+    // Anthropic key). Falls back to balanced (qwen×3) when keys are absent.
     quality: {
       correctness: 'claude-opus-4-7',
       code_review: 'claude-opus-4-7',
       qa_risk: 'claude-opus-4-7',
     },
     fast: {
-      correctness: 'claude-sonnet-4-6',
-      code_review: 'claude-sonnet-4-6',
+      correctness: 'openai:Qwen3.6-35B-A3B-FP8',
+      code_review: 'openai:Qwen3.6-35B-A3B-FP8',
       qa_risk: 'openai:Qwen3.6-35B-A3B-FP8',
     },
   },
