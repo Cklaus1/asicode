@@ -5,6 +5,10 @@
 // Northstar use: `asicode-submit.ts brief.md && walk-away`.
 // Exit: 0 ok, 1 brief unreadable, 2 setup/env error.
 
+// Install the MACRO.* runtime shim BEFORE any import that may transitively read
+// a build-time macro (e.g. the L2 reviewer's model call → fingerprint.ts). This
+// script runs unbuilt under `bun run`, so esbuild's define never substituted it.
+import '../src/utils/macroRuntimeShim'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
@@ -316,6 +320,12 @@ async function main() {
   let gateVerdict: 'merged_no_intervention' | 'needs_human' | null = null
   if (race && asicodeEnv('AUTONOMY_GATE') === '1') {
     try {
+      // The L2 gatherer makes a real model call (queryHaiku/queryWithModel),
+      // which reads the global config (user id, api metadata). Unbuilt
+      // entrypoints must opt into config access before that guard fires;
+      // enableConfigs() is idempotent and a no-op once initialized.
+      const { enableConfigs } = await import('../src/utils/config.js')
+      enableConfigs()
       const { runAutonomyGate, createGateGatherers } = await import('../src/services/autonomyGate/gather')
       const { renderVerdictMarkdown, verdictInterventionReason } = await import('../src/services/autonomyGate/annotate')
       // Risk class from A16 (a16_risk_class on the brief row); default to the
