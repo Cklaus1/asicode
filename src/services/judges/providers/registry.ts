@@ -4,6 +4,7 @@
  * Rules for routing model strings to adapters:
  *   - 'claude-opus-*' or 'claude-sonnet-*' or 'claude-haiku-*' → AnthropicProvider
  *   - 'ollama:*'                                                → OllamaProvider
+ *   - 'openai:*'                                                → OpenAICompatProvider (vLLM/local)
  *   - anything else                                              → throw (unsupported in v1)
  *
  * Snapshots: when the panel config doesn't pin an explicit snapshot, we
@@ -17,6 +18,7 @@ import { panelAssignments } from '../config'
 import type { ProviderRegistry } from '../dispatcher'
 import { AnthropicProvider } from './anthropic'
 import { OllamaProvider } from './ollama'
+import { OpenAICompatProvider } from './openaiCompat'
 
 export interface RegistryOpts {
   /** Optional explicit snapshot map: { 'claude-opus-4-7': 'claude-opus-4-7@2026-05-11' }. */
@@ -42,7 +44,12 @@ function buildOne(model: string, explicitSnapshot?: string) {
   if (model.startsWith('ollama:')) {
     return new OllamaProvider({ model, snapshot })
   }
-  throw new Error(`unsupported judge model '${model}' — only claude-* and ollama:* are wired in v1`)
+  if (model.startsWith('openai:')) {
+    return new OpenAICompatProvider({ model, snapshot })
+  }
+  throw new Error(
+    `unsupported judge model '${model}' — only claude-*, ollama:*, and openai:* are wired in v1`,
+  )
 }
 
 function isAnthropic(model: string): boolean {

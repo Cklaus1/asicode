@@ -53,7 +53,15 @@ describe('role prompts', () => {
 
   test('shared prefix instructs judges to be honest, not generous', () => {
     expect(SHARED_SYSTEM_PREFIX).toMatch(/honest and specific, not generous/)
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/Return ONLY the JSON/)
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/Return ONLY a JSON object/)
+  })
+
+  test('shared prefix includes the explicit response schema (weak-model legibility)', () => {
+    // Local/smaller judges (the t3 qa_risk slot) can't infer the nested
+    // scores{} shape from "the schema" alone — it must be spelled out.
+    expect(SHARED_SYSTEM_PREFIX).toContain('"scores"')
+    expect(SHARED_SYSTEM_PREFIX).toContain('"correctness"')
+    expect(SHARED_SYSTEM_PREFIX).toContain('"primary_score"')
   })
 
   test('ROLE_PROMPTS keyed by every JudgeRole', () => {

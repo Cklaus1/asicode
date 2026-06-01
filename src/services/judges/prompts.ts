@@ -24,7 +24,19 @@ The brief and diff below are blind to you in one way: you do not know
 whether the diff was authored by asicode or by a human. Judge the work,
 not the author.
 
-Return ONLY the JSON described in the schema. No prose outside the JSON.
+Return ONLY a JSON object in EXACTLY this shape (no prose outside it):
+
+{
+  "scores": { "correctness": <1-5>, "code_review": <1-5>, "qa_risk": <1-5> },
+  "primary_score": "<correctness|code_review|qa_risk>",
+  "primary_reasoning": "<one or two sentences>",
+  "concerns": [ { "severity": "<low|medium|high|critical>", "description": "<text>" } ],
+  "confidence": <0.0-1.0, optional>
+}
+
+"scores" MUST contain all three integer fields. "primary_score" is the
+NAME of your role's dimension (a string, not a number). "concerns" may be
+an empty array. Emit nothing before or after the JSON object.
 
 Your specific role on this panel is described next.`
 

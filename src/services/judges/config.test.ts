@@ -39,7 +39,7 @@ describe('defaults', () => {
   test('balanced uses Opus + Sonnet + local-qwen', () => {
     expect(DEFAULT_CONFIG.panel.balanced.correctness).toBe('claude-opus-4-7')
     expect(DEFAULT_CONFIG.panel.balanced.code_review).toBe('claude-sonnet-4-6')
-    expect(DEFAULT_CONFIG.panel.balanced.qa_risk).toBe('ollama:qwen2.5-coder:32b')
+    expect(DEFAULT_CONFIG.panel.balanced.qa_risk).toBe('openai:Qwen3.6-35B-A3B-FP8')
   })
 })
 
@@ -111,7 +111,7 @@ describe('resolvePanel', () => {
     expect(panel.mode).toBe('balanced')
     expect(panel.roles.correctness).toBe('claude-opus-4-7')
     expect(panel.roles.code_review).toBe('claude-sonnet-4-6')
-    expect(panel.roles.qa_risk).toBe('ollama:qwen2.5-coder:32b')
+    expect(panel.roles.qa_risk).toBe('openai:Qwen3.6-35B-A3B-FP8')
   })
 
   test('quality mode resolves to Opus on all three roles', () => {

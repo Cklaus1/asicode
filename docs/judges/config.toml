@@ -20,7 +20,7 @@ mode = "balanced"
 [panel.balanced]
 correctness = "claude-opus-4-7"
 code_review = "claude-sonnet-4-6"
-qa_risk     = "ollama:qwen2.5-coder:32b"   # fallback: "claude-sonnet-4-6"
+qa_risk     = "openai:Qwen3.6-35B-A3B-FP8"   # local vLLM t3 tier; fallback: "claude-sonnet-4-6"
 
 [panel.quality]
 correctness = "claude-opus-4-7"
@@ -30,7 +30,7 @@ qa_risk     = "claude-opus-4-7"
 [panel.fast]
 correctness = "claude-sonnet-4-6"
 code_review = "claude-sonnet-4-6"
-qa_risk     = "ollama:qwen2.5-coder:32b"   # fallback: "claude-sonnet-4-6"
+qa_risk     = "openai:Qwen3.6-35B-A3B-FP8"   # local vLLM t3 tier; fallback: "claude-sonnet-4-6"
 
 [timeouts]
 # Per-judge timeout. A judge that exceeds this contributes nothing to

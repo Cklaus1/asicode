@@ -31,7 +31,7 @@ export const DEFAULT_CONFIG: JudgesConfig = {
     balanced: {
       correctness: 'claude-opus-4-7',
       code_review: 'claude-sonnet-4-6',
-      qa_risk: 'ollama:qwen2.5-coder:32b',
+      qa_risk: 'openai:Qwen3.6-35B-A3B-FP8',
     },
     quality: {
       correctness: 'claude-opus-4-7',
@@ -41,7 +41,7 @@ export const DEFAULT_CONFIG: JudgesConfig = {
     fast: {
       correctness: 'claude-sonnet-4-6',
       code_review: 'claude-sonnet-4-6',
-      qa_risk: 'ollama:qwen2.5-coder:32b',
+      qa_risk: 'openai:Qwen3.6-35B-A3B-FP8',
     },
   },
   timeouts: {

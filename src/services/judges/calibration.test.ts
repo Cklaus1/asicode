@@ -177,7 +177,7 @@ function mockProvidersByTier(): ProviderRegistry {
   return {
     'claude-opus-4-7': new CalProvider('claude-opus-4-7', 'opus@test'),
     'claude-sonnet-4-6': new CalProvider('claude-sonnet-4-6', 'sonnet@test'),
-    'ollama:qwen2.5-coder:32b': new CalProvider('ollama:qwen2.5-coder:32b', 'qwen@test'),
+    'openai:Qwen3.6-35B-A3B-FP8': new CalProvider('openai:Qwen3.6-35B-A3B-FP8', 'qwen@test'),
   }
 }
 
@@ -260,7 +260,7 @@ describe('runCalibration', () => {
     const providers: ProviderRegistry = {
       'claude-opus-4-7': new FlatProvider('claude-opus-4-7', 'opus'),
       'claude-sonnet-4-6': new FlatProvider('claude-sonnet-4-6', 'sonnet'),
-      'ollama:qwen2.5-coder:32b': new FlatProvider('ollama:qwen2.5-coder:32b', 'qwen'),
+      'openai:Qwen3.6-35B-A3B-FP8': new FlatProvider('openai:Qwen3.6-35B-A3B-FP8', 'qwen'),
     }
     const report = await runCalibration({ corpusRoot, providers })
     expect(report.targets_met.strong_ge_4).toBe(false)

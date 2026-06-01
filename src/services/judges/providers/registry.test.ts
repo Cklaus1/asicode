@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ResolvedPanel } from '../config'
 import { AnthropicProvider } from './anthropic'
 import { OllamaProvider } from './ollama'
+import { OpenAICompatProvider } from './openaiCompat'
 import { buildProviderRegistry } from './registry'
 
 function panel(roles: ResolvedPanel['roles']): ResolvedPanel {
@@ -33,6 +34,17 @@ describe('buildProviderRegistry', () => {
     expect(reg['claude-opus-4-7']).toBeInstanceOf(AnthropicProvider)
     expect(reg['claude-sonnet-4-6']).toBeInstanceOf(AnthropicProvider)
     expect(reg['ollama:qwen2.5-coder:32b']).toBeInstanceOf(OllamaProvider)
+  })
+
+  test('routes openai:* to OpenAICompatProvider (vLLM/local t3 slot)', () => {
+    const reg = buildProviderRegistry(
+      panel({
+        correctness: 'claude-opus-4-7',
+        code_review: 'claude-sonnet-4-6',
+        qa_risk: 'openai:Qwen3.6-35B-A3B-FP8',
+      }),
+    )
+    expect(reg['openai:Qwen3.6-35B-A3B-FP8']).toBeInstanceOf(OpenAICompatProvider)
   })
 
   test('quality mode (three Opus) creates one Opus provider deduped', () => {
