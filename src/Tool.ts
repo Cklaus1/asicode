@@ -329,6 +329,14 @@ export type ToolUseContext = {
    * default — configurable via autonomy.checkpointWriteTools). Backs P0 #3.
    */
   checkpointWorktreePath?: string
+  /**
+   * True when the tool call's permission was resolved by the L1 verifier
+   * race (verifier-gated fast path, no user prompt). Wired from
+   * `checkPermissionsAndCallTool` into `recordOutcomeToolCall` via the
+   * `l1AutoApproved` parameter so the instrumentation pipeline can count
+   * L1 auto-approve events for the "L1 auto-approve rate" leading indicator.
+   */
+  l1AutoApproved?: boolean
 }
 
 // Re-export ToolProgressData from centralized location

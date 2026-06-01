@@ -161,6 +161,7 @@ export function recordToolCall(
   success: boolean,
   durationMs: number,
   errorKind?: ToolCallErrorKind,
+  l1AutoApproved?: boolean,
 ): void {
   if (!taskId) return
   const run = activeRuns.get(taskId)
@@ -177,6 +178,7 @@ export function recordToolCall(
     status: success ? 'ok' : 'error',
     durationMs,
     errorKind,
+    l1AutoApproved,
   })
 }
 

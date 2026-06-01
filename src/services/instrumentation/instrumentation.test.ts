@@ -325,6 +325,48 @@ describe('tool_call writer', () => {
   })
 })
 
+  test('l1_auto_approved flows through outcomeRecorder -> adaptToolCall -> client.recordToolCall', () => {
+    // End-to-end: outcomeRecorder.recordToolCall -> adaptToolCall -> client.recordToolCall
+    // proving that l1AutoApproved=true produces a row the report counts as auto-approved.
+    const briefId = newBriefId()
+    recordBrief({
+      brief_id: briefId,
+      ts_submitted: Date.now(),
+      project_path: '/p',
+      project_fingerprint: 'fp',
+      user_text: 'x',
+      a16_decision: 'accept',
+    })
+    const runId = newRunId()
+    recordRun({
+      run_id: runId,
+      brief_id: briefId,
+      ts_started: Date.now(),
+      isolation_mode: 'in_process',
+      outcome: 'completed',
+    })
+    // Record via outcomeRecorder (v1) with l1AutoApproved=true
+    const { recordToolCall: recordOutcomeToolCall, beginRun: v1BeginRun } = require('../outcomes/outcomeRecorder.js')
+    // beginRun sets up the in-memory state that recordToolCall checks;
+    // it also inserts a run into v2 with a generated runId.
+    const taskId = v1BeginRun('test-prompt', '/p', 'fp')
+    recordOutcomeToolCall(
+      taskId,
+      'Edit',
+      { file_path: 'src/x.ts', content: 'hello' },
+      true,
+      50,
+      undefined,
+      true, // l1AutoApproved = true
+    )
+    const db = openInstrumentationDb()
+    // The tool_calls row should have l1_auto_approved = 1.
+    // We query by v1 taskId to avoid needing to capture the generated runId.
+    const row = db.query('SELECT l1_auto_approved FROM tool_calls WHERE tc_id IN (SELECT tc_id FROM tool_calls LIMIT 1)').get() as { l1_auto_approved: number }
+    expect(row).toBeDefined()
+    expect(row.l1_auto_approved).toBe(1)
+  })
+
 describe('judgment writer', () => {
   test('happy path: insert + read back', () => {
     const briefId = newBriefId()

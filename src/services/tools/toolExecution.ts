@@ -609,6 +609,8 @@ export async function* runToolUse(
       toolInput,
       !outcomeAnyError,
       Date.now() - outcomeStartedAt,
+      undefined,
+      toolUseContext.l1AutoApproved,
     )
 
     // P0 #3 — autocheckpoint trigger. After a successful write-tool call
@@ -1133,6 +1135,15 @@ async function checkPermissionsAndCallTool(
     toolUseID,
   )
   const permissionDecision = resolved.decision
+  // Thread L1 auto-approve signal: if the permission was resolved by the
+  // verifier race, set l1AutoApproved so runToolUse can pass it through
+  // to recordOutcomeToolCall for instrumentation.
+  if (
+    permissionDecision.behavior === 'allow' &&
+    toolUseContext.toolDecisions?.get(toolUseID)?.source === 'verifier_auto_approve'
+  ) {
+    toolUseContext.l1AutoApproved = true
+  }
   processedInput = resolved.input
   const permissionDurationMs = Date.now() - permissionStart
   // In auto mode, canUseTool awaits the classifier (side_query) — if that's
