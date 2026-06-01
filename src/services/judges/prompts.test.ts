@@ -32,14 +32,14 @@ describe('role prompts', () => {
     expect(QA_RISK_PROMPT.startsWith('ROLE: QA AND RISK JUDGE.')).toBe(true)
   })
 
-  test('every role prompt has a 1-5 rubric', () => {
+  test('each role prompt has a 0-100 rubric', () => {
     for (const [role, prompt] of Object.entries(ROLE_PROMPTS)) {
-      expect(prompt).toMatch(/^\s*5\s—/m)
-      expect(prompt).toMatch(/^\s*1\s—/m)
+      // Top anchor present
+      expect(prompt).toMatch(/^[\s]*~100\s—/m)
+      // Bottom anchor present
+      expect(prompt).toMatch(/^[\s]*~0\s—/m)
       // Sanity: rubric appears for each role
       expect(prompt.length).toBeGreaterThan(500)
-      // Anti-flattery: "5/5 reserved" / "1/5" / "would block" pattern
-      void role
     }
   })
 
@@ -56,13 +56,14 @@ describe('role prompts', () => {
     expect(SHARED_SYSTEM_PREFIX).toMatch(/Return ONLY a JSON object/)
   })
 
-  test('shared prefix anchors every score 1-5 with a concrete rubric (anti-rubber-stamp)', () => {
-    // The qwen×3 panel scored everything 4.46-4.68 (REQ-86); the rubric must
-    // anchor each integer so the panel uses the full range.
-    for (const n of [1, 2, 3, 4, 5]) {
-      expect(SHARED_SYSTEM_PREFIX).toMatch(new RegExp(`\\n\\s*${n} —`))
-    }
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/default to 3/)
+  test('shared prefix anchors every score 0-100 with a concrete rubric (anti-rubber-stamp)', () => {
+    // The shared prefix uses the 0-100 scale. Anchors at 0 and 100 must be
+    // present so the panel uses the full range.
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/\n\s*100\s—/)
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/\n\s*~55\s—/)
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/\n\s*~30\s—/)
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/\n\s*0\s—/)
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/default to ~55/)
   })
 
   test('shared prefix includes the explicit response schema (weak-model legibility)', () => {
@@ -71,6 +72,17 @@ describe('role prompts', () => {
     expect(SHARED_SYSTEM_PREFIX).toContain('"scores"')
     expect(SHARED_SYSTEM_PREFIX).toContain('"correctness"')
     expect(SHARED_SYSTEM_PREFIX).toContain('"primary_score"')
+  })
+
+  test('shared prefix scores are <0-100> not <1-5>', () => {
+    // The JSON example in the shared prefix must reference 0-100 ranges.
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/correctness": <0-100>/)
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/code_review": <0-100>/)
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/qa_risk": <0-100>/)
+  })
+
+  test('shared prefix instructs full-range use', () => {
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/FULL 0–100 range/)
   })
 
   test('ROLE_PROMPTS keyed by every JudgeRole', () => {
