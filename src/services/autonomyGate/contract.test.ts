@@ -26,7 +26,7 @@ describe('composeVerdict — the load-bearing invariant: silence is not a pass',
     const signals: GateSignals = {
       l1: { ran: true, passed: true },
       l2: { ran: true, passed: true },
-      judges: { ran: true, passed: true, value: 4.3 },
+      judges: { ran: true, passed: true, value: 86 },
       density: { ran: true, passed: true },
     }
     const v = composeVerdict('production', signals)
@@ -48,7 +48,7 @@ describe('composeVerdict — the load-bearing invariant: silence is not a pass',
     // throwaway requires only l1; a failing judges panel is advisory here.
     const v = composeVerdict('throwaway', {
       l1: { ran: true, passed: true },
-      judges: { ran: true, passed: false, value: 2.1 },
+      judges: { ran: true, passed: false, value: 42 },
     })
     expect(v.mergeable).toBe(true)
     const judges = v.gates.find(g => g.gate === 'judges')!
@@ -59,7 +59,7 @@ describe('composeVerdict — the load-bearing invariant: silence is not a pass',
     const base: GateSignals = {
       l1: { ran: true, passed: true },
       l2: { ran: true, passed: true },
-      judges: { ran: true, passed: true, value: 4.5 },
+      judges: { ran: true, passed: true, value: 90 },
       density: { ran: true, passed: true },
     }
     // Missing adversarial → blocked for security, mergeable for production.
@@ -105,14 +105,15 @@ describe('l2Signal', () => {
 })
 
 describe('judgesSignal', () => {
+  // 0–100 scale (REQ-88); default judgeQualityMin = 75.
   test('complete panel at or above min passes', () => {
-    expect(judgesSignal({ complete: true, composite: 4.0 })).toMatchObject({ passed: true })
+    expect(judgesSignal({ complete: true, composite: 75 })).toMatchObject({ passed: true })
   })
   test('complete panel below min fails', () => {
-    expect(judgesSignal({ complete: true, composite: 3.9 })).toMatchObject({ passed: false })
+    expect(judgesSignal({ complete: true, composite: 74 })).toMatchObject({ passed: false })
   })
   test('incomplete panel fails (missing signal is not a pass)', () => {
-    expect(judgesSignal({ complete: false, composite: 4.8 })).toMatchObject({ passed: false })
+    expect(judgesSignal({ complete: false, composite: 96 })).toMatchObject({ passed: false })
   })
 })
 
@@ -138,12 +139,23 @@ describe('densitySignal', () => {
 })
 
 describe('composite', () => {
-  test('means the 9 sub-scores across responding judges', () => {
+  test('without role: means all sub-scores across responding judges (back-compat)', () => {
     const c = composite([
-      { ok: true, scores: { correctness: 4, code_review: 4, qa_risk: 4 } },
-      { ok: true, scores: { correctness: 5, code_review: 5, qa_risk: 5 } },
+      { ok: true, scores: { correctness: 80, code_review: 80, qa_risk: 80 } },
+      { ok: true, scores: { correctness: 90, code_review: 90, qa_risk: 90 } },
     ])
-    expect(c).toBeCloseTo(4.5, 5)
+    expect(c).toBeCloseTo(85, 5)
+  })
+  test('with role: each judge contributes ONLY its role-matched dimension (specialist composite)', () => {
+    // correctness judge's correctness=90, code_review judge's code_review=60,
+    // qa_risk judge's qa_risk=30 → mean of [90,60,30] = 60 (the off-lane scores
+    // are ignored, unlike the back-compat path which would dilute them in).
+    const c = composite([
+      { ok: true, role: 'correctness', scores: { correctness: 90, code_review: 10, qa_risk: 10 } },
+      { ok: true, role: 'code_review', scores: { correctness: 10, code_review: 60, qa_risk: 10 } },
+      { ok: true, role: 'qa_risk', scores: { correctness: 10, code_review: 10, qa_risk: 30 } },
+    ])
+    expect(c).toBeCloseTo(60, 5)
   })
   test('empty panel → null (so judgesSignal treats it incomplete)', () => {
     expect(composite([{ ok: false }])).toBeNull()
@@ -151,11 +163,11 @@ describe('composite', () => {
 })
 
 describe('end-to-end: judge composite flows through to the verdict', () => {
-  test('production PR with a 4.2 panel and clean stack merges hands-off', () => {
+  test('production PR with an 85-avg panel and clean stack merges hands-off', () => {
     const c = composite([
-      { ok: true, scores: { correctness: 4, code_review: 4, qa_risk: 5 } },
-      { ok: true, scores: { correctness: 4, code_review: 4, qa_risk: 4 } },
-      { ok: true, scores: { correctness: 4, code_review: 5, qa_risk: 4 } },
+      { ok: true, role: 'correctness', scores: { correctness: 85, code_review: 50, qa_risk: 50 } },
+      { ok: true, role: 'code_review', scores: { correctness: 50, code_review: 80, qa_risk: 50 } },
+      { ok: true, role: 'qa_risk', scores: { correctness: 50, code_review: 50, qa_risk: 90 } },
     ])
     const v = composeVerdict('production', {
       l1: { ran: true, passed: true },

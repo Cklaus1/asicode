@@ -290,7 +290,7 @@ describe('dispatchJudgments — failure modes', () => {
     const providers = defaultProviders((role) => {
       if (role === 'code_review') {
         return JSON.stringify({
-          scores: { correctness: 9, code_review: 4, qa_risk: 4 }, // out of range
+          scores: { correctness: 101, code_review: 40, qa_risk: 40 }, // out of range (0-100 scale)
           primary_score: 'code_review',
           primary_reasoning: 'x',
         })

@@ -132,7 +132,8 @@ describe('parseJudgeResponse — error paths', () => {
   })
 
   test('out-of-range score → schema_violation', () => {
-    const bad = { ...validResponse, scores: { correctness: 7, code_review: 4, qa_risk: 4 } }
+    // 0–100 scale (REQ-88): 101 is out of range; -1 likewise.
+    const bad = { ...validResponse, scores: { correctness: 101, code_review: 40, qa_risk: 40 } }
     const r = parseJudgeResponse(JSON.stringify(bad))
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error.kind).toBe('schema_violation')

@@ -195,6 +195,7 @@ async function gatherJudges(ctx: GateContext, thresholds: ContractThresholds): P
   if (!result) return { ran: false } // judges disabled or no registry
   const scores = result.judges.map(j => ({
     ok: j.ok,
+    role: j.role,
     scores: j.ok
       ? {
           correctness: j.response.scores.correctness,

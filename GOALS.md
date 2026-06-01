@@ -49,7 +49,7 @@ The phrase "verifiably correct" is load-bearing — the v1 asi-roadmap already h
   - **Code review** — would a senior engineer accept this in review? (style, idioms, error handling, naming, structure)
   - **QA / risk** — what could break? (regressions, hidden coupling, performance regressions, security smells)
 
-Each judge returns a 1–5 score on each dimension. Composite = mean of the 9 scores (3 judges × 3 dims). Range 1–5, target ≥ 4.0.
+Each judge returns a 0–100 score on each dimension. Composite = mean of the role-specialist scores (each judge contributes only its own dimension — correctness judge → correctness score, etc.). Range 0–100, target ≥ 75. (The scale was 1–5 through v0.x; widened to 0–100 in REQ-88 because a coarse 5-point scale made local judges score everything 4.5–4.7, a rubber stamp — see [[judge-panel-uncalibrated]]. The role-specialist composite replaced the mean-of-9, which diluted each judge's lane.)
 
 **Why primary:** replaces "cost per PR" — meaningless on local models, secondary even on hosted. Quality of the work IS what we care about; cost is bookkeeping. Three judges, not one, because single-LLM judging is a known-noisy signal. Different judges + majority/average reduce bias; judge disagreement (high variance across panel) is itself a useful signal — high variance = ambiguous case = human review value.
 
@@ -91,12 +91,12 @@ Each judge returns a 1–5 score on each dimension. Composite = mean of the 9 sc
 **Cadence:** every PR at merge time; rolled up weekly.
 
 ### Composite — **Autonomy Index**
-`AI = hands_off_rate × (1 − regression_rate) × (judge_quality / 5)`
+`AI = hands_off_rate × (1 − regression_rate) × (judge_quality / 100)`
 
 Single number, ranges 0–1. Decomposes into:
 - did it finish unattended? (hands_off)
 - did it survive the week? (1 − regression)
-- was the work actually good? (judge_quality / 5)
+- was the work actually good? (judge_quality / 100)
 
 A version with AI=0.4 means *roughly 40% of briefs ship without help, survive a week, AND read as 4.0/5 quality work*. The northstar in arithmetic.
 
@@ -108,7 +108,7 @@ A version with AI=0.4 means *roughly 40% of briefs ship without help, survive a 
 **The A/B verification:** density alone is gameable (compress everything into one ternary) so we pair it with a behavioral A/B:
   - Run the project's test suite on `HEAD~1` (pre-change) → record pass/fail set + perf benchmark.
   - Run the same suite on `HEAD` (post-change) → record.
-  - Density gain **only counts** if (a) the test set passes is a superset of before, AND (b) the LLM judge panel says "functionality preserved or improved" with quality ≥ 4.0.
+  - Density gain **only counts** if (a) the test set passes is a superset of before, AND (b) the LLM judge panel says "functionality preserved or improved" with quality ≥ 75.
   - For new features (not refactors), density delta is reported as `n/a` — the metric is for changes to existing code.
 
 **Why pairing matters:** without A/B, density optimizes for short code; with A/B, density optimizes for *short code that does the same or more*. That's the asi-family signal we want amplified.
@@ -137,10 +137,10 @@ Each row is a bar to clear before tagging that version. No partial credit on the
 | Version | Hands-off | Regression | Judge quality (mean) | Density on refactors | Notes |
 |---|---|---|---|---|---|
 | v1.0 (current) | unmeasured | unmeasured | unmeasured | unmeasured | **first job:** instrument the metrics. You can't improve what you don't measure. |
-| v1.5 | ≥ 30% on briefs ≤ 200 LOC of diff | ≤ 20% | ≥ 3.5 / 5 | ≥ 30% PRs density-positive | the floor at which "autonomous" stops being a lie |
-| v2.0 | ≥ 60% on briefs ≤ 500 LOC | ≤ 10% | ≥ 4.0 / 5 | ≥ 50% PRs density-positive | publishable as a serious autonomous-coding harness |
-| v3.0 | ≥ 80% on briefs ≤ 1000 LOC | ≤ 5% | ≥ 4.2 / 5 | ≥ 65% PRs density-positive | brief-mode default; race-mode default; you genuinely hand it work |
-| **northstar (no version)** | ≥ 95% on arbitrary briefs against a defined verifier suite | ≤ 2% | ≥ 4.5 / 5 | ≥ 80% PRs density-positive | "verifiably correct work without the human" |
+| v1.5 | ≥ 30% on briefs ≤ 200 LOC of diff | ≤ 20% | ≥ 70 / 100 | ≥ 30% PRs density-positive | the floor at which "autonomous" stops being a lie |
+| v2.0 | ≥ 60% on briefs ≤ 500 LOC | ≤ 10% | ≥ 75 / 100 | ≥ 50% PRs density-positive | publishable as a serious autonomous-coding harness |
+| v3.0 | ≥ 80% on briefs ≤ 1000 LOC | ≤ 5% | ≥ 84 / 100 | ≥ 65% PRs density-positive | brief-mode default; race-mode default; you genuinely hand it work |
+| **northstar (no version)** | ≥ 95% on arbitrary briefs against a defined verifier suite | ≤ 2% | ≥ 90 / 100 | ≥ 80% PRs density-positive | "verifiably correct work without the human" |
 
 "Arbitrary briefs" at the northstar tier means **a stable, public benchmark suite** asicode publishes and re-runs each release — currently doesn't exist; constructing one is part of v2.0 (call it `bench/`). Brief categories should at minimum include: bugfix, feature, refactor, dependency upgrade, test-writing, doc.
 

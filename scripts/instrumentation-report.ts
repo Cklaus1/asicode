@@ -783,11 +783,12 @@ function compute(db: Database, sinceMs: number): Metrics {
     }
   } catch { /* wall_clock_ms missing — pre-0002 schema, leave null */ }
 
-  // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 5)
-  // Components that are null become 0 in the composite (be honest about gaps).
+  // Autonomy Index = hands_off × (1 - regression) × (judge_quality / 100)
+  // Judge scores are 0–100 (REQ-88, was 1–5). Components that are null become 0
+  // in the composite (be honest about gaps).
   const aiComponents =
     handsOffRate !== null && regressionRate !== null && judgeQualityMean !== null
-      ? handsOffRate * (1 - regressionRate) * (judgeQualityMean / 5)
+      ? handsOffRate * (1 - regressionRate) * (judgeQualityMean / 100)
       : null
 
   return {
@@ -903,7 +904,7 @@ function render(m: Metrics, sinceDays: number, prev?: TrendSnapshot): string {
   lines.push(`Autonomy Index            ${fmtIndex(m.autonomyIndex)}   (target v2.0: ≥ 0.60)`)
   if (m.autonomyIndex !== null && m.handsOffRate !== null && m.regressionRate !== null && m.judgeQualityMean !== null) {
     lines.push(
-      `                          = hands_off ${m.handsOffRate.toFixed(2)} × (1 - regression ${m.regressionRate.toFixed(2)}) × (quality ${m.judgeQualityMean.toFixed(2)} / 5)`,
+      `                          = hands_off ${m.handsOffRate.toFixed(2)} × (1 - regression ${m.regressionRate.toFixed(2)}) × (quality ${m.judgeQualityMean.toFixed(2)} / 100)`,
     )
   }
   lines.push('')

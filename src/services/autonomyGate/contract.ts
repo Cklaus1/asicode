@@ -76,7 +76,7 @@ export const REQUIRED_GATES: Record<RiskClass, readonly GateName[]> = {
 export interface ContractThresholds {
   /** Findings at or above this severity block the L2 gate. */
   l2BlockingBar: Severity
-  /** Minimum 3-panel composite (mean of 9 sub-scores), 1–5. GOALS.md v2.0 = 4.0. */
+  /** Minimum 3-panel composite (mean of role-specialist scores), 0–100. GOALS.md v2.0 = 75 (was 4.0/5). */
   judgeQualityMin: number
   /**
    * Density is only *blocking* when the change is a refactor. A refactor that
@@ -89,7 +89,7 @@ export interface ContractThresholds {
 
 export const DEFAULT_THRESHOLDS: ContractThresholds = {
   l2BlockingBar: 'high',
-  judgeQualityMin: 4.0,
+  judgeQualityMin: 75,
   densityBlocksOnRefactor: true,
 }
 
@@ -280,12 +280,30 @@ export function densitySignal(
  * sub-scores across however many roles responded; returns null on an empty
  * panel so `judgesSignal` can treat it as incomplete.
  */
+type JudgeDimension = 'correctness' | 'code_review' | 'qa_risk'
+
 export function composite(
-  judges: Array<{ ok: boolean; scores?: { correctness: number; code_review: number; qa_risk: number } }>,
+  judges: Array<{
+    ok: boolean
+    /** The judge's role; when present, only its role-matched score counts. */
+    role?: JudgeDimension
+    scores?: { correctness: number; code_review: number; qa_risk: number }
+  }>,
 ): number | null {
   const scores: number[] = []
   for (const j of judges) {
-    if (j.ok && j.scores) {
+    if (!j.ok || !j.scores) continue
+    if (j.role) {
+      // Specialist composite: each judge contributes ONLY its role-matched
+      // dimension (correctness judge → correctness score, etc.). Averaging all
+      // three of each judge's scores washes out role specialization — the
+      // prompts already mark non-primary scores as low-confidence guesses, so
+      // blending them made the panel a rubber stamp (REQ-86/87). Mirrors the
+      // calibration composite.
+      scores.push(j.scores[j.role])
+    } else {
+      // No role info: fall back to all three (back-compat for callers that
+      // don't track which judge produced which scores).
       scores.push(j.scores.correctness, j.scores.code_review, j.scores.qa_risk)
     }
   }

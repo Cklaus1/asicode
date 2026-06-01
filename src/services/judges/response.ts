@@ -29,7 +29,13 @@ export type Concern = z.infer<typeof ConcernSchema>
 
 // ─── Score schema ────────────────────────────────────────────────────
 
-const ScoreSchema = z.number().int().min(1).max(5)
+// 0–100 integer scale (REQ-88). The 1–5 scale buried quality: qwen-35B scored
+// the entire calibration corpus 4.46–4.68 (a rubber stamp), because the model's
+// real but faint quality preference rounded to the same 5-point bucket. On
+// 0–100 the same model separated strong (85) from weak (15) — a 70-point spread
+// the coarse scale rounded away. Target bands rescaled accordingly:
+//   strong ≥ 75 · medium 45–65 · weak ≤ 40 (see calibration.ts).
+const ScoreSchema = z.number().int().min(0).max(100)
 
 export const JudgeScoresSchema = z.object({
   correctness: ScoreSchema,
