@@ -214,20 +214,16 @@ async function gatherJudges(ctx: GateContext, thresholds: ContractThresholds): P
 /**
  * Density: required for `production`/`security` on refactors.
  *
- * The live density harness (`classifyRefactor` + `recordDensity`) is sha-keyed:
- * it reads a *committed* sha via `git log`/`git show`, not a worktree's
- * uncommitted diff. The pre-merge gate runs before the winner is committed to a
- * landable sha, so the harness can't evaluate it here without a refactor to
- * make it diff-driven (tracked as follow-up; see AUTONOMY_CONTRACT.md "S1").
- *
- * Until that lands, density is gathered post-merge by the existing
- * `densityOnPrMerge` trigger, and the pre-merge gate returns a **missing
- * signal** when density is required and the change is a candidate refactor. Per
- * the contract that fails the verdict → `needs_human`, which is the safe
- * reading: we don't fabricate a density pass we couldn't actually measure.
- *
- * `injectedAb` lets the call site (or a future diff-driven harness) supply a
- * real result; when present we score it properly.
+ * Diff-driven (REQ-80): the original density harness is sha-keyed and can't read
+ * a pre-merge worktree change, so the gate now classifies refactor-ness from the
+ * brief and computes the LOC delta directly from `ctx.diff` via
+ * `analyzeDiffDensity`. A non-refactor is n/a (trivial pass); a refactor passes
+ * iff it didn't add net lines (delta ≥ 0). This is the *structural* half of the
+ * density A/B — the behavioural half (pre/post test-suite superset + judge
+ * equivalence) genuinely needs two trees and stays the post-merge trigger's job.
+ * The structural signal is enough to catch what the contract cares about: a
+ * refactor that bloats. An explicit `ctx.densityAb` (e.g. a full A/B result)
+ * still takes precedence when supplied.
  */
 async function gatherDensity(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
   const { isDensityEnabled } = await import('../instrumentation/density-trigger.js')
@@ -235,9 +231,12 @@ async function gatherDensity(ctx: GateContext, thresholds: ContractThresholds): 
   if (ctx.densityAb) {
     return densitySignal(ctx.densityAb, thresholds)
   }
-  // No diff-driven A/B result available pre-merge — missing signal, blocks
-  // where required. Honest over a fabricated pass.
-  return { ran: false }
+  const { analyzeDiffDensity } = await import('../instrumentation/densityDiff.js')
+  const a = analyzeDiffDensity(ctx.briefText, ctx.diff)
+  return densitySignal(
+    { isRefactor: a.isRefactor, densityCounted: a.densityCounted, densityDelta: a.densityDelta ?? 0 },
+    thresholds,
+  )
 }
 
 /**
