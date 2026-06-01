@@ -62,6 +62,11 @@ export function openInstrumentationDb(dbPath?: string): Database {
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec('PRAGMA synchronous = NORMAL')
+  // Race dispatch spawns child processes that write runs/tool_calls rows to this
+  // same DB while the parent's autonomy gate writes judgments/reviews. Under WAL
+  // a concurrent writer otherwise fails immediately with SQLITE_BUSY ("database
+  // is locked"); a busy_timeout makes writers wait-and-retry instead of throwing.
+  db.exec('PRAGMA busy_timeout = 5000')
 
   // Tolerate fresh / unmigrated dbs cleanly: a missing _schema_version
   // table means "version 0", same outcome as version-too-old.

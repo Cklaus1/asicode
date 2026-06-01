@@ -95,6 +95,9 @@ export class OpenAICompatProvider implements Provider {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`
 
+    const dbg = process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1'
+    const t0 = dbg ? Date.now() : 0
+    if (dbg) console.error(`[openaiCompat] ${this.modelId} fetch START`)
     const res = await fetch(`${this.baseURL}/chat/completions`, {
       method: 'POST',
       headers,
@@ -115,6 +118,7 @@ export class OpenAICompatProvider implements Provider {
       }),
       signal: args.signal,
     })
+    if (dbg) console.error(`[openaiCompat] ${this.modelId} fetch RETURNED ${res.status} in ${Date.now() - t0}ms`)
 
     if (!res.ok) {
       const body = await res.text().catch(() => '')

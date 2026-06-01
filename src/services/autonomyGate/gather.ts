@@ -76,8 +76,19 @@ export interface GateGatherers {
  * Only the *required* gates for the risk class are gathered — there's no point
  * paying judge latency on a `throwaway`. Advisory gates are left unmeasured
  * (the contract records them as `advisory`, not `missing`, since they're not
- * required). Required gatherers run concurrently; a gatherer that rejects is
- * coerced to a missing signal (defence in depth — gatherers shouldn't throw).
+ * required). A gatherer that rejects is coerced to a missing signal (defence in
+ * depth — gatherers shouldn't throw).
+ *
+ * **Sequential by default.** The L2 and judges gatherers each make LLM calls; in
+ * a local/self-hosted deployment they target the *same* model backend (e.g. one
+ * vLLM instance). Firing them concurrently makes L2's large reviewer prompt and
+ * the 3-judge panel contend for the same batch — observed in S2: each judge
+ * fetch took ~107s under L2 load and tripped the 90s per-judge timeout, even
+ * though every call completes in <2s in isolation. Running gatherers one at a
+ * time removes the contention. Set `ASICODE_AUTONOMY_GATE_CONCURRENT=1` to fire
+ * them concurrently when the backend can absorb it (e.g. distinct hosted models
+ * per role). The gate runs once per brief off the latency-critical path, so
+ * sequential is the safe default.
  */
 export async function runAutonomyGate(
   ctx: GateContext,
@@ -86,23 +97,28 @@ export async function runAutonomyGate(
 ): Promise<GateVerdict> {
   const required = REQUIRED_GATES[ctx.riskClass]
   const signals: GateSignals = {}
+  const concurrent = process.env.ASICODE_AUTONOMY_GATE_CONCURRENT === '1'
 
-  await Promise.all(
-    required.map(async (gate: GateName) => {
-      try {
-        signals[gate] = await gatherers[gate](ctx)
-      } catch (e) {
-        // Gatherers shouldn't throw; if one does, the gate is missing (never a
-        // pass). Surface the cause so a misconfigured gate is diagnosable rather
-        // than silently degrading the verdict to needs_human.
-        if (process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1') {
-          // eslint-disable-next-line no-console
-          console.error(`[autonomy-gate] ${gate} gatherer threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
-        }
-        signals[gate] = { ran: false }
+  const run = async (gate: GateName): Promise<void> => {
+    try {
+      signals[gate] = await gatherers[gate](ctx)
+    } catch (e) {
+      // Gatherers shouldn't throw; if one does, the gate is missing (never a
+      // pass). Surface the cause so a misconfigured gate is diagnosable rather
+      // than silently degrading the verdict to needs_human.
+      if (process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1') {
+        // eslint-disable-next-line no-console
+        console.error(`[autonomy-gate] ${gate} gatherer threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
       }
-    }),
-  )
+      signals[gate] = { ran: false }
+    }
+  }
+
+  if (concurrent) {
+    await Promise.all(required.map(run))
+  } else {
+    for (const gate of required) await run(gate)
+  }
 
   return composeVerdict(ctx.riskClass, signals, thresholds)
 }

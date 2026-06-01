@@ -22,19 +22,13 @@ import { join } from 'node:path'
 const cwd = process.env.ASICODE_WORKTREE_PATH ?? process.cwd()
 const runId = process.env.ASICODE_RUN_ID ?? 'unknown-run'
 
-// Drain stdin (the brief) so the writer doesn't get EPIPE; we don't need its
-// content for the deterministic change, but a real agent would read it here.
+// Drain stdin (the brief) to completion so the writer doesn't get EPIPE, then
+// the FD is fully consumed and the process won't linger blocked on pipe_read.
+// A real agent would parse the brief here; the stub just consumes it.
 try {
-  // Bun: synchronous stdin read to completion.
-  const chunks: Uint8Array[] = []
-  const fd = 0
-  const buf = new Uint8Array(65536)
-  // best-effort, non-fatal
-  void chunks
-  void fd
-  void buf
+  await new Response(Bun.stdin.stream()).text()
 } catch {
-  /* ignore */
+  /* ignore — stdin may already be closed */
 }
 
 const target = join(cwd, 'docs', 'asi-roadmap.md')
