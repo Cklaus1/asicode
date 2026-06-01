@@ -15,3 +15,6 @@ package-lock.json
 coverage/
 agent.log
 cache/
+
+# Project-local judge panel override (host-specific model routing)
+.asicode/judges.toml

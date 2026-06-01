@@ -91,7 +91,14 @@ export async function runAutonomyGate(
     required.map(async (gate: GateName) => {
       try {
         signals[gate] = await gatherers[gate](ctx)
-      } catch {
+      } catch (e) {
+        // Gatherers shouldn't throw; if one does, the gate is missing (never a
+        // pass). Surface the cause so a misconfigured gate is diagnosable rather
+        // than silently degrading the verdict to needs_human.
+        if (process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1') {
+          // eslint-disable-next-line no-console
+          console.error(`[autonomy-gate] ${gate} gatherer threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
+        }
         signals[gate] = { ran: false }
       }
     }),
@@ -170,6 +177,11 @@ async function gatherJudges(ctx: GateContext, thresholds: ContractThresholds): P
         }
       : undefined,
   }))
+  if (process.env.ASICODE_AUTONOMY_GATE_DEBUG === '1') {
+    const fails = result.judges.filter(j => !j.ok).map(j => `${j.role}:${(j as { kind?: string }).kind}`)
+    // eslint-disable-next-line no-console
+    console.error(`[autonomy-gate] judges complete=${result.complete} composite=${composite(scores)} fails=[${fails.join(',')}]`)
+  }
   return judgesSignal({ complete: result.complete, composite: composite(scores) }, thresholds)
 }
 

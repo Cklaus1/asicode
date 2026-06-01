@@ -299,14 +299,22 @@ async function main() {
       prGated = `winner verify=${race.winnerVerify}; pass --force-pr or ASICODE_AUTO_PR_FORCE=1 to open anyway`
     }
   }
-  // REQ-74: Autonomy Contract gate. When ASICODE_AUTONOMY_GATE=1, compose the
-  // per-risk-class verifier signals into one verdict between the race and the
-  // PR. Annotate-only: the verdict + blockers are threaded into the PR body and
-  // the brief's pr_outcome is set to merged_no_intervention / needs_human, but
-  // the PR still opens (no gate-the-PR yet — see docs/AUTONOMY_CONTRACT.md).
+  // REQ-74/76: Autonomy Contract gate. When ASICODE_AUTONOMY_GATE=1 and a race
+  // won, compose the per-risk-class verifier signals into one verdict. The
+  // verdict decision is independent of whether a PR opens (REQ-76) — it records
+  // pr_outcome = merged_no_intervention / needs_human on the brief row either
+  // way, which is the Autonomy Index numerator. When a PR does open, the verdict
+  // markdown is threaded into the body (annotate-only — no gate-the-PR yet; see
+  // docs/AUTONOMY_CONTRACT.md).
   let gateAnnotation: string | undefined
-  let gateOutcome: 'merged_no_intervention' | 'needs_human' | null = null
-  if (race && args.autoPr && !prGated && asicodeEnv('AUTONOMY_GATE') === '1') {
+  // The DB pr_outcome only has a terminal value when the gate says mergeable
+  // (merged_no_intervention — the Autonomy Index numerator). A needs_human
+  // verdict is NOT a terminal outcome: the brief is held, so pr_outcome stays
+  // unset (in_flight) and the reason is recorded instead. `gateVerdict` carries
+  // the human-facing decision for JSON/PR display regardless.
+  let gatePrOutcome: 'merged_no_intervention' | null = null
+  let gateVerdict: 'merged_no_intervention' | 'needs_human' | null = null
+  if (race && asicodeEnv('AUTONOMY_GATE') === '1') {
     try {
       const { runAutonomyGate, createGateGatherers } = await import('../src/services/autonomyGate/gather')
       const { renderVerdictMarkdown, verdictInterventionReason } = await import('../src/services/autonomyGate/annotate')
@@ -328,12 +336,17 @@ async function main() {
         createGateGatherers(),
       )
       gateAnnotation = renderVerdictMarkdown(verdict)
-      gateOutcome = verdict.recommendedOutcome
-      // Record the verdict on the brief row (the merged_no_intervention numerator
-      // of Metric 1 is decided here). Soft-fail — never undo a real PR.
+      gateVerdict = verdict.recommendedOutcome
+      gatePrOutcome = verdict.mergeable ? 'merged_no_intervention' : null
+      // Record the verdict on the brief row. A mergeable verdict sets
+      // pr_outcome=merged_no_intervention (the Metric 1 numerator); a needs_human
+      // verdict leaves pr_outcome unset (the brief is held, not terminal) and
+      // records why. When a PR opens, the PR-success path re-asserts pr_outcome
+      // alongside pr_number; when no PR opens this is where the verdict lands.
       try {
         updateBrief({
           brief_id: briefId,
+          ...(gatePrOutcome ? { pr_outcome: gatePrOutcome } : {}),
           ...(verdict.mergeable ? {} : { intervention_reason: verdictInterventionReason(verdict) ?? 'autonomy-gate' }),
         })
       } catch (e) { console.error(`[autonomy-gate] updateBrief failed: ${e instanceof Error ? e.message : String(e)}`) }
@@ -369,7 +382,7 @@ async function main() {
         // hiccup must not undo the actual PR that's already open.
         // REQ-74: persist the autonomy-gate verdict as pr_outcome when the gate
         // ran (annotate-only still records the decision for the Autonomy Index).
-        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber, pr_url: r.url, ...(gateOutcome ? { pr_outcome: gateOutcome } : {}) }) }
+        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber, pr_url: r.url, ...(gatePrOutcome ? { pr_outcome: gatePrOutcome } : {}) }) }
         catch (e) { console.error(`[auto-pr] updateBrief(pr_number/url) failed (PR still open at ${r.url}): ${e instanceof Error ? e.message : String(e)}`) }
       } else prError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
     } catch (e) { prError = e instanceof Error ? e.message : String(e) }
@@ -386,7 +399,7 @@ async function main() {
     if (pr) out.pr = pr
     else if (prGated) out.pr_gated = prGated
     else if (prError) out.pr_error = prError
-    if (gateOutcome) out.autonomy_gate = gateOutcome
+    if (gateVerdict) out.autonomy_gate = gateVerdict
     console.log(JSON.stringify(out))
   }
   else {
