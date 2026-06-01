@@ -51,9 +51,18 @@ describe('role prompts', () => {
     expect(composed).toMatch(/\n\nROLE:/)
   })
 
-  test('shared prefix instructs judges to be honest, not generous', () => {
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/honest and specific, not generous/)
+  test('shared prefix instructs judges to discriminate, not flatter', () => {
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/DISCRIMINATE, not to reassure/)
     expect(SHARED_SYSTEM_PREFIX).toMatch(/Return ONLY a JSON object/)
+  })
+
+  test('shared prefix anchors every score 1-5 with a concrete rubric (anti-rubber-stamp)', () => {
+    // The qwen×3 panel scored everything 4.46-4.68 (REQ-86); the rubric must
+    // anchor each integer so the panel uses the full range.
+    for (const n of [1, 2, 3, 4, 5]) {
+      expect(SHARED_SYSTEM_PREFIX).toMatch(new RegExp(`\\n\\s*${n} —`))
+    }
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/default to 3/)
   })
 
   test('shared prefix includes the explicit response schema (weak-model legibility)', () => {
