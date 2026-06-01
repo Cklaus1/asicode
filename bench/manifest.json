@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "bench_version": "2.0.0-wip",
+  "entries": [
+    {
+      "id": "REQ-79",
+      "category": "bugfix",
+      "brief": "Make the race-base the current branch instead of HEAD~1. The race verifier was comparing against the wrong base, which caused judge timeouts (107s) and incorrect diff output.",
+      "success_criteria": {
+        "race_base_is_current_branch": true,
+        "no_increasing_judge_timeout": true
+      },
+      "verifier_cmd": "git diff HEAD~1 --name-only",
+      "expected_outcome": "pass",
+      "commit": "20c43f3"
+    },
+    {
+      "id": "REQ-80",
+      "category": "feature",
+      "brief": "Add a diff-driven density gate that blocks a hands-off verdict when the diff increases code size without adding functionality. The gate computes LOC_before - LOC_after and requires density_delta >= 0 for merged_no_intervention.",
+      "success_criteria": {
+        "density_gate_exists": true,
+        "blocks_positive_density_delta": true
+      },
+      "verifier_cmd": "bun test",
+      "expected_outcome": "pass",
+      "commit": "989c1c7"
+    },
+    {
+      "id": "REQ-73",
+      "category": "feature",
+      "brief": "Build a governance suite with a runnable Definition-of-Done gate. The gate must be executable as a verification step before merge, checking that all DoD criteria are satisfied.",
+      "success_criteria": {
+        "runnable_gate": true,
+        "doD_criteria_checked": true
+      },
+      "verifier_cmd": "bun test",
+      "expected_outcome": "pass",
+      "commit": "8d8cee2"
+    },
+    {
+      "id": "REQ-69",
+      "category": "refactor",
+      "brief": "Collapse main.tsx wiring behind a lazy integration seam. Replace eager import and direct function calls with a lazy-load pattern that defers chrome module resolution until the first use.",
+      "success_criteria": {
+        "no_eager_import": true,
+        "lazy_load_pattern": true
+      },
+      "verifier_cmd": "bun test",
+      "expected_outcome": "pass",
+      "commit": "17824f7"
+    },
+    {
+      "id": "REQ-56",
+      "category": "refactor",
+      "brief": "Consolidate SCHEMA_VERSION_REQUIRED to a single source of truth. Remove duplicate constant declarations across files and ensure all references import from one module.",
+      "success_criteria": {
+        "single_source": true,
+        "no_duplicate_declarations": true
+      },
+      "verifier_cmd": "grep -r SCHEMA_VERSION_REQUIRED --include='*.ts' | sort | uniq -u | wc -l",
+      "expected_outcome": "pass",
+      "commit": "dcae47c"
+    },
+    {
+      "id": "REQ-57",
+      "category": "dep-upgrade",
+      "brief": "Ensure the asicode CLI runs under bun, not node. Update the bin shim and all shebang lines in scripts/ to invoke via bun, and verify that no script relies on node-specific globals.",
+      "success_criteria": {
+        "shebangs_use_bun": true,
+        "no_node_globals": true
+      },
+      "verifier_cmd": "head -1 scripts/*.ts | grep -c bun",
+      "expected_outcome": "pass",
+      "commit": "8967cc4"
+    },
+    {
+      "id": "REQ-42",
+      "category": "feature",
+      "brief": "Add a CLI watcher that cleans up worktrees after a PR is merged. When watch-merges detects a merge event, it should run a cleanup step to remove the race-branch worktree.",
+      "success_criteria": {
+        "cleanup_on_merge": true,
+        "no_orphaned_worktrees": true
+      },
+      "verifier_cmd": "bun test",
+      "expected_outcome": "pass",
+      "commit": "79d5dd1"
+    },
+    {
+      "id": "REQ-68",
+      "category": "bugfix",
+      "brief": "Fix the L2 self-review invoker so it correctly resolves the production reviewer when the agent is in race mode. The invoker was falling back to a mock reviewer instead of the real one.",
+      "success_criteria": {
+        "production_invoker": true,
+        "race_mode_compat": true
+      },
+      "verifier_cmd": "bun test src/__tests__/",
+      "expected_outcome": "pass",
+      "commit": "placeholder"
+    },
+    {
+      "id": "REQ-51",
+      "category": "test-writing",
+      "brief": "Add a --list flag to the status CLI that shows recent briefs. The flag should return structured output with brief id, project, status, and timestamp for each entry.",
+      "success_criteria": {
+        "list_flag_exists": true,
+        "structured_output": true
+      },
+      "verifier_cmd": "bun test scripts/asicode-status.test.ts",
+      "expected_outcome": "pass",
+      "commit": "2529539"
+    },
+    {
+      "id": "REQ-72",
+      "category": "test-writing",
+      "brief": "Wire the L2 reviewer as a production invoker with a dependency factory. The invoker must create reviewer instances from the dependency graph, not from hardcoded paths.",
+      "success_criteria": {
+        "production_wiring": true,
+        "deps_factory": true
+      },
+      "verifier_cmd": "bun test",
+      "expected_outcome": "pass",
+      "commit": "49de11e"
+    },
+    {
+      "id": "REQ-34",
+      "category": "doc",
+      "brief": "Complete the openclaude to asicode rename across the entire codebase. Update package name, CLI binary name, all CLI flags, environment variable names, file references, and documentation strings.",
+      "success_criteria": {
+        "no_openclaude_references": true,
+        "no_claude_code_references": true,
+        "env_var_consistent": true
+      },
+      "verifier_cmd": "grep -r 'openclaude' --include='*.ts' --include='*.json' --include='*.md' | wc -l",
+      "expected_outcome": "pass",
+      "commit": "63d0a0e"
+    },
+    {
+      "id": "REQ-70",
+      "category": "doc",
+      "brief": "Add provider scope metadata to plugins so each plugin declares which providers it targets (e.g., 'anthropic', 'ollama', 'all'). The scope should be read from the plugin manifest.",
+      "success_criteria": {
+        "scope_field_present": true,
+        "scope_enforced": true
+      },
+      "verifier_cmd": "bun test",
+      "expected_outcome": "pass",
+      "commit": "ced0417"
+    }
+  ]
+}
