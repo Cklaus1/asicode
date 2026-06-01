@@ -1,0 +1,262 @@
+/**
+ * Signal gathering + orchestration for the Autonomy Contract.
+ *
+ * `contract.ts` is pure policy: given signals, decide. This module is the
+ * bridge from the live subsystems (L2 self-review, the 3-panel judge, density
+ * A/B, A15 adversarial) to those signals, and then to a verdict.
+ *
+ * Dependency-injection on purpose (mirrors selfReview/production.ts's
+ * `createSelfReviewDeps`): the gatherers are seams. Tests inject deterministic
+ * gatherers; the production factory (`createGateGatherers`) wires the real
+ * `*Await` triggers. That keeps the orchestration logic unit-testable without
+ * spinning up model calls, and keeps the heavy trigger imports lazy so the
+ * submit script doesn't pull the whole judge pipeline at module load.
+ *
+ * The contract's invariant carries through here unchanged: a gatherer that
+ * returns `{ ran: false }` (gate disabled, no diff, lookup failed) produces a
+ * missing signal, which `composeVerdict` fails when that gate is required. We
+ * never synthesize a passing signal from absence.
+ */
+import {
+  composeVerdict,
+  composite,
+  densitySignal,
+  judgesSignal,
+  l2Signal,
+  DEFAULT_THRESHOLDS,
+  REQUIRED_GATES,
+  type ContractThresholds,
+  type GateName,
+  type GateSignal,
+  type GateSignals,
+  type GateVerdict,
+  type RiskClass,
+} from './contract.js'
+
+/** Everything the gatherers need to evaluate one candidate merge. */
+export interface GateContext {
+  briefId: string
+  briefText: string
+  /** The winner's uncommitted diff vs base (race.winnerDiff). */
+  diff: string
+  changedFiles: string[]
+  /** The winner worktree path — where L2's recompute + git operations run. */
+  cwd: string
+  /** L1 verifier outcome from the race (winner verify). */
+  l1Passed: boolean
+  riskClass: RiskClass
+  /**
+   * Optional pre-computed density A/B result. The live density harness is
+   * sha-keyed (reads a committed sha), so it can't evaluate a pre-merge
+   * worktree diff; until a diff-driven harness lands, a caller that has a real
+   * result (e.g. post-merge, or a future diff-driven path) supplies it here.
+   * Absent → the density gatherer returns a missing signal (blocks where
+   * required, rather than fabricating a pass).
+   */
+  densityAb?: { isRefactor: boolean; densityCounted?: boolean; densityDelta?: number }
+}
+
+/**
+ * One gatherer per gate. Each returns a GateSignal (or `{ ran: false }`). They
+ * are independent and may run concurrently; none may throw — a gatherer that
+ * hits an error returns `{ ran: false }` so the contract treats it as missing
+ * signal, never as a pass.
+ */
+export interface GateGatherers {
+  l1: (ctx: GateContext) => Promise<GateSignal>
+  l2: (ctx: GateContext) => Promise<GateSignal>
+  judges: (ctx: GateContext) => Promise<GateSignal>
+  density: (ctx: GateContext) => Promise<GateSignal>
+  adversarial: (ctx: GateContext) => Promise<GateSignal>
+}
+
+/**
+ * Run the gatherers required for the context's risk class, compose the verdict.
+ *
+ * Only the *required* gates for the risk class are gathered — there's no point
+ * paying judge latency on a `throwaway`. Advisory gates are left unmeasured
+ * (the contract records them as `advisory`, not `missing`, since they're not
+ * required). Required gatherers run concurrently; a gatherer that rejects is
+ * coerced to a missing signal (defence in depth — gatherers shouldn't throw).
+ */
+export async function runAutonomyGate(
+  ctx: GateContext,
+  gatherers: GateGatherers,
+  thresholds: ContractThresholds = DEFAULT_THRESHOLDS,
+): Promise<GateVerdict> {
+  const required = REQUIRED_GATES[ctx.riskClass]
+  const signals: GateSignals = {}
+
+  await Promise.all(
+    required.map(async (gate: GateName) => {
+      try {
+        signals[gate] = await gatherers[gate](ctx)
+      } catch {
+        signals[gate] = { ran: false }
+      }
+    }),
+  )
+
+  return composeVerdict(ctx.riskClass, signals, thresholds)
+}
+
+// ─── Production gatherers ────────────────────────────────────────────────────
+// Thin adapters from each live `*Await` trigger to a GateSignal. Heavy imports
+// are dynamic so this module stays light until a gate actually runs.
+
+/**
+ * L1: the race already ran the verifier on the winner; we just lift its
+ * pass/fail into a signal. No subsystem call needed.
+ */
+async function gatherL1(ctx: GateContext): Promise<GateSignal> {
+  return { ran: true, passed: ctx.l1Passed, detail: ctx.l1Passed ? 'verifier passed' : 'verifier did not pass' }
+}
+
+/**
+ * L2: run the self-review loop on the winner diff via the production deps
+ * (real reviewer invoker, git recompute, review-only fixer). Maps the
+ * BriefReviewOutcome into a signal through `l2Signal`.
+ */
+async function gatherL2(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
+  const { runBriefReviewIfEnabled } = await import('../selfReview/briefCompletionHook.js')
+  const { createSelfReviewDeps } = await import('../selfReview/production.js')
+  const { meetsBar } = await import('../selfReview/findingsSchema.js')
+
+  const review = await runBriefReviewIfEnabled({
+    taskId: ctx.briefId,
+    diff: ctx.diff,
+    changedFiles: ctx.changedFiles,
+    // Honour the L2 blocking bar from the contract thresholds.
+    settings: { enabled: true, severityBar: thresholds.l2BlockingBar },
+    cwd: ctx.cwd,
+    deps: createSelfReviewDeps({ cwd: ctx.cwd }),
+  })
+
+  if (!review.ran) return { ran: false }
+  const unresolvedBlocking = review.unresolvedFindings.filter(f =>
+    meetsBar(f.severity, thresholds.l2BlockingBar),
+  ).length
+  return l2Signal({
+    ran: true,
+    outcome: review.outcome,
+    unresolvedBlocking,
+  })
+}
+
+/**
+ * Judges: run the 3-panel judge on the winner diff. We pass the diff directly
+ * (the trigger's `prSha` is only used to fetch a diff when none is supplied),
+ * so the panel scores the pre-merge winner rather than a merged sha.
+ */
+async function gatherJudges(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
+  const { judgeOnPrMergeAwait } = await import('../judges/trigger.js')
+  // prSha is required by the input type but unused when diff is provided; a
+  // stable synthetic value keeps any caching keyed per-brief.
+  const result = await judgeOnPrMergeAwait({
+    briefId: ctx.briefId,
+    prSha: `pre-merge-${ctx.briefId}`,
+    briefText: ctx.briefText,
+    diff: ctx.diff,
+    cwd: ctx.cwd,
+  })
+  if (!result) return { ran: false } // judges disabled or no registry
+  const scores = result.judges.map(j => ({
+    ok: j.ok,
+    scores: j.ok
+      ? {
+          correctness: j.response.scores.correctness,
+          code_review: j.response.scores.code_review,
+          qa_risk: j.response.scores.qa_risk,
+        }
+      : undefined,
+  }))
+  return judgesSignal({ complete: result.complete, composite: composite(scores) }, thresholds)
+}
+
+/**
+ * Density: required for `production`/`security` on refactors.
+ *
+ * The live density harness (`classifyRefactor` + `recordDensity`) is sha-keyed:
+ * it reads a *committed* sha via `git log`/`git show`, not a worktree's
+ * uncommitted diff. The pre-merge gate runs before the winner is committed to a
+ * landable sha, so the harness can't evaluate it here without a refactor to
+ * make it diff-driven (tracked as follow-up; see AUTONOMY_CONTRACT.md "S1").
+ *
+ * Until that lands, density is gathered post-merge by the existing
+ * `densityOnPrMerge` trigger, and the pre-merge gate returns a **missing
+ * signal** when density is required and the change is a candidate refactor. Per
+ * the contract that fails the verdict → `needs_human`, which is the safe
+ * reading: we don't fabricate a density pass we couldn't actually measure.
+ *
+ * `injectedAb` lets the call site (or a future diff-driven harness) supply a
+ * real result; when present we score it properly.
+ */
+async function gatherDensity(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
+  const { isDensityEnabled } = await import('../instrumentation/density-trigger.js')
+  if (!isDensityEnabled()) return { ran: false }
+  if (ctx.densityAb) {
+    return densitySignal(ctx.densityAb, thresholds)
+  }
+  // No diff-driven A/B result available pre-merge — missing signal, blocks
+  // where required. Honest over a fabricated pass.
+  return { ran: false }
+}
+
+/**
+ * A15 adversarial: only required for `security`. Runs the adversarial verifier
+ * directly on the winner diff so we can read its severity counts (the sha-keyed
+ * `*OnPrMergeAwait` trigger returns `{ persisted }` without a verdict). The
+ * adversary "passes" iff it found nothing at or above the blocking bar.
+ *
+ * If the verifier can't run (disabled, no provider, error), this returns a
+ * missing signal — which fails the security gate. Security changes do not
+ * auto-merge on an unrun adversary.
+ */
+async function gatherAdversarial(ctx: GateContext, thresholds: ContractThresholds): Promise<GateSignal> {
+  const { isAdversarialEnabled } = await import('../adversarial/trigger.js')
+  if (!isAdversarialEnabled()) return { ran: false }
+  const { createCachedProvider } = await import('../trigger-shared/cachedProvider.js')
+  const provider = createCachedProvider({ warnTag: 'autonomy-gate-adversarial' }).getProvider()
+  if (!provider) return { ran: false }
+  const { adversarialVerify } = await import('../adversarial/verifier.js')
+  const { meetsBar, SEVERITIES } = await import('../selfReview/findingsSchema.js')
+
+  const result = await adversarialVerify({
+    briefText: ctx.briefText,
+    diff: ctx.diff,
+    provider,
+  }).catch(() => null)
+  if (!result || !result.ok) return { ran: false }
+
+  // Block iff the adversary surfaced any finding at/above the blocking bar.
+  const counts = result.counts
+  const blocking = SEVERITIES.filter(sev => meetsBar(sev, thresholds.l2BlockingBar)).reduce(
+    (n, sev) => n + (counts[sev] ?? 0),
+    0,
+  )
+  const passed = blocking === 0
+  return {
+    ran: true,
+    passed,
+    value: blocking,
+    detail: passed
+      ? 'adversary found no blocking exploit'
+      : `adversary found ${blocking} finding(s) at/above the ${thresholds.l2BlockingBar} bar`,
+  }
+}
+
+/**
+ * Production gatherer bundle. Each adapter lazy-imports its subsystem and maps
+ * the native result to a signal via the contract's adapters.
+ */
+export function createGateGatherers(
+  thresholds: ContractThresholds = DEFAULT_THRESHOLDS,
+): GateGatherers {
+  return {
+    l1: gatherL1,
+    l2: ctx => gatherL2(ctx, thresholds),
+    judges: ctx => gatherJudges(ctx, thresholds),
+    density: ctx => gatherDensity(ctx, thresholds),
+    adversarial: ctx => gatherAdversarial(ctx, thresholds),
+  }
+}

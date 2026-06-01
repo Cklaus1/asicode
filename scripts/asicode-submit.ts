@@ -233,6 +233,8 @@ async function main() {
     racerCount: number
     verifyCmd: string | null
     baselineVerify: string | null
+    // REQ-74: winner diff for the autonomy gate (L2/judges run on it)
+    winnerDiff: string
   } | null = null
   let raceError: string | null = null
   if (shouldStart && args.race >= 2) {
@@ -259,6 +261,7 @@ async function main() {
           racerCount: r.racers.length,
           verifyCmd: r.verifyCmd,
           baselineVerify: r.baselineVerify,
+          winnerDiff: r.winnerDiff,
         }
       }
       else {
@@ -296,11 +299,55 @@ async function main() {
       prGated = `winner verify=${race.winnerVerify}; pass --force-pr or ASICODE_AUTO_PR_FORCE=1 to open anyway`
     }
   }
+  // REQ-74: Autonomy Contract gate. When ASICODE_AUTONOMY_GATE=1, compose the
+  // per-risk-class verifier signals into one verdict between the race and the
+  // PR. Annotate-only: the verdict + blockers are threaded into the PR body and
+  // the brief's pr_outcome is set to merged_no_intervention / needs_human, but
+  // the PR still opens (no gate-the-PR yet — see docs/AUTONOMY_CONTRACT.md).
+  let gateAnnotation: string | undefined
+  let gateOutcome: 'merged_no_intervention' | 'needs_human' | null = null
+  if (race && args.autoPr && !prGated && asicodeEnv('AUTONOMY_GATE') === '1') {
+    try {
+      const { runAutonomyGate, createGateGatherers } = await import('../src/services/autonomyGate/gather')
+      const { renderVerdictMarkdown, verdictInterventionReason } = await import('../src/services/autonomyGate/annotate')
+      // Risk class from A16 (a16_risk_class on the brief row); default to the
+      // conservative 'production' when A16 didn't classify — more gates, fails
+      // safe (a needs_human is recoverable; a wrong auto-merge is not).
+      const { lookupRiskClass } = await import('../src/services/adversarial/trigger')
+      const riskClass = (lookupRiskClass(briefId) ?? 'production') as 'throwaway' | 'experimental' | 'production' | 'security'
+      const changedFiles = race.winnerDiff
+        .split('\n')
+        .filter(l => l.startsWith('+++ b/') || l.startsWith('--- a/'))
+        .map(l => l.replace(/^[+-]{3} [ab]\//, '').trim())
+        .filter((f, i, a) => f && f !== '/dev/null' && a.indexOf(f) === i)
+      const verdict = await runAutonomyGate(
+        {
+          briefId, briefText, diff: race.winnerDiff, changedFiles,
+          cwd: race.winnerWorktree, l1Passed: race.winnerVerify === 'passed', riskClass,
+        },
+        createGateGatherers(),
+      )
+      gateAnnotation = renderVerdictMarkdown(verdict)
+      gateOutcome = verdict.recommendedOutcome
+      // Record the verdict on the brief row (the merged_no_intervention numerator
+      // of Metric 1 is decided here). Soft-fail — never undo a real PR.
+      try {
+        updateBrief({
+          brief_id: briefId,
+          ...(verdict.mergeable ? {} : { intervention_reason: verdictInterventionReason(verdict) ?? 'autonomy-gate' }),
+        })
+      } catch (e) { console.error(`[autonomy-gate] updateBrief failed: ${e instanceof Error ? e.message : String(e)}`) }
+    } catch (e) {
+      console.error(`[autonomy-gate] failed (continuing without gate): ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   if (race && args.autoPr && !prGated) {
     try {
       const r = await openWinnerPr({
         branch: race.winnerBranch, repoPath: args.cwd, worktreePath: race.winnerWorktree,
         briefText, briefId, racerRunIds: race.racerRunIds,
+        ...(gateAnnotation ? { annotation: gateAnnotation } : {}),
         // REQ-25: surface the verifier signal in the PR body when we
         // ran one + know the winner's outcome.
         ...(race.verifyCmd && race.winnerVerify && race.winnerVerifyDurationMs !== null
@@ -320,7 +367,9 @@ async function main() {
         // REQ-16: persist pr_number on the brief row so watch-merges
         // links the merge sha back deterministically. Soft-fail: a db
         // hiccup must not undo the actual PR that's already open.
-        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber, pr_url: r.url }) }
+        // REQ-74: persist the autonomy-gate verdict as pr_outcome when the gate
+        // ran (annotate-only still records the decision for the Autonomy Index).
+        try { updateBrief({ brief_id: briefId, pr_number: r.prNumber, pr_url: r.url, ...(gateOutcome ? { pr_outcome: gateOutcome } : {}) }) }
         catch (e) { console.error(`[auto-pr] updateBrief(pr_number/url) failed (PR still open at ${r.url}): ${e instanceof Error ? e.message : String(e)}`) }
       } else prError = `${r.reason}${r.detail ? `: ${r.detail}` : ''}`
     } catch (e) { prError = e instanceof Error ? e.message : String(e) }
@@ -337,6 +386,7 @@ async function main() {
     if (pr) out.pr = pr
     else if (prGated) out.pr_gated = prGated
     else if (prError) out.pr_error = prError
+    if (gateOutcome) out.autonomy_gate = gateOutcome
     console.log(JSON.stringify(out))
   }
   else {

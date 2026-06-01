@@ -57,6 +57,11 @@ export interface OpenWinnerPrInput {
      *  failure is inherited red, not a regression introduced by this PR. */
     baselineOutcome?: 'passed' | 'failed' | 'verifier_error' | null
   }
+  /** REQ-74: Autonomy Contract verdict block, rendered verbatim into the PR
+   *  body. Annotate-only mode threads the gate's mergeable/needs-human verdict
+   *  and its blockers here so a human (or a merge bot) sees exactly why the
+   *  change did or didn't clear the bar. Markdown; rendered after Verification. */
+  annotation?: string
 }
 
 export function isAutoPrEnabled(): boolean {
@@ -86,6 +91,7 @@ export function buildPrBody(input: {
   briefText: string
   racerRunIds?: string[]
   verify?: OpenWinnerPrInput['verify']
+  annotation?: string
 }): string {
   const head = input.briefText.split('\n').slice(0, 20).join('\n')
   // REQ-25: verifier section. Renders first when present — reviewers
@@ -122,7 +128,10 @@ ${input.verify.cmd}
   const racers = input.racerRunIds && input.racerRunIds.length > 0
     ? `\n\n## Race\n\n${input.racerRunIds.length} racers, winner picked by verifier rank (REQ-18) → tiebreak/FCFS.\nRacer run ids: ${input.racerRunIds.join(', ')}`
     : ''
-  return `Brief: \`${input.briefId}\`\n\n${verifySection}## Original brief\n\n${head}${racers}\n\n---\n\n🤖 Opened by asicode (REQ-15 auto-PR).`
+  // REQ-74: Autonomy Contract verdict, rendered right after Verification so
+  // the hands-off decision is up front.
+  const annotation = input.annotation ? `${input.annotation}\n\n` : ''
+  return `Brief: \`${input.briefId}\`\n\n${verifySection}${annotation}## Original brief\n\n${head}${racers}\n\n---\n\n🤖 Opened by asicode (REQ-15 auto-PR).`
 }
 
 export async function openWinnerPr(input: OpenWinnerPrInput): Promise<OpenWinnerPrResult> {
@@ -139,7 +148,7 @@ export async function openWinnerPr(input: OpenWinnerPrInput): Promise<OpenWinner
   // 3. Open the PR via gh.
   const base = input.base ?? 'main'
   const title = buildPrTitle(input.briefText)
-  const body = buildPrBody({ briefId: input.briefId, briefText: input.briefText, racerRunIds: input.racerRunIds, verify: input.verify })
+  const body = buildPrBody({ briefId: input.briefId, briefText: input.briefText, racerRunIds: input.racerRunIds, verify: input.verify, annotation: input.annotation })
   const r = await createPrFromBranch({ branch: input.branch, base, title, body, repoPath: input.repoPath, timeoutMs })
   if (!r.ok) {
     if (r.reason === 'already_exists') return { ok: false, reason: 'gh_failed', detail: 'pr already exists for branch', branch: input.branch }

@@ -123,9 +123,12 @@ replayable from the recorded signals alone — an auditor can re-derive any hist
 
 ## How it wires into the run (activation)
 
-The gate is **built and unit-tested but not yet on the submit path** — wiring it is a deliberate,
-reviewable step because it sits in the autonomous merge path. The seam is `scripts/asicode-submit.ts`,
-between `raceAgents` (the winner exists, in `winnerWorktree`) and `openWinnerPr`:
+**Status: wired (REQ-74), annotate-only, behind `ASICODE_AUTONOMY_GATE=1`.** The gate runs on the
+submit path between `raceAgents` (the winner exists, in `winnerWorktree`) and `openWinnerPr`. It is
+default-off; when the flag is set it composes the verdict, threads `renderVerdictMarkdown(verdict)` into
+the PR body, and records `pr_outcome` (`merged_no_intervention` / `needs_human`) plus an
+`intervention_reason` on the brief row. The PR still opens regardless (annotate-only — no gate-the-PR
+yet). The seam:
 
 ```
 raceAgents → winner worktree
@@ -151,8 +154,12 @@ raceAgents → winner worktree
   required gate can stall the walk-away loop. Graduate to this only after annotate-only shows the
   verdict is trustworthy on real briefs.
 
-Until activated, the contract is enforceable-on-demand (any caller can `composeVerdict`) but not yet
-enforced-by-default.
+**Known limitation (REQ-74):** the L1, L2, and judges gatherers evaluate the winner's pre-merge diff
+directly. Density and adversarial are partially blind pre-merge — the density harness is sha-keyed
+(reads a committed sha, not a worktree diff), so on a candidate refactor the density gatherer returns a
+*missing* signal, which (correctly, per the one rule) holds `production`/`security` refactors for human
+review rather than fabricating a pass. Making density diff-driven is the follow-up that lets refactors
+clear the gate hands-off. Until then, the gate fails safe.
 
 ---
 
