@@ -121,6 +121,29 @@ export function getBuiltinPluginSkillCommands(): Command[] {
 }
 
 /**
+ * Get in-process CODE commands from enabled built-in plugins (REQ-93).
+ *
+ * The counterpart to `getBuiltinPluginSkillCommands`: where skills are
+ * markdown/prompt commands, these are full `Command` objects (LocalCommand /
+ * LocalJSXCommand) a plugin contributes via its `commands` field. Same
+ * enabled/availability/user-settings gating — commands from disabled or
+ * unavailable plugins are not returned. This is the capability that lets
+ * code-shaped commands (advisor/stickers/knowledge) live in a plugin.
+ */
+export function getBuiltinPluginCommands(): Command[] {
+  const { enabled } = getBuiltinPlugins()
+  const commands: Command[] = []
+
+  for (const plugin of enabled) {
+    const definition = BUILTIN_PLUGINS.get(plugin.name)
+    if (!definition?.commands) continue
+    commands.push(...definition.commands)
+  }
+
+  return commands
+}
+
+/**
  * Clear built-in plugins registry (for testing).
  */
 export function clearBuiltinPlugins(): void {

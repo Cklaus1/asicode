@@ -1,3 +1,4 @@
+import type { Command } from './command.js'
 import type { LspServerConfig } from '../services/lsp/types.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
 import type { BundledSkillDefinition } from '../skills/bundledSkills.js'
@@ -22,8 +23,17 @@ export type BuiltinPluginDefinition = {
   description: string
   /** Optional version string */
   version?: string
-  /** Skills provided by this plugin */
+  /** Skills (markdown prompt commands) provided by this plugin */
   skills?: BundledSkillDefinition[]
+  /**
+   * In-process code commands provided by this plugin (REQ-93). Unlike `skills`
+   * (markdown/prompt only), these are full `Command` objects with an `async
+   * call()` / Ink `load()` — the capability ADR-0001 flagged as required to
+   * pluginize code-shaped commands (advisor/stickers/knowledge). Surfaced by
+   * `getBuiltinPluginCommands()` with the same enabled/availability gating as
+   * skills.
+   */
+  commands?: Command[]
   /** Hooks provided by this plugin */
   hooks?: HooksSettings
   /** MCP servers provided by this plugin */

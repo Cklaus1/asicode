@@ -167,7 +167,7 @@ import {
   getDynamicSkills,
 } from './skills/loadSkillsDir.js'
 import { getBundledSkills } from './skills/bundledSkills.js'
-import { getBuiltinPluginSkillCommands } from './plugins/builtinPlugins.js'
+import { getBuiltinPluginCommands, getBuiltinPluginSkillCommands } from './plugins/builtinPlugins.js'
 import {
   getPluginCommands,
   clearPluginCommandCache,
@@ -453,6 +453,9 @@ const loadAllCommands = memoize(async (cwd: string): Promise<Command[]> => {
   return [
     ...bundledSkills,
     ...builtinPluginSkills,
+    // REQ-93: in-process CODE commands from enabled built-in plugins (the
+    // capability that lets advisor/stickers/knowledge live in asicode-extras).
+    ...getBuiltinPluginCommands(),
     ...skillDirCommands,
     ...workflowCommands,
     ...pluginCommands,
