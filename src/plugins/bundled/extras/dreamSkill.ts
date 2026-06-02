@@ -1,24 +1,33 @@
+/**
+ * `/dream` as a bundled-plugin skill (ADR-0001 step 1 — REQ-92).
+ *
+ * `/dream` was a `PromptCommand` in src/commands/dream/ imported directly into
+ * commands.ts. Its `getPromptForCommand` shape matches `BundledSkillDefinition`
+ * exactly, so it migrates into the `asicode-extras` built-in plugin with no new
+ * infrastructure — this is the inversion the ADR's step 1 proves: the command
+ * is now *contributed* by a plugin the kernel discovers, not hardcoded.
+ *
+ * The body is unchanged from the original src/commands/dream/dream.ts; only the
+ * packaging moved. The `isAutoMemoryEnabled()` gate carries through the skill's
+ * `isEnabled`, so `/dream` still only appears when auto-memory is on.
+ */
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
-import type { Command } from '../../commands.js'
-import { isAutoMemoryEnabled, getAutoMemPath } from '../../memdir/paths.js'
-import { getProjectDir } from '../../utils/sessionStorage.js'
-import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
-import { buildConsolidationPrompt } from '../../services/autoDream/consolidationPrompt.js'
+import type { BundledSkillDefinition } from '../../../skills/bundledSkills.js'
+import { isAutoMemoryEnabled, getAutoMemPath } from '../../../memdir/paths.js'
+import { getProjectDir } from '../../../utils/sessionStorage.js'
+import { getOriginalCwd, getSessionId } from '../../../bootstrap/state.js'
+import { buildConsolidationPrompt } from '../../../services/autoDream/consolidationPrompt.js'
 import {
   readLastConsolidatedAt,
   listSessionsTouchedSince,
   recordConsolidation,
-} from '../../services/autoDream/consolidationLock.js'
+} from '../../../services/autoDream/consolidationLock.js'
 
-const command = {
-  type: 'prompt',
+export const dreamSkill: BundledSkillDefinition = {
   name: 'dream',
   description:
     'Run memory consolidation — synthesize recent sessions into durable memories',
   isEnabled: () => isAutoMemoryEnabled(),
-  progressMessage: 'consolidating memories',
-  contentLength: 0,
-  source: 'builtin',
   async getPromptForCommand(): Promise<ContentBlockParam[]> {
     const memoryRoot = getAutoMemPath()
     const transcriptDir = getProjectDir(getOriginalCwd())
@@ -57,12 +66,10 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
 
     const prompt = buildConsolidationPrompt(memoryRoot, transcriptDir, extra)
 
-    // Record consolidation timestamp programmatically so auto-dream
-    // knows when the last manual run happened.
+    // Record consolidation timestamp programmatically so auto-dream knows when
+    // the last manual run happened.
     await recordConsolidation()
 
     return [{ type: 'text', text: prompt }]
   },
-} satisfies Command
-
-export default command
+}

@@ -14,10 +14,21 @@
  * 2. Call registerBuiltinPlugin() with the plugin definition here
  */
 
+import { registerBuiltinPlugin } from '../builtinPlugins.js'
+import { dreamSkill } from './extras/dreamSkill.js'
+
 /**
  * Initialize built-in plugins. Called during CLI startup.
  */
 export function initBuiltinPlugins(): void {
-  // No built-in plugins registered yet — this is the scaffolding for
-  // migrating bundled skills that should be user-toggleable.
+  // asicode-extras: the command-shaped bolt-ons (ADR-0001 step 2 set). dream is
+  // the first migrant (step 1, REQ-92) — a prompt skill. advisor/stickers/
+  // knowledge (code commands) join via the `commands` capability in REQ-93/94.
+  registerBuiltinPlugin({
+    name: 'asicode-extras',
+    description:
+      'Extra slash commands: /dream (memory consolidation), /advisor, /stickers, /knowledge',
+    skills: [dreamSkill],
+    defaultEnabled: true,
+  })
 }
