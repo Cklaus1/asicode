@@ -14,21 +14,29 @@
  * 2. Call registerBuiltinPlugin() with the plugin definition here
  */
 
+import type { Command } from '../../commands.js'
 import { registerBuiltinPlugin } from '../builtinPlugins.js'
 import { dreamSkill } from './extras/dreamSkill.js'
+import advisor from '../../commands/advisor.js'
+import stickers from '../../commands/stickers/index.js'
+import knowledge from '../../commands/knowledge/index.js'
 
 /**
  * Initialize built-in plugins. Called during CLI startup.
  */
 export function initBuiltinPlugins(): void {
-  // asicode-extras: the command-shaped bolt-ons (ADR-0001 step 2 set). dream is
-  // the first migrant (step 1, REQ-92) — a prompt skill. advisor/stickers/
-  // knowledge (code commands) join via the `commands` capability in REQ-93/94.
+  // asicode-extras: the command-shaped bolt-ons (ADR-0001 step 2 set), now
+  // CONTRIBUTED by a plugin the kernel discovers instead of hardcoded in
+  // commands.ts. /dream is a prompt skill (REQ-92); advisor/stickers/knowledge
+  // are code commands carried via the `commands` capability (REQ-93/94). Their
+  // implementation modules stay under src/commands/ (the underlying util
+  // systems live in core); only the registration moved out of commands.ts.
   registerBuiltinPlugin({
     name: 'asicode-extras',
     description:
       'Extra slash commands: /dream (memory consolidation), /advisor, /stickers, /knowledge',
     skills: [dreamSkill],
+    commands: [advisor, stickers, knowledge] as Command[],
     defaultEnabled: true,
   })
 }

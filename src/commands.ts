@@ -20,7 +20,6 @@ import diff from './commands/diff/index.js'
 import ctx_viz from './commands/ctx_viz/index.js'
 import doctor from './commands/doctor/index.js'
 import onboardGithub from './commands/onboard-github/index.js'
-import knowledge from './commands/knowledge/index.js'
 import memory from './commands/memory/index.js'
 import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
@@ -156,8 +155,9 @@ import antTrace from './commands/ant-trace/index.js'
 import perfIssue from './commands/perf-issue/index.js'
 import sandboxToggle from './commands/sandbox-toggle/index.js'
 import chrome from './commands/chrome/index.js'
+// stickers is contributed by the asicode-extras plugin (REQ-94); imported here
+// ONLY for REMOTE_SAFE_COMMANDS, which membership-tests by object identity.
 import stickers from './commands/stickers/index.js'
-import advisor from './commands/advisor.js'
 import { logError } from './utils/log.js'
 import { toError } from './utils/errors.js'
 import { logForDebugging } from './utils/debug.js'
@@ -265,7 +265,6 @@ export const INTERNAL_ONLY_COMMANDS = [
 // since underlying functions read from config, which can't be read at module initialization time
 const COMMANDS = memoize((): Command[] => [
   addDir,
-  advisor,
   agents,
   autoFix,
   branch,
@@ -293,7 +292,6 @@ const COMMANDS = memoize((): Command[] => [
   ide,
   init,
   keybindings,
-  knowledge,
   installGitHubApp,
   installSlackApp,
   mcp,
@@ -315,7 +313,6 @@ const COMMANDS = memoize((): Command[] => [
   stats,
   status,
   statusline,
-  stickers,
   tag,
   theme,
   feedback,

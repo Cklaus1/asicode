@@ -31,6 +31,23 @@ describe('asicode-extras built-in plugin (REQ-92)', () => {
     // its auto-memory gate carries through.
     expect(typeof dream?.isEnabled).toBe('function')
   })
+
+  test('contributes advisor/stickers/knowledge as code commands (REQ-94)', () => {
+    const codeNames = getBuiltinPluginCommands().map(c => c.name)
+    expect(codeNames).toContain('advisor')
+    expect(codeNames).toContain('stickers')
+    expect(codeNames).toContain('knowledge')
+  })
+
+  test('all four extras resolve from the plugin (none hardcoded in commands.ts)', () => {
+    const all = [
+      ...getBuiltinPluginSkillCommands(),
+      ...getBuiltinPluginCommands(),
+    ].map(c => c.name)
+    for (const n of ['dream', 'advisor', 'stickers', 'knowledge']) {
+      expect(all).toContain(n)
+    }
+  })
 })
 
 describe('getBuiltinPluginCommands — code-command capability (REQ-93)', () => {
