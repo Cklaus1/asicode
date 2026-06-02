@@ -106,13 +106,32 @@ export interface EntryResult {
   failed_roles: JudgeResult['role'][]
 }
 
+/**
+ * A panel earns one of two grades (REQ-91). The project runs a single local
+ * model by choice, so absolute_grade is a documented stretch goal that needs a
+ * stronger/family-diverse panel; ranking_grade is what a single 35B judge can
+ * actually achieve and is sufficient for the Autonomy Index's *relative* use
+ * (comparing PRs, tracking drift) — just not for absolute "is this ≥ X" claims.
+ */
+export type CalibrationGrade = 'absolute' | 'ranking' | 'ungraded'
+
 export interface CalibrationReport {
   panelMode: PanelMode
   entries: EntryResult[]
   per_tier: Record<CalibrationTier, { count: number; mean_composite: number | null }>
   /** Tier-separation: did strong > medium > weak strictly hold on means? */
   monotonic_separation: boolean
-  /** Targets per docs/judges/v1-prompts.md "Calibration". */
+  /** strong−weak mean gap (the discrimination width). */
+  separation_gap: number | null
+  /**
+   * The grade the panel earns:
+   *   absolute  — hits all the absolute target bands (needs a strong/diverse model)
+   *   ranking   — monotonic strong>medium>weak with a gap ≥ RANKING_MIN_GAP
+   *               (sufficient for relative scoring + drift; a single 35B model's ceiling)
+   *   ungraded  — not even monotonic; the panel is noise.
+   */
+  grade: CalibrationGrade
+  /** Absolute target bands per docs/judges/v1-prompts.md "Calibration". */
   targets_met: {
     strong_ge_75: boolean
     medium_45_to_65: boolean
@@ -120,6 +139,11 @@ export interface CalibrationReport {
     all: boolean
   }
 }
+
+/** Minimum strong−weak gap to certify ranking-grade. Below this the panel can't
+ *  reliably tell tiers apart even relatively. 15 points clears qwen×3 (~20) with
+ *  margin and rejects the old 1–5 rubber stamp (~0.2 → 1 on a 0–100 rescale). */
+export const RANKING_MIN_GAP = 15
 
 export interface RunCalibrationOpts {
   corpusRoot: string
@@ -234,18 +258,30 @@ function buildReport(mode: PanelMode, entries: EntryResult[]): CalibrationReport
   const monotonic_separation =
     s !== null && m !== null && w !== null && s > m && m > w
 
-  // Targets from docs/judges/v1-prompts.md (calibration section):
-  // strong >= 75, medium 45–65, weak <= 40.
+  const separation_gap = s !== null && w !== null ? Math.round((s - w) * 10) / 10 : null
+
+  // Absolute target bands from docs/judges/v1-prompts.md: strong >= 75,
+  // medium 45–65, weak <= 40. Hitting all three is absolute-grade (needs a
+  // strong/diverse model).
   const strong_ge_75 = s !== null && s >= 75
   const medium_45_to_65 = m !== null && m >= 45 && m <= 65
   const weak_le_40 = w !== null && w <= 40
   const all = strong_ge_75 && medium_45_to_65 && weak_le_40
+
+  // Two-grade certification (REQ-91): absolute > ranking > ungraded.
+  const grade: CalibrationGrade = all
+    ? 'absolute'
+    : monotonic_separation && separation_gap !== null && separation_gap >= RANKING_MIN_GAP
+      ? 'ranking'
+      : 'ungraded'
 
   return {
     panelMode: mode,
     entries,
     per_tier,
     monotonic_separation,
+    separation_gap,
+    grade,
     targets_met: { strong_ge_75, medium_45_to_65, weak_le_40, all },
   }
 }
@@ -265,13 +301,24 @@ export function formatReport(report: CalibrationReport): string {
   }
   lines.push('')
 
-  lines.push('Targets (per docs/judges/v1-prompts.md):')
+  lines.push('Ranking grade (relative scoring — drift, PR comparison):')
+  lines.push(`  monotonic separation  ${report.monotonic_separation ? '✓' : '✗'}`)
+  lines.push(
+    `  separation gap ≥ ${RANKING_MIN_GAP}   ${report.separation_gap !== null && report.separation_gap >= RANKING_MIN_GAP ? '✓' : '✗'}   (gap ${report.separation_gap ?? 'n/a'})`,
+  )
+  lines.push('')
+  lines.push('Absolute grade (absolute "is this ≥ X" claims — needs a stronger/diverse model):')
   lines.push(`  strong ≥ 75            ${report.targets_met.strong_ge_75 ? '✓' : '✗'}`)
   lines.push(`  medium 45–65           ${report.targets_met.medium_45_to_65 ? '✓' : '✗'}`)
   lines.push(`  weak  ≤ 40             ${report.targets_met.weak_le_40 ? '✓' : '✗'}`)
-  lines.push(`  monotonic separation  ${report.monotonic_separation ? '✓' : '✗'}`)
   lines.push('')
-  lines.push(`  v1 panel shippable    ${report.targets_met.all && report.monotonic_separation ? '✓' : '✗'}`)
+  const gradeLabel =
+    report.grade === 'absolute'
+      ? 'ABSOLUTE (hits target bands)'
+      : report.grade === 'ranking'
+        ? 'RANKING (relative-only; absolute needs a stronger model)'
+        : 'UNGRADED (panel is noise)'
+  lines.push(`  panel grade           ${gradeLabel}`)
   return lines.join('\n')
 }
 

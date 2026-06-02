@@ -24,6 +24,7 @@ interface Args {
   addDiff: string | null
   addBrief: string | null
   addSource: string | null
+  requireAbsolute: boolean
 }
 
 function parseArgs(argv: string[]): Args {
@@ -32,6 +33,7 @@ function parseArgs(argv: string[]): Args {
     corpusRoot: join(import.meta.dir, '..', 'calibration'),
     writeDb: false, json: false,
     addId: null, addTier: null, addDiff: null, addBrief: null, addSource: null,
+    requireAbsolute: false,
   }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
@@ -49,6 +51,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--diff') args.addDiff = argv[++i]
     else if (a === '--brief') args.addBrief = argv[++i]
     else if (a === '--source') args.addSource = argv[++i]
+    else if (a === '--require-absolute') args.requireAbsolute = true
     else if (a === '-h' || a === '--help') {
       console.log(
         'usage: instrumentation-calibrate.ts [--corpus PATH] [--write-db]\n' +
@@ -171,7 +174,12 @@ async function main() {
 
   const report = await runCalibration({ corpusRoot: args.corpusRoot, writeToDb: args.writeDb })
   console.log(formatReport(report))
-  process.exit(report.targets_met.all && report.monotonic_separation ? 0 : 1)
+  // Exit 0 when the panel earns at least RANKING grade — it can score relatively
+  // (drift, PR comparison), which is what a single local model achieves and what
+  // the Autonomy Index uses. ABSOLUTE grade (the target bands) needs a stronger /
+  // family-diverse model; pass --require-absolute to gate strictly on it.
+  const ok = args.requireAbsolute ? report.grade === 'absolute' : report.grade !== 'ungraded'
+  process.exit(ok ? 0 : 1)
 }
 
 main().catch(e => { console.error(e instanceof Error ? e.stack : String(e)); process.exit(2) })

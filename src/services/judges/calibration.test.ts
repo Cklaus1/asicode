@@ -274,24 +274,35 @@ describe('runCalibration', () => {
     const report = await runCalibration({ corpusRoot, providers })
     expect(report.targets_met.strong_ge_75).toBe(false)
     expect(report.targets_met.all).toBe(false)
+    // Flat scores across tiers → not monotonic → ungraded (REQ-91).
+    expect(report.monotonic_separation).toBe(false)
+    expect(report.grade).toBe('ungraded')
   })
 })
 
 describe('formatReport', () => {
-  test('renders pass/fail glyphs', async () => {
+  test('renders the two-grade certification (REQ-91)', async () => {
+    // *-a* IDs → mock 0-100 scores 85/55/15 (a properly-graded panel).
     seedManifest([
-      { id: 'strong-0', tier: 'strong', brief: 'b' },
-      { id: 'medium-0', tier: 'medium', brief: 'b' },
-      { id: 'weak-0', tier: 'weak', brief: 'b' },
+      { id: 'strong-a1', tier: 'strong', brief: 'b' },
+      { id: 'medium-a1', tier: 'medium', brief: 'b' },
+      { id: 'weak-a1', tier: 'weak', brief: 'b' },
     ])
     const report = await runCalibration({
       corpusRoot,
       providers: mockProvidersByTier(),
     })
     const text = formatReport(report)
-    expect(text).toContain('panel mode: balanced')
+    expect(text).toContain('panel mode:')
     expect(text).toContain('strong')
-    expect(text).toContain('v1 panel shippable')
+    // REQ-91: two-grade certification replaced the single "shippable" line.
+    expect(text).toContain('Ranking grade')
+    expect(text).toContain('Absolute grade')
+    expect(text).toContain('panel grade')
     expect(text).toContain('✓')
+    // 85/55/15 hits both grades: monotonic, gap 70, and inside the bands.
+    expect(report.separation_gap).toBe(70)
+    expect(report.grade).toBe('absolute')
   })
+
 })
