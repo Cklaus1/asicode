@@ -56,14 +56,23 @@ describe('role prompts', () => {
     expect(SHARED_SYSTEM_PREFIX).toMatch(/Return ONLY a JSON object/)
   })
 
-  test('shared prefix anchors every score 0-100 with a concrete rubric (anti-rubber-stamp)', () => {
-    // The shared prefix uses the 0-100 scale. Anchors at 0 and 100 must be
-    // present so the panel uses the full range.
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/\n\s*100\s—/)
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/\n\s*~55\s—/)
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/\n\s*~30\s—/)
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/\n\s*0\s—/)
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/default to ~55/)
+  test('shared prefix uses classify-first scoring (size/scope class gates the range)', () => {
+    // REQ-90: the band-expanding structure. The model must pick a class A–E and
+    // bound the score to that class's range, instead of a gut score. Each class
+    // anchor and its score range must be present.
+    for (const label of ['surgical', 'clean-feature', 'ordinary', 'sprawling', 'churn/risky']) {
+      expect(SHARED_SYSTEM_PREFIX).toContain(`"${label}"`)
+    }
+    // The five class letters appear as labelled anchors (A "surgical" … E "churn/risky").
+    for (const cls of ['A', 'B', 'C', 'D', 'E']) {
+      expect(SHARED_SYSTEM_PREFIX).toMatch(new RegExp(`\\n\\s+${cls}\\s+"`))
+    }
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/CLASSIFYING the change first/)
+    // Score ranges per class are spelled out (e.g. "score 80–95", "score 8–28").
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/score 80.95/)
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/score 8.28/)
+    // The anti-trap instruction: a big plausible diff is NOT class B.
+    expect(SHARED_SYSTEM_PREFIX).toMatch(/NOT\s+class B/)
   })
 
   test('shared prefix includes the explicit response schema (weak-model legibility)', () => {
@@ -81,8 +90,10 @@ describe('role prompts', () => {
     expect(SHARED_SYSTEM_PREFIX).toMatch(/qa_risk": <0-100>/)
   })
 
-  test('shared prefix instructs full-range use', () => {
-    expect(SHARED_SYSTEM_PREFIX).toMatch(/FULL 0–100 range/)
+  test('shared prefix emits class + size fields before scoring (forces commitment)', () => {
+    expect(SHARED_SYSTEM_PREFIX).toContain('"class": "<A|B|C|D|E>"')
+    expect(SHARED_SYSTEM_PREFIX).toContain('"files_changed"')
+    expect(SHARED_SYSTEM_PREFIX).toContain('"lines_changed"')
   })
 
   test('ROLE_PROMPTS keyed by every JudgeRole', () => {
