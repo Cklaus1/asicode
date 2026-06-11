@@ -234,3 +234,89 @@ describe('checkTokenBudget — diminishing-returns detection', () => {
     expect(result.action).toBe('continue')
   })
 })
+
+// The hand-constructed tests above poke the tracker directly. These drive the
+// real state machine through consecutive checkTokenBudget calls and never touch
+// tracker fields, so the count/lastDelta/lastGlobalTurnTokens bookkeeping that
+// the continue branch mutates is exercised end-to-end — exactly how query.ts
+// uses it across a turn.
+describe('checkTokenBudget — lifecycle through the public API only', () => {
+  const BUDGET = 10_000
+
+  test('small steady deltas naturally trip diminishing returns after 3 continuations', () => {
+    const tracker = createBudgetTracker()
+    // Each turn adds a small, sub-threshold delta (100 < 500). The first three
+    // calls continue (count 1→3); only on the 4th does count>=3 coincide with
+    // both lastDeltaTokens AND the new delta being below DIMINISHING_THRESHOLD.
+    const STEP = 100
+    expect(STEP).toBeLessThan(DIMINISHING_THRESHOLD)
+
+    for (let i = 1; i <= 3; i++) {
+      const result = checkTokenBudget(tracker, undefined, BUDGET, STEP * i)
+      expect(result.action).toBe('continue')
+      if (result.action === 'continue') {
+        expect(result.continuationCount).toBe(i)
+      }
+    }
+    // Tracker evolved purely through the continue branch.
+    expect(tracker.continuationCount).toBe(3)
+    expect(tracker.lastDeltaTokens).toBe(STEP)
+    expect(tracker.lastGlobalTurnTokens).toBe(STEP * 3)
+
+    // 4th call: count(3)>=3, prior delta 100<500, new delta 100<500 → diminishing.
+    const stop = stopResult(
+      checkTokenBudget(tracker, undefined, BUDGET, STEP * 4),
+    )
+    expect(stop.completionEvent).not.toBeNull()
+    expect(stop.completionEvent?.diminishingReturns).toBe(true)
+    expect(stop.completionEvent?.continuationCount).toBe(3)
+    // The stop is well under the 90 % completion threshold — diminishing
+    // returns, not budget exhaustion, is what halted the turn.
+    expect(stop.completionEvent!.turnTokens).toBeLessThan(
+      BUDGET * COMPLETION_THRESHOLD,
+    )
+  })
+
+  test('large steady deltas keep continuing past 3, then stop on the completion threshold (not diminishing)', () => {
+    const tracker = createBudgetTracker()
+    // Big per-turn deltas (2000 > 500) never satisfy the diminishing predicate,
+    // so count climbs past 3 and the turn only halts once tokens reach 90 %.
+    const STEP = 2_000
+    expect(STEP).toBeGreaterThan(DIMINISHING_THRESHOLD)
+
+    // 2k, 4k, 6k, 8k all sit below the 9k completion threshold → continue ×4.
+    for (let i = 1; i <= 4; i++) {
+      const result = checkTokenBudget(tracker, undefined, BUDGET, STEP * i)
+      expect(result.action).toBe('continue')
+      if (result.action === 'continue') {
+        expect(result.continuationCount).toBe(i)
+      }
+    }
+    expect(tracker.continuationCount).toBe(4)
+
+    // 10k ≥ 90 % of budget → stop. continuationCount>0 so an event is emitted,
+    // but the large deltas mean diminishingReturns stays false.
+    const stop = stopResult(
+      checkTokenBudget(tracker, undefined, BUDGET, STEP * 5),
+    )
+    expect(stop.completionEvent).not.toBeNull()
+    expect(stop.completionEvent?.diminishingReturns).toBe(false)
+    expect(stop.completionEvent?.continuationCount).toBe(4)
+    expect(stop.completionEvent!.turnTokens).toBeGreaterThanOrEqual(
+      BUDGET * COMPLETION_THRESHOLD,
+    )
+  })
+
+  test('a single large jump straight to the threshold stops with a null event (no continuations yet)', () => {
+    // First-ever call already at/over 90 %: no prior continuation, not
+    // diminishing → the "stop, completionEvent null" terminal branch.
+    const tracker = createBudgetTracker()
+    const stop = stopResult(
+      checkTokenBudget(tracker, undefined, BUDGET, BUDGET),
+    )
+    expect(stop.completionEvent).toBeNull()
+    // Nothing was continued, so the tracker is untouched.
+    expect(tracker.continuationCount).toBe(0)
+    expect(tracker.lastGlobalTurnTokens).toBe(0)
+  })
+})
