@@ -281,4 +281,41 @@ describe('buildTool precedence + identity', () => {
       minimalDef.mapToolResultToToolResultBlockParam,
     )
   })
+
+  // Characterization: an EXPLICIT `undefined` on a defaultable key is a
+  // type-vs-runtime divergence. BuiltTool's mapped type reads
+  // `undefined extends D[K] ? ToolDefaults[K] : D[K]`, implying the default
+  // survives. But the runtime is `{ ...TOOL_DEFAULTS, userFacingName: shim,
+  // ...def }` — spreading `def` LAST writes the literal `undefined` over both
+  // the default and the shim. So at runtime the key ends up undefined, not the
+  // default. These pin that fail-open behavior so a future guard (e.g. dropping
+  // undefined keys before the spread) is a deliberate, test-visible change.
+  test('an explicit undefined on a defaultable method clobbers the default at runtime', () => {
+    const tool = buildTool({
+      ...minimalDef,
+      isReadOnly: undefined as never,
+    })
+    // The TOOL_DEFAULTS fail-closed isReadOnly is NOT restored — the spread
+    // overwrote it with undefined.
+    expect(tool.isReadOnly).toBeUndefined()
+  })
+
+  test('an explicit undefined userFacingName clobbers the name-echoing shim', () => {
+    const tool = buildTool({
+      ...minimalDef,
+      userFacingName: undefined as never,
+    })
+    // The `() => def.name` shim is also defeated by the trailing spread, so
+    // callers that do `tool.userFacingName(input)` would throw, not get 'Probe'.
+    expect(tool.userFacingName).toBeUndefined()
+  })
+
+  test('an omitted defaultable key (vs explicit undefined) keeps the default', () => {
+    // Contrast with the two cases above: when the key is simply absent from the
+    // def, the trailing spread has nothing to write, so the default/shim stand.
+    const tool = buildTool(minimalDef)
+    expect(typeof tool.isReadOnly).toBe('function')
+    expect(tool.isReadOnly({})).toBe(false)
+    expect(tool.userFacingName()).toBe('Probe')
+  })
 })
