@@ -122,7 +122,8 @@ const taskSummaryModule = feature('BG_SESSIONS')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
-function* yieldMissingToolResultBlocks(
+// Exported for unit testing of the orphaned-tool-use recovery path.
+export function* yieldMissingToolResultBlocks(
   assistantMessages: AssistantMessage[],
   errorMessage: string,
 ) {
@@ -175,7 +176,8 @@ const MAX_CONTINUATION_NUDGES = 3
  *
  * Mirrors reactiveCompact.isWithheldPromptTooLong.
  */
-function isWithheldMaxOutputTokens(
+// Exported for unit testing of the max_output_tokens withholding predicate.
+export function isWithheldMaxOutputTokens(
   msg: Message | StreamEvent | undefined,
 ): msg is AssistantMessage {
   return msg?.type === 'assistant' && msg.apiError === 'max_output_tokens'
