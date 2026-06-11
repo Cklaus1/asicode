@@ -68,7 +68,7 @@
     "setup:trainloop": "bun run scripts/setup-trainloop.ts",
     "hardening:check": "bun run smoke && bun run doctor:runtime",
     "hardening:strict": "bun run typecheck && bun run hardening:check",
-    "prepack": "npm run build"
+    "prepack": "bun run build"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "0.3.0",
