@@ -97,6 +97,35 @@ describe('yieldMissingToolResultBlocks', () => {
     // ...and nothing for an empty input list at all.
     expect([...yieldMissingToolResultBlocks([], 'x')]).toHaveLength(0)
   })
+
+  test('stamps every recovery message with a fresh, distinct uuid', () => {
+    // Two tool_uses share one source assistant turn ('a-uuid'). Each emitted
+    // recovery message must still get its OWN uuid (createUserMessage defaults
+    // to randomUUID) — reusing the source uuid or sharing one between blocks
+    // would collide in the message log / dedup paths downstream.
+    const msg = assistantWithToolUses('a-uuid', ['tu_1', 'tu_2', 'tu_3'])
+    const out = [...yieldMissingToolResultBlocks([msg], 'interrupted')]
+
+    const uuids = out.map(m => m.uuid)
+    // Present and non-empty on every message.
+    for (const uuid of uuids) {
+      expect(typeof uuid).toBe('string')
+      expect(uuid.length).toBeGreaterThan(0)
+    }
+    // All distinct from each other...
+    expect(new Set(uuids).size).toBe(out.length)
+    // ...and none reuses the source assistant turn's uuid.
+    expect(uuids).not.toContain('a-uuid')
+  })
+
+  test('regenerates uuids on each invocation (no cross-call reuse)', () => {
+    // Calling the generator twice on the same input must not recycle uuids —
+    // a stable/memoized uuid would alias two logically distinct recoveries.
+    const msg = assistantWithToolUses('s', ['only'])
+    const first = [...yieldMissingToolResultBlocks([msg], 'x')][0].uuid
+    const second = [...yieldMissingToolResultBlocks([msg], 'x')][0].uuid
+    expect(first).not.toBe(second)
+  })
 })
 
 describe('isWithheldMaxOutputTokens', () => {
