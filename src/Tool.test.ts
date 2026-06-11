@@ -145,3 +145,82 @@ describe('buildTool defaults', () => {
     expect(tool.isConcurrencySafe({})).toBe(true)
   })
 })
+
+describe('buildTool precedence + identity', () => {
+  // Same minimal def the defaults suite uses, redeclared locally so the two
+  // describe blocks stay independent.
+  const minimalDef = {
+    name: 'Probe',
+    inputSchema: {} as never,
+    maxResultSizeChars: 1000,
+    async call() {
+      return { data: undefined }
+    },
+    async description() {
+      return ''
+    },
+    async prompt() {
+      return ''
+    },
+    renderToolUseMessage() {
+      return null
+    },
+    mapToolResultToToolResultBlockParam() {
+      return { type: 'tool_result' as const, tool_use_id: 'x', content: '' }
+    },
+  }
+
+  test("a def's own userFacingName overrides the name-echoing shim", () => {
+    // buildTool inserts `userFacingName: () => def.name` between the defaults
+    // and the `...def` spread. Because def is spread LAST, a userFacingName on
+    // the def must still win over that shim.
+    const tool = buildTool({
+      ...minimalDef,
+      userFacingName: () => 'Pretty Probe',
+    })
+    expect(tool.userFacingName()).toBe('Pretty Probe')
+  })
+
+  test('overriding one defaultable key leaves the others at their defaults', () => {
+    // Per-key spread: opting into isReadOnly must not disturb the other
+    // fail-closed defaults.
+    const tool = buildTool({ ...minimalDef, isReadOnly: (_input?: unknown) => true })
+    expect(tool.isReadOnly({})).toBe(true)
+    expect(tool.isConcurrencySafe({})).toBe(false)
+    expect(tool.isDestructive!({})).toBe(false)
+    expect(tool.isEnabled()).toBe(true)
+    // userFacingName shim still echoes the name when not overridden.
+    expect(tool.userFacingName()).toBe('Probe')
+  })
+
+  test('default checkPermissions threads the SAME input reference forward', async () => {
+    // The permission flow relies on updatedInput; the default must not clone or
+    // re-wrap the input, or downstream identity checks would break.
+    const tool = buildTool(minimalDef)
+    const input = { path: '/etc/hosts' }
+    const result = await tool.checkPermissions(input, {} as never)
+    expect(result.behavior).toBe('allow')
+    expect((result as { updatedInput: unknown }).updatedInput).toBe(input)
+  })
+
+  test('does not mutate the input def (defaults land on a fresh object)', () => {
+    const def = { ...minimalDef }
+    const before = Object.keys(def).sort()
+    const tool = buildTool(def)
+    // The def gains no defaultable keys; buildTool returns a new object.
+    expect(Object.keys(def).sort()).toEqual(before)
+    expect(tool).not.toBe(def)
+    expect('isEnabled' in def).toBe(false)
+  })
+
+  test('passes non-defaultable members through verbatim', () => {
+    const tool = buildTool(minimalDef)
+    // Identity-preserved: same function refs and scalar values as the def.
+    expect(tool.name).toBe('Probe')
+    expect(tool.maxResultSizeChars).toBe(1000)
+    expect(tool.call).toBe(minimalDef.call)
+    expect(tool.mapToolResultToToolResultBlockParam).toBe(
+      minimalDef.mapToolResultToToolResultBlockParam,
+    )
+  })
+})
