@@ -57,6 +57,16 @@ describe('QueryEngine.setModel', () => {
     // setModel mutates the live config object the engine holds.
     expect(config.userSpecifiedModel).toBe('new-model')
   })
+
+  test('works when userSpecifiedModel was not set at construction', () => {
+    // config has no userSpecifiedModel → undefined. setModel must still write
+    // the field on the live config so subsequent turns pick it up.
+    const config = makeConfig()
+    expect(config.userSpecifiedModel).toBeUndefined()
+    const engine = new QueryEngine(config)
+    engine.setModel('late-set-model')
+    expect(config.userSpecifiedModel).toBe('late-set-model')
+  })
 })
 
 describe('QueryEngine.interrupt', () => {
@@ -88,5 +98,21 @@ describe('QueryEngine.getSessionId', () => {
   test('returns a string session id from bootstrap state', () => {
     const engine = new QueryEngine(makeConfig())
     expect(typeof engine.getSessionId()).toBe('string')
+  })
+
+  test('returns the same id on repeated calls (stable across a session)', () => {
+    // getSessionId() delegates to the global bootstrap state — it must not
+    // generate a fresh id on each call or downstream id-tracking breaks.
+    const engine = new QueryEngine(makeConfig())
+    const first = engine.getSessionId()
+    const second = engine.getSessionId()
+    expect(first).toBe(second)
+  })
+
+  test('two different engine instances share the same session id (process-level state)', () => {
+    // The session id is process-global, not per-engine.
+    const a = new QueryEngine(makeConfig())
+    const b = new QueryEngine(makeConfig())
+    expect(a.getSessionId()).toBe(b.getSessionId())
   })
 })

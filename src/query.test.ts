@@ -98,6 +98,17 @@ describe('yieldMissingToolResultBlocks', () => {
     expect([...yieldMissingToolResultBlocks([], 'x')]).toHaveLength(0)
   })
 
+  test('yields nothing when content is an empty array', () => {
+    // An assistant message with content: [] (e.g. after compaction) must not
+    // emit any recovery blocks — there's nothing to recover.
+    const msg: AssistantMessage = {
+      type: 'assistant',
+      uuid: 'empty',
+      message: { role: 'assistant', content: [] },
+    }
+    expect([...yieldMissingToolResultBlocks([msg], 'x')]).toHaveLength(0)
+  })
+
   test('stamps every recovery message with a fresh, distinct uuid', () => {
     // Two tool_uses share one source assistant turn ('a-uuid'). Each emitted
     // recovery message must still get its OWN uuid (createUserMessage defaults
