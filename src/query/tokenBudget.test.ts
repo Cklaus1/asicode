@@ -1,10 +1,18 @@
 import { describe, expect, test } from 'bun:test'
 
-import { createBudgetTracker, checkTokenBudget } from './tokenBudget.js'
+import { createBudgetTracker, checkTokenBudget, type TokenBudgetDecision } from './tokenBudget.js'
 
 // Internal constants mirrored here so test intent is legible alongside them.
 const COMPLETION_THRESHOLD = 0.9
 const DIMINISHING_THRESHOLD = 500
+
+type StopDecision = Extract<TokenBudgetDecision, { action: 'stop' }>
+
+// Narrows the union to StopDecision; throws if the action is not 'stop'.
+function stopResult(r: TokenBudgetDecision): StopDecision {
+  if (r.action !== 'stop') throw new Error(`expected stop, got ${r.action}`)
+  return r
+}
 
 describe('createBudgetTracker', () => {
   test('initialises all counters and delta fields to zero', () => {
@@ -35,28 +43,28 @@ describe('checkTokenBudget — bypass conditions', () => {
     const tracker = createBudgetTracker()
     const result = checkTokenBudget(tracker, 'agent-1', 10_000, 1_000)
     expect(result.action).toBe('stop')
-    expect(result.completionEvent).toBeNull()
+    expect(stopResult(result).completionEvent).toBeNull()
   })
 
   test('stops immediately when budget is null', () => {
     const tracker = createBudgetTracker()
     const result = checkTokenBudget(tracker, undefined, null, 5_000)
     expect(result.action).toBe('stop')
-    expect(result.completionEvent).toBeNull()
+    expect(stopResult(result).completionEvent).toBeNull()
   })
 
   test('stops immediately when budget is zero', () => {
     const tracker = createBudgetTracker()
     const result = checkTokenBudget(tracker, undefined, 0, 0)
     expect(result.action).toBe('stop')
-    expect(result.completionEvent).toBeNull()
+    expect(stopResult(result).completionEvent).toBeNull()
   })
 
   test('stops immediately when budget is negative', () => {
     const tracker = createBudgetTracker()
     const result = checkTokenBudget(tracker, undefined, -1, 0)
     expect(result.action).toBe('stop')
-    expect(result.completionEvent).toBeNull()
+    expect(stopResult(result).completionEvent).toBeNull()
   })
 })
 
@@ -127,7 +135,7 @@ describe('checkTokenBudget — stop at threshold (no prior continuations)', () =
       TOKENS_AT_THRESHOLD,
     )
     expect(result.action).toBe('stop')
-    expect(result.completionEvent).toBeNull()
+    expect(stopResult(result).completionEvent).toBeNull()
   })
 })
 
