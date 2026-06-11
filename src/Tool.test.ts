@@ -30,6 +30,24 @@ describe('toolMatchesName', () => {
   test('tolerates a tool with no aliases array', () => {
     expect(toolMatchesName({ name: 'Read' }, 'Write')).toBe(false)
   })
+
+  test('an empty aliases array matches nothing but the primary name', () => {
+    expect(toolMatchesName({ name: 'Read', aliases: [] }, 'Read')).toBe(true)
+    expect(toolMatchesName({ name: 'Read', aliases: [] }, 'Shell')).toBe(false)
+  })
+
+  test('matching is exact, not substring or case-insensitive', () => {
+    // Dispatch must not fuzzy-match: 'Bas'/'bash' are different tools.
+    expect(toolMatchesName({ name: 'Bash', aliases: ['Shell'] }, 'Bas')).toBe(
+      false,
+    )
+    expect(toolMatchesName({ name: 'Bash', aliases: ['Shell'] }, 'bash')).toBe(
+      false,
+    )
+    expect(toolMatchesName({ name: 'Bash', aliases: ['Shell'] }, 'shell')).toBe(
+      false,
+    )
+  })
 })
 
 describe('findToolByName', () => {
@@ -48,6 +66,46 @@ describe('findToolByName', () => {
 
   test('returns undefined when nothing matches', () => {
     expect(findToolByName(tools, 'Nope')).toBeUndefined()
+  })
+
+  test('returns undefined for an empty tool set', () => {
+    expect(findToolByName([] as unknown as Tools, 'Bash')).toBeUndefined()
+  })
+})
+
+describe('findToolByName — dispatch precedence + collisions', () => {
+  // findToolByName uses Array.prototype.find, so when more than one tool would
+  // match a name, the EARLIEST registered tool wins. These cases pin down which
+  // tool actually handles a dispatched call when names/aliases collide.
+  test('first registration wins when two tools share a primary name', () => {
+    const dupes = [
+      { name: 'Run', tag: 'first' },
+      { name: 'Run', tag: 'second' },
+    ] as unknown as Tools
+    // The second 'Run' is unreachable — dispatch always lands on the first.
+    expect((findToolByName(dupes, 'Run') as unknown as { tag: string }).tag).toBe(
+      'first',
+    )
+  })
+
+  test("an earlier tool's alias shadows a later tool's primary name", () => {
+    // Tool A claims 'Exec' as an alias; tool B is literally named 'Exec'.
+    // Because A appears first and its alias matches, a lookup for 'Exec'
+    // resolves to A — the alias shadows B's primary name.
+    const tools = [
+      { name: 'Bash', aliases: ['Exec'] },
+      { name: 'Exec' },
+    ] as unknown as Tools
+    expect(findToolByName(tools, 'Exec')?.name).toBe('Bash')
+  })
+
+  test('a primary name later in the list is still reachable when no earlier tool shadows it', () => {
+    const tools = [
+      { name: 'Bash', aliases: ['Shell'] },
+      { name: 'Read' },
+    ] as unknown as Tools
+    // 'Read' is not shadowed by any earlier alias, so it resolves to itself.
+    expect(findToolByName(tools, 'Read')?.name).toBe('Read')
   })
 })
 
