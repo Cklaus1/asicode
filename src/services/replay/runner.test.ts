@@ -124,10 +124,12 @@ function fixedScoreProviders(scoreEach: number): ProviderRegistry {
       return mockResponse(r, scoreEach)
     }
   }
+  // The balanced panel (default) maps all three roles to the same model
+  // key — REQ-89 — so a single registry entry covers correctness,
+  // code_review and qa_risk. Role differentiation happens inside complete()
+  // by parsing the role out of the system prompt.
   return {
-    'claude-opus-4-7': new P('claude-opus-4-7', 'opus@test'),
-    'claude-sonnet-4-6': new P('claude-sonnet-4-6', 'sonnet@test'),
-    'ollama:qwen2.5-coder:32b': new P('ollama:qwen2.5-coder:32b', 'qwen@test'),
+    'openai:Qwen3.6-35B-A3B-FP8': new P('openai:Qwen3.6-35B-A3B-FP8', 'qwen@test'),
   }
 }
 
@@ -289,9 +291,7 @@ describe('runReplay — error paths', () => {
       }
     }
     const failing: ProviderRegistry = {
-      'claude-opus-4-7': new FailingProvider('claude-opus-4-7', 's'),
-      'claude-sonnet-4-6': new FailingProvider('claude-sonnet-4-6', 's'),
-      'ollama:qwen2.5-coder:32b': new FailingProvider('ollama:qwen2.5-coder:32b', 's'),
+      'openai:Qwen3.6-35B-A3B-FP8': new FailingProvider('openai:Qwen3.6-35B-A3B-FP8', 's'),
     }
     const r = await runReplay({
       sample: { coverage: 1.0, perCategoryFloor: 0, maxSamples: 10, seed: 1 },
@@ -311,25 +311,26 @@ describe('runReplay — error paths', () => {
       originalScores: { correctness: 4, code_review: 4, qa_risk: 4 },
     })
 
+    // Single provider (balanced panel = one model on all roles), but it
+    // throws for one role so exactly one of the three judges fails — the
+    // other two still produce a usable composite.
     class MixedProvider implements Provider {
       constructor(
         public readonly name: string,
         public readonly snapshot: string,
-        private readonly fail: boolean,
+        private readonly failRole: string,
       ) {}
       async complete(opts: { system: string; user: string }): Promise<string> {
         void opts.user
-        if (this.fail) throw new Error('boom')
         const m = opts.system.match(/ROLE: (\w+(?: \w+)*) JUDGE/)
         const role = m ? m[1].toLowerCase().replace(' and ', '_').replace(' ', '_') : 'correctness'
         const r = role === 'correctness' ? 'correctness' : role === 'code_review' ? 'code_review' : 'qa_risk'
+        if (r === this.failRole) throw new Error('boom')
         return mockResponse(r, 5)
       }
     }
     const mixed: ProviderRegistry = {
-      'claude-opus-4-7': new MixedProvider('claude-opus-4-7', 's', false),
-      'claude-sonnet-4-6': new MixedProvider('claude-sonnet-4-6', 's', true),
-      'ollama:qwen2.5-coder:32b': new MixedProvider('ollama:qwen2.5-coder:32b', 's', false),
+      'openai:Qwen3.6-35B-A3B-FP8': new MixedProvider('openai:Qwen3.6-35B-A3B-FP8', 's', 'code_review'),
     }
     const r = await runReplay({
       sample: { coverage: 1.0, perCategoryFloor: 0, maxSamples: 10, seed: 1 },

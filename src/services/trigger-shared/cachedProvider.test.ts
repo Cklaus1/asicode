@@ -35,7 +35,9 @@ describe('createCachedProvider', () => {
     const cache = createCachedProvider({ warnTag: 'test-tag' })
     const provider = cache.getProvider()
     expect(provider).not.toBeNull()
-    expect(provider?.name).toBe('claude-opus-4-7') // correctness slot in balanced panel
+    // Correctness slot in the balanced panel — REQ-89 moved the default
+    // panel to Qwen3.6 (local vLLM) on all three roles.
+    expect(provider?.name).toBe('openai:Qwen3.6-35B-A3B-FP8')
   })
 
   test('caches across calls', () => {

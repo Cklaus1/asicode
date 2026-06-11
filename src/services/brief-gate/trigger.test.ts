@@ -56,6 +56,7 @@ afterEach(() => {
   _resetBriefGateForTest()
   delete process.env.ASICODE_INSTRUMENTATION_DB
   delete process.env.ASICODE_BRIEF_GATE_ENABLED
+  delete process.env.ASICODE_JUDGE_OPENAI_BASE_URL
   rmSync(tempDir, { recursive: true, force: true })
 })
 
@@ -86,11 +87,14 @@ describe('evaluateBriefOnSubmitAwait — disabled', () => {
     expect(r).toBeNull()
   })
 
-  test('returns null when no provider can be resolved', async () => {
-    // Opt-in but no API key → registry build fails → provider null
+  test('returns null when the provider cannot complete', async () => {
+    // Opt-in, but point the default (Qwen/OpenAI-compat) judge at a dead
+    // endpoint so .complete() fails deterministically. REQ-89 made the
+    // local panel the default, so deleting ANTHROPIC_API_KEY/OLLAMA_HOST no
+    // longer forces a failure — the provider build succeeds regardless and,
+    // if a vLLM is live, would actually score the brief.
     process.env.ASICODE_BRIEF_GATE_ENABLED = '1'
-    delete process.env.ANTHROPIC_API_KEY
-    delete process.env.OLLAMA_HOST
+    process.env.ASICODE_JUDGE_OPENAI_BASE_URL = 'http://127.0.0.1:1/v1'
     const briefId = newBriefId()
     recordBrief({
       brief_id: briefId,
@@ -100,18 +104,12 @@ describe('evaluateBriefOnSubmitAwait — disabled', () => {
       user_text: 'x',
       a16_decision: 'pending',
     })
-    // The Anthropic SDK constructor in our provider adapter doesn't throw
-    // on missing API key — it lazy-fails at request time. So the provider
-    // build itself succeeds; the result is a provider that will error out
-    // on .complete(). For the "no provider resolved" case, exercise via
-    // _resetBriefGateForTest to trigger a fresh resolution and let it
-    // succeed/fail per the runtime env. The path being tested here is
-    // the opt-in gate, not the provider failure.
+    // The provider build itself succeeds (lazy adapters don't validate the
+    // endpoint at construction), but .complete() hits a dead port and
+    // throws. That is caught inside evaluateBrief, surfaced as
+    // provider_error, which our trigger translates to a null result — so no
+    // row update happens.
     const r = await evaluateBriefOnSubmitAwait({ briefId, briefText: 'x' })
-    // With Anthropic SDK happy to build, this returns null only because
-    // the .complete() call will throw (no auth) — caught inside
-    // evaluateBrief, surfaced as provider_error, which our trigger
-    // translates to null result. Either way: no row update happens.
     expect(r).toBeNull()
     // Verify the briefs row a16_decision is still 'pending'
     const db = openInstrumentationDb()

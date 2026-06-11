@@ -61,6 +61,7 @@ afterEach(() => {
   _resetAdversarialTriggerForTest()
   delete process.env.ASICODE_INSTRUMENTATION_DB
   delete process.env.ASICODE_ADVERSARIAL_ENABLED
+  delete process.env.ASICODE_JUDGE_OPENAI_BASE_URL
   rmSync(tempDir, { recursive: true, force: true })
 })
 
@@ -168,9 +169,14 @@ describe('adversarialVerifyOnPrMergeAwait', () => {
     expect(r!.persisted).toBe(false)
   })
 
-  test('production with no API key surfaces as not-persisted, not crash', async () => {
+  test('production with an unreachable provider surfaces as not-persisted, not crash', async () => {
     process.env.ASICODE_ADVERSARIAL_ENABLED = '1'
-    delete process.env.ANTHROPIC_API_KEY
+    // Point the default (Qwen/OpenAI-compat) judge at a dead endpoint so
+    // .complete() fails deterministically — independent of whether a local
+    // vLLM happens to be running in this environment. REQ-89 made the local
+    // panel the default, so the old "delete ANTHROPIC_API_KEY" no longer
+    // forces a provider failure.
+    process.env.ASICODE_JUDGE_OPENAI_BASE_URL = 'http://127.0.0.1:1/v1'
     const { briefId, runId } = seedBriefAndRun('production')
     const r = await adversarialVerifyOnPrMergeAwait({
       briefId,
@@ -188,7 +194,7 @@ describe('adversarialVerifyOnPrMergeAwait', () => {
 
   test('security risk class is also covered', async () => {
     process.env.ASICODE_ADVERSARIAL_ENABLED = '1'
-    delete process.env.ANTHROPIC_API_KEY
+    process.env.ASICODE_JUDGE_OPENAI_BASE_URL = 'http://127.0.0.1:1/v1'
     const { briefId, runId } = seedBriefAndRun('security')
     const r = await adversarialVerifyOnPrMergeAwait({
       briefId,
