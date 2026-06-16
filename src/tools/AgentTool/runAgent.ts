@@ -81,6 +81,11 @@ import {
 } from '../../utils/telemetry/perfettoTracing.js'
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
+import { runBriefReviewIfEnabled } from '../../services/selfReview/briefCompletionHook.js'
+import {
+  createSelfReviewDeps,
+  gitRecomputeDiff,
+} from '../../services/selfReview/production.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 
@@ -840,6 +845,28 @@ export async function* runAgent({
 
     if (agentAbortController.signal.aborted) {
       throw new AbortError()
+    }
+
+    // Brief-completion hook (1.5 wire-in): run L2 self-review if enabled in settings.
+    // Short-circuits immediately when selfReview.enabled is false (the default).
+    {
+      const reviewCwd = worktreePath ?? getProjectRoot()
+      const { diff, changedFiles } = await gitRecomputeDiff(reviewCwd)()
+      const reviewOutcome = await runBriefReviewIfEnabled({
+        taskId: agentId,
+        diff,
+        changedFiles,
+        settings: getInitialSettings().selfReview,
+        implementerModel: effectiveModel,
+        signal: agentAbortController.signal,
+        cwd: reviewCwd,
+        deps: createSelfReviewDeps({ cwd: reviewCwd }),
+      })
+      if (reviewOutcome.ran && reviewOutcome.escalationMessage) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Self-review escalated: ${reviewOutcome.escalationMessage}`,
+        )
+      }
     }
 
     // Run callback if provided (only built-in agents have callbacks)

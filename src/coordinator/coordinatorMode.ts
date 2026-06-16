@@ -1,4 +1,11 @@
 import { feature } from 'bun:bundle'
+import { runBriefReviewIfEnabled } from '../services/selfReview/briefCompletionHook.js'
+import type { BriefReviewOutcome, SelfReviewSettings } from '../services/selfReview/briefCompletionHook.js'
+import {
+  createSelfReviewDeps,
+  gitRecomputeDiff,
+} from '../services/selfReview/production.js'
+import { ASICODE_RACE_COUNT, getRaceCount } from '../tasks/RaceTask/index.js'
 import { ASYNC_AGENT_ALLOWED_TOOLS } from '../constants/tools.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -367,3 +374,37 @@ User:
 You:
   Fix for the new test is in progress. Still waiting to hear back about the test suite.`
 }
+
+/**
+ * Run L2 self-review after a coordinator worker completes a brief.
+ * Mirrors the AgentTool/runAgent wire-in so the coordinator can
+ * trigger the review loop on worker output before surfacing it to the human.
+ * Short-circuits immediately when selfReview.enabled is false (the default).
+ */
+export async function runCoordinatorWorkerBriefReviewIfEnabled(args: {
+  taskId: string
+  cwd: string
+  settings: SelfReviewSettings | undefined
+  implementerModel?: string
+  signal?: AbortSignal
+}): Promise<BriefReviewOutcome> {
+  const { diff, changedFiles } = await gitRecomputeDiff(args.cwd)()
+  return runBriefReviewIfEnabled({
+    taskId: args.taskId,
+    diff,
+    changedFiles,
+    settings: args.settings,
+    implementerModel: args.implementerModel,
+    signal: args.signal,
+    cwd: args.cwd,
+    deps: createSelfReviewDeps({ cwd: args.cwd }),
+  })
+}
+
+/**
+ * Return the configured racer count for best-of-N race mode (#4).
+ * Reads ASICODE_RACE_COUNT env var (default 3).
+ * Re-exported here so coordinator orchestration code can stay unaware
+ * of the RaceTask module location.
+ */
+export { ASICODE_RACE_COUNT, getRaceCount }
