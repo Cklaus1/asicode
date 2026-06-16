@@ -10,9 +10,15 @@
  * All operations are scoped to the worktree (cwd: worktreePath); the main repo
  * is never touched. Failures are logged and swallowed — checkpointing is a
  * best-effort safety net, not a critical path.
+ *
+ * Implementation note: internal git calls use node:child_process.spawnSync
+ * rather than execFileNoThrowWithCwd so that test-suite mock.module() calls
+ * targeting execFileNoThrow.js cannot interfere with checkpoint behaviour.
  */
 
-import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
+import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { gitExe } from '../../utils/git.js'
 import { logForDebugging } from '../../utils/debug.js'
 
@@ -67,21 +73,31 @@ export function _resetCheckpointCountersForTesting(): void {
   stepCounters.clear()
 }
 
-async function isGitWorktree(worktreePath: string): Promise<boolean> {
-  const { code } = await execFileNoThrowWithCwd(
-    gitExe(),
-    ['rev-parse', '--is-inside-work-tree'],
-    { cwd: worktreePath, stdin: 'ignore' },
-  )
+function gitSync(
+  args: string[],
+  cwd: string,
+  extraEnv?: Record<string, string | undefined>,
+): { code: number; stdout: string; stderr: string } {
+  const result = spawnSync(gitExe(), args, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+  })
+  return {
+    code: result.status ?? 1,
+    stdout: (result.stdout as string) ?? '',
+    stderr: (result.stderr as string) ?? '',
+  }
+}
+
+function isGitWorktree(worktreePath: string): boolean {
+  const { code } = gitSync(['rev-parse', '--is-inside-work-tree'], worktreePath)
   return code === 0
 }
 
-async function hasUncommittedChanges(worktreePath: string): Promise<boolean> {
-  const { code, stdout } = await execFileNoThrowWithCwd(
-    gitExe(),
-    ['status', '--porcelain'],
-    { cwd: worktreePath, stdin: 'ignore' },
-  )
+function hasUncommittedChanges(worktreePath: string): boolean {
+  const { code, stdout } = gitSync(['status', '--porcelain'], worktreePath)
   if (code !== 0) return false
   return stdout.trim().length > 0
 }
@@ -95,34 +111,27 @@ async function hasUncommittedChanges(worktreePath: string): Promise<boolean> {
  * `git rev-parse --git-path` to resolve the right directory in worktrees
  * (worktrees keep their merge/rebase state under .git/worktrees/<name>/).
  */
-async function detectInProgressOperation(
+function detectInProgressOperation(
   worktreePath: string,
-): Promise<'merge' | 'rebase' | 'cherry-pick' | 'revert' | 'bisect' | undefined> {
-  const { code, stdout } = await execFileNoThrowWithCwd(
-    gitExe(),
+): 'merge' | 'rebase' | 'cherry-pick' | 'revert' | 'bisect' | undefined {
+  const { code, stdout } = gitSync(
     ['rev-parse', '--git-path', 'HEAD'],
-    { cwd: worktreePath, stdin: 'ignore' },
+    worktreePath,
   )
   if (code !== 0) return undefined
-  // --git-path HEAD returns the path to the worktree's git dir + /HEAD; strip
-  // the trailing /HEAD to get the dir.
-  const gitDir = stdout.trim().replace(/\/HEAD$/, '')
-  // Probe each marker. fs.access via execFileNoThrow keeps us inside the
-  // existing exec dependency rather than pulling node:fs/promises here.
-  const probe = async (rel: string): Promise<boolean> => {
-    const { code } = await execFileNoThrowWithCwd(
-      'test',
-      ['-e', `${gitDir}/${rel}`],
-      { cwd: worktreePath, stdin: 'ignore' },
-    )
-    return code === 0
-  }
-  if (await probe('MERGE_HEAD')) return 'merge'
-  if (await probe('rebase-merge')) return 'rebase'
-  if (await probe('rebase-apply')) return 'rebase'
-  if (await probe('CHERRY_PICK_HEAD')) return 'cherry-pick'
-  if (await probe('REVERT_HEAD')) return 'revert'
-  if (await probe('BISECT_LOG')) return 'bisect'
+  // --git-path HEAD returns a path (possibly relative) to the worktree's git
+  // dir + /HEAD. Strip /HEAD to get the dir, then resolve it against the
+  // worktreePath so existsSync works regardless of CWD.
+  const gitDirRaw = stdout.trim().replace(/\/HEAD$/, '')
+  if (!gitDirRaw) return undefined
+  const gitDir = resolve(worktreePath, gitDirRaw)
+  const probe = (rel: string): boolean => existsSync(`${gitDir}/${rel}`)
+  if (probe('MERGE_HEAD')) return 'merge'
+  if (probe('rebase-merge')) return 'rebase'
+  if (probe('rebase-apply')) return 'rebase'
+  if (probe('CHERRY_PICK_HEAD')) return 'cherry-pick'
+  if (probe('REVERT_HEAD')) return 'revert'
+  if (probe('BISECT_LOG')) return 'bisect'
   return undefined
 }
 
@@ -146,25 +155,22 @@ export async function recordCheckpoint(
   stepLabel: string,
   taskId?: string,
 ): Promise<CheckpointResult> {
-  if (!(await isGitWorktree(worktreePath))) {
+  if (!isGitWorktree(worktreePath)) {
     return { kind: 'skipped:not-a-git-worktree' }
   }
 
-  const inProgress = await detectInProgressOperation(worktreePath)
+  const inProgress = detectInProgressOperation(worktreePath)
   if (inProgress) {
     return { kind: 'skipped:in-progress', operation: inProgress }
   }
 
-  if (!(await hasUncommittedChanges(worktreePath))) {
+  if (!hasUncommittedChanges(worktreePath)) {
     return { kind: 'skipped:no-changes' }
   }
 
   // git add -A: stage everything (including deletions and new files) so the
   // commit captures a complete snapshot of the working tree.
-  const addResult = await execFileNoThrowWithCwd(gitExe(), ['add', '-A'], {
-    cwd: worktreePath,
-    stdin: 'ignore',
-  })
+  const addResult = gitSync(['add', '-A'], worktreePath)
   if (addResult.code !== 0) {
     logForDebugging(
       `[checkpoint] git add failed in ${worktreePath}: ${addResult.stderr}`,
@@ -176,11 +182,7 @@ export async function recordCheckpoint(
   // After `add -A` the index may be empty if the only changes were e.g. a
   // skipped submodule path. Re-check via diff --cached so we don't make an
   // empty commit.
-  const diffCached = await execFileNoThrowWithCwd(
-    gitExe(),
-    ['diff', '--cached', '--quiet'],
-    { cwd: worktreePath, stdin: 'ignore' },
-  )
+  const diffCached = gitSync(['diff', '--cached', '--quiet'], worktreePath)
   // diff --cached --quiet: 0 = no diff (nothing to commit), 1 = diff present.
   if (diffCached.code === 0) {
     return { kind: 'skipped:no-changes' }
@@ -203,21 +205,16 @@ export async function recordCheckpoint(
     '-m',
     `${CHECKPOINT_TASK_TRAILER}: ${taskId ?? 'none'}`,
   ]
-  const commit = await execFileNoThrowWithCwd(gitExe(), commitArgs, {
-    cwd: worktreePath,
-    stdin: 'ignore',
+  const commit = gitSync(commitArgs, worktreePath, {
     // Some CI shells lack a configured user.email/name — set a placeholder so
     // the commit succeeds. We don't override an existing config.
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'Asicode Autocheckpoint',
-      GIT_AUTHOR_EMAIL:
-        process.env.GIT_AUTHOR_EMAIL ?? 'autocheckpoint@asicode.local',
-      GIT_COMMITTER_NAME:
-        process.env.GIT_COMMITTER_NAME ?? 'Asicode Autocheckpoint',
-      GIT_COMMITTER_EMAIL:
-        process.env.GIT_COMMITTER_EMAIL ?? 'autocheckpoint@asicode.local',
-    },
+    GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'Asicode Autocheckpoint',
+    GIT_AUTHOR_EMAIL:
+      process.env.GIT_AUTHOR_EMAIL ?? 'autocheckpoint@asicode.local',
+    GIT_COMMITTER_NAME:
+      process.env.GIT_COMMITTER_NAME ?? 'Asicode Autocheckpoint',
+    GIT_COMMITTER_EMAIL:
+      process.env.GIT_COMMITTER_EMAIL ?? 'autocheckpoint@asicode.local',
   })
   if (commit.code !== 0) {
     logForDebugging(
@@ -227,7 +224,7 @@ export async function recordCheckpoint(
     return { kind: 'failed', error: commit.stderr }
   }
 
-  const sha = await readHeadSha(worktreePath)
+  const sha = readHeadSha(worktreePath)
   if (!sha) {
     return { kind: 'failed', error: 'failed to read HEAD after commit' }
   }
@@ -235,12 +232,8 @@ export async function recordCheckpoint(
   return { kind: 'committed', sha, stepIndex }
 }
 
-async function readHeadSha(worktreePath: string): Promise<string | undefined> {
-  const { code, stdout } = await execFileNoThrowWithCwd(
-    gitExe(),
-    ['rev-parse', 'HEAD'],
-    { cwd: worktreePath, stdin: 'ignore' },
-  )
+function readHeadSha(worktreePath: string): string | undefined {
+  const { code, stdout } = gitSync(['rev-parse', 'HEAD'], worktreePath)
   if (code !== 0) return undefined
   const sha = stdout.trim()
   return sha.length > 0 ? sha : undefined
@@ -255,7 +248,7 @@ export async function listCheckpoints(
   worktreePath: string,
   taskId?: string,
 ): Promise<Checkpoint[]> {
-  if (!(await isGitWorktree(worktreePath))) {
+  if (!isGitWorktree(worktreePath)) {
     return []
   }
 
@@ -265,8 +258,7 @@ export async function listCheckpoints(
   const FIELD_SEP = '\x1f'
   const RECORD_SEP = '\x1e'
   const fmt = `${RECORD_SEP}%H${FIELD_SEP}%cI${FIELD_SEP}%s${FIELD_SEP}%b`
-  const { code, stdout } = await execFileNoThrowWithCwd(
-    gitExe(),
+  const { code, stdout } = gitSync(
     [
       'log',
       `--grep=${escapeRegex(CHECKPOINT_MESSAGE_PREFIX)}`,
@@ -274,7 +266,7 @@ export async function listCheckpoints(
       `--pretty=format:${fmt}`,
       '--reverse',
     ],
-    { cwd: worktreePath, stdin: 'ignore' },
+    worktreePath,
   )
   if (code !== 0) {
     return []
@@ -333,15 +325,14 @@ export async function rollbackTo(
   worktreePath: string,
   checkpointSha: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!(await isGitWorktree(worktreePath))) {
+  if (!isGitWorktree(worktreePath)) {
     return { ok: false, error: 'not a git worktree' }
   }
   // Validate that the SHA is reachable from HEAD before resetting — keeps us
   // from resetting to an arbitrary commit on a different branch.
-  const merge = await execFileNoThrowWithCwd(
-    gitExe(),
+  const merge = gitSync(
     ['merge-base', '--is-ancestor', checkpointSha, 'HEAD'],
-    { cwd: worktreePath, stdin: 'ignore' },
+    worktreePath,
   )
   if (merge.code !== 0) {
     return {
@@ -349,11 +340,7 @@ export async function rollbackTo(
       error: `checkpoint ${checkpointSha} is not an ancestor of HEAD`,
     }
   }
-  const reset = await execFileNoThrowWithCwd(
-    gitExe(),
-    ['reset', '--hard', checkpointSha],
-    { cwd: worktreePath, stdin: 'ignore' },
-  )
+  const reset = gitSync(['reset', '--hard', checkpointSha], worktreePath)
   if (reset.code !== 0) {
     return { ok: false, error: reset.stderr }
   }
