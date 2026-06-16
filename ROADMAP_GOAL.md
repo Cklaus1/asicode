@@ -59,6 +59,18 @@ Owned by the coordinator (`src/coordinator/coordinatorMode.ts`); add a
 - Tests: winner = highest verifier score; laggards killed on first pass;
   budget-refusal path.
 
+## Use subagents for parallelism
+You run on sonnet. Use your Task/subagent tool to parallelize INDEPENDENT
+slices and keep your own context lean:
+- #6 (resume — `resumeAgent.ts`, `sessionStorage.ts`, `commands/resume/`) is
+  disjoint from the coordinator work, so it can be built by a separate subagent
+  concurrently with the 1.5 wire-in.
+- Do NOT parallelize slices that edit the SAME files: 1.5 and #4 both touch
+  `src/coordinator/coordinatorMode.ts` — sequence those (1.5 first, then #4).
+- Each subagent must get `bun run build` + `bun test` green for its slice
+  before you integrate it. You remain responsible for the final commit and for
+  the full gate staying green.
+
 ## Each iteration
 1. Run `./eval/roadmap-acceptance.sh`; pick the next failing criterion.
 2. Implement the smallest real slice that turns a FAIL into a PASS (real code +
