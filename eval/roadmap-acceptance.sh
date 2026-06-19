@@ -51,8 +51,11 @@ echo; echo "## #4 best-of-N race mode"
 # fork k worktrees on the same plan, verifier picks the winner, kill laggards
 have "RaceTask / race-mode implementation file exists" \
   'ls src/tasks/RaceTask/*.ts src/coordinator/race*.ts src/coordinator/raceMode*.ts 2>/dev/null | grep -q .'
-have "coordinator can launch race mode" \
-  'grep -qiE "RaceTask|raceMode|ASICODE_RACE_COUNT" src/coordinator/coordinatorMode.ts'
+# a name-grep is gameable (a re-export satisfies it while the coordinator never
+# actually races) — require a REAL call site: runCoordinatorRace(...) invoked
+# from non-test production code OTHER than its own definition file.
+have "coordinator actually INVOKES the race (real call site, not just a reference)" \
+  'grep -rln "runCoordinatorRace(" src --include="*.ts" | grep -v "\.test\.ts" | grep -v "raceMode.ts" | grep -q .'
 have "race-mode tests exist (winner-selection / laggard-kill / budget-refusal)" \
   'grep -rliE "best.?of.?n|race ?mode|RaceTask" src --include="*.test.ts" | grep -q .'
 
