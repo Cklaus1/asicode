@@ -44,6 +44,8 @@ const getProvider = _providerCache.getProvider
 export interface ExpanderInput {
   briefId: string
   briefText: string
+  /** Override the per-call LLM timeout. Defaults to 30 s. Pass a short value in tests. */
+  timeoutSec?: number
 }
 
 export function expandBriefOnSubmit(input: ExpanderInput): void {
@@ -72,7 +74,7 @@ export async function expandBriefOnSubmitAwait(input: ExpanderInput): Promise<Ex
   if (!isBriefModeEnabled()) return null
   const provider = getProvider()
   if (!provider) return null
-  const result = await expandBrief({ paragraph: input.briefText, provider })
+  const result = await expandBrief({ paragraph: input.briefText, provider, timeoutSec: input.timeoutSec })
   if (!result.ok) return null
   persistExpansion(input.briefId, result.expanded)
   return result.expanded

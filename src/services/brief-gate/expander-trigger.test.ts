@@ -88,7 +88,7 @@ describe('expandBriefOnSubmitAwait', () => {
       user_text: 'add caching',
       a16_decision: 'pending',
     })
-    const r = await expandBriefOnSubmitAwait({ briefId, briefText: 'add caching' })
+    const r = await expandBriefOnSubmitAwait({ briefId, briefText: 'add caching', timeoutSec: 1 })
     expect(r).toBeNull()
     // expanded_brief column stays null
     const db = openInstrumentationDb()
