@@ -1,0 +1,1 @@
+/home/cklaus/projects/aicoding/asicode/asicored/target/release/asicored: /home/cklaus/projects/aicoding/asicode/asicored/src/main.rs /home/cklaus/projects/aicoding/asicode/asicored/src/proto.rs /home/cklaus/projects/aicoding/asicode/asicored/src/tools/bash.rs /home/cklaus/projects/aicoding/asicode/asicored/src/tools/mod.rs

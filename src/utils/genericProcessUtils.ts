@@ -1,7 +1,5 @@
-import {
-  execFileNoThrowWithCwd,
-  execSyncWithDefaults_DEPRECATED,
-} from './execFileNoThrow.js'
+import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
+import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrowPortable.js'
 
 // This file contains platform-agnostic implementations of common `ps` type commands.
 // When adding new code to this file, make sure to handle:

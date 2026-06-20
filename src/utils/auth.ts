@@ -55,7 +55,7 @@ import {
   isRunningOnHomespace,
 } from './envUtils.js'
 import { errorMessage } from './errors.js'
-import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrow.js'
+import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrowPortable.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
 import { memoizeWithTTLAsync } from './memoize.js'

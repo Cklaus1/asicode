@@ -16,11 +16,8 @@ import type {
 import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { env } from './env.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
-import {
-  execFileNoThrow,
-  execFileNoThrowWithCwd,
-  execSyncWithDefaults_DEPRECATED,
-} from './execFileNoThrow.js'
+import { execFileNoThrow, execFileNoThrowWithCwd } from './execFileNoThrow.js'
+import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrowPortable.js'
 import { getFsImplementation } from './fsOperations.js'
 import { getAncestorPidsAsync } from './genericProcessUtils.js'
 import { isJetBrainsPluginInstalledCached } from './jetbrains.js'

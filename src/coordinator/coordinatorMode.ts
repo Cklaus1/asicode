@@ -6,7 +6,6 @@ import {
   gitRecomputeDiff,
 } from '../services/selfReview/production.js'
 import { ASICODE_RACE_COUNT, getRaceCount } from '../tasks/RaceTask/index.js'
-import { runCoordinatorRace, type CoordinatorRaceConfig, type CoordinatorRaceResult } from './raceMode.js'
 import { ASYNC_AGENT_ALLOWED_TOOLS } from '../constants/tools.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -409,19 +408,3 @@ export async function runCoordinatorWorkerBriefReviewIfEnabled(args: {
  * of the RaceTask module location.
  */
 export { ASICODE_RACE_COUNT, getRaceCount }
-
-/**
- * Invoke best-of-N race mode from the coordinator hot-path.
- * Wraps runCoordinatorRace from ./raceMode so callers in this module
- * (and QueryEngine.ts / coordinator entry points) have a single import.
- *
- * Guards: returns undefined immediately when race mode is off (ASICODE_RACE_COUNT
- * not set or equals 1) so callers can treat the result as an Optional.
- */
-export async function invokeCoordinatorRace(
-  config: CoordinatorRaceConfig,
-): Promise<CoordinatorRaceResult> {
-  return runCoordinatorRace(config)
-}
-
-export type { CoordinatorRaceConfig, CoordinatorRaceResult }
