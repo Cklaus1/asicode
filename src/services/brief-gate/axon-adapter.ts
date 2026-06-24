@@ -44,7 +44,9 @@ function resolveAxonBin(): string | null {
 
 // Cached at module load — binary path doesn't change during a run.
 let _axonBin: string | null | undefined = undefined
-function getAxonBin(): string | null {
+// Exported so other Axon bridges (e.g. the R10 firewall) share one resolver +
+// the same test override (`_setAxonBinForTest`).
+export function getAxonBin(): string | null {
   if (_axonBin === undefined) _axonBin = resolveAxonBin()
   return _axonBin
 }
