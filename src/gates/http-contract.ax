@@ -40,8 +40,9 @@ fn main() -> i64 {
     let prompt = env_or("PROMPT", "ping")
 
     let url = "{base}/chat/completions"
-    let headers = "Content-Type: application/json"
-    // {{ }} are literal braces in Axon format strings.
+    // Axon http_post wants headers as a JSON object string ("" = none), not a
+    // header line. {{ }} are literal braces in Axon format strings.
+    let headers = "{{\"content-type\":\"application/json\"}}"
     let body = "{{\"model\":\"{model}\",\"messages\":[{{\"role\":\"user\",\"content\":\"{prompt}\"}}]}}"
 
     match http_post(url, headers, body) {

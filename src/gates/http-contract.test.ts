@@ -41,10 +41,10 @@ beforeAll(() => {
       if (req.method !== 'POST' || !url.pathname.endsWith('/chat/completions')) {
         return new Response('not found', { status: 404 })
       }
-      const body = await req.json().catch(() => ({})) as { messages?: { content: string }[] }
+      const body = await req.json().catch(() => ({})) as { model?: string; messages?: { content: string }[] }
       const prompt = body.messages?.[0]?.content ?? ''
-      if (url.searchParams.get('broken') === '1') {
-        return Response.json({ id: 'x', usage: {} }) // no choices → gate must fail
+      if (body.model === 'BROKEN') {
+        return Response.json({ id: 'x', usage: {} }) // no choices → gate must fail closed
       }
       return Response.json({
         id: 'cmpl-test',
@@ -58,42 +58,51 @@ beforeAll(() => {
 
 afterAll(() => server?.stop(true))
 
-function runGate(env: Record<string, string>) {
-  return spawnSync(axonBin!, ['run', GATE], {
-    env: { ...process.env, ...env },
-    encoding: 'utf8',
-    timeout: 15_000,
+// Async spawn is REQUIRED here: the mock server runs in this test process's
+// event loop, so a synchronous spawnSync would block the loop and the gate's
+// HTTP request would never be served (deadlock → timeout). Bun.spawn lets the
+// gate subprocess and the in-process mock run concurrently.
+async function runGate(env: Record<string, string>): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  // Start from an env with OPENAI_BASE stripped so each test sets it explicitly.
+  const cleanEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => k !== 'OPENAI_BASE'),
+  ) as Record<string, string>
+  const proc = Bun.spawn([axonBin!, 'run', GATE], {
+    env: { ...cleanEnv, ...env },
+    stdout: 'pipe',
+    stderr: 'pipe',
   })
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+  const exitCode = await proc.exited
+  return { exitCode, stdout, stderr }
 }
 
 describe('http-contract.ax — cleanroom HTTP path (B1)', () => {
-  liveTest('POSTs to an OpenAI-compatible endpoint and parses the response', () => {
-    const r = runGate({ OPENAI_BASE: base, PROMPT: 'ping' })
-    expect(r.status).toBe(0)
+  liveTest('POSTs to an OpenAI-compatible endpoint and parses the response', async () => {
+    const r = await runGate({ OPENAI_BASE: base, PROMPT: 'ping' })
+    expect(r.exitCode).toBe(0)
     expect(r.stdout).toContain('HTTP-CONTRACT OK: pong:ping')
   })
 
-  liveTest('is provider-agnostic — works against an arbitrary base URL', () => {
-    // Same gate, different (still non-Anthropic) endpoint path proves no vendor hardcode.
-    const r = runGate({ OPENAI_BASE: base, PROMPT: 'hello', OPENAI_MODEL: 'whatever-7b' })
-    expect(r.status).toBe(0)
+  liveTest('is provider-agnostic — works against an arbitrary base URL', async () => {
+    // Same gate, different (still non-Anthropic) model proves no vendor hardcode.
+    const r = await runGate({ OPENAI_BASE: base, PROMPT: 'hello', OPENAI_MODEL: 'whatever-7b' })
+    expect(r.exitCode).toBe(0)
     expect(r.stdout).toContain('HTTP-CONTRACT OK: pong:hello')
   })
 
-  liveTest('fails closed when OPENAI_BASE is unset', () => {
-    const r = spawnSync(axonBin!, ['run', GATE], {
-      // Strip any inherited OPENAI_BASE.
-      env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'OPENAI_BASE')) as Record<string, string>,
-      encoding: 'utf8',
-      timeout: 15_000,
-    })
-    expect(r.status).toBe(1)
+  liveTest('fails closed when OPENAI_BASE is unset', async () => {
+    const r = await runGate({}) // no OPENAI_BASE → gate must refuse
+    expect(r.exitCode).toBe(1)
     expect(r.stderr).toContain('OPENAI_BASE not set')
   })
 
-  liveTest('fails closed on a malformed response (missing choices)', () => {
-    const r = runGate({ OPENAI_BASE: `${base}?broken=1`, PROMPT: 'ping' })
-    expect(r.status).toBe(1)
+  liveTest('fails closed on a malformed response (missing choices)', async () => {
+    const r = await runGate({ OPENAI_BASE: base, OPENAI_MODEL: 'BROKEN', PROMPT: 'ping' })
+    expect(r.exitCode).toBe(1)
     expect(r.stderr).toContain('FAIL')
   })
 })
