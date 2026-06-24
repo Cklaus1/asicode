@@ -1,5 +1,12 @@
 # Axon Cleanroom Strategy
 
+> **Scope (read first):** This is an **asicode cleanroom that uses Axon as the
+> language** — not a project about cleanrooming Axon itself. The *what* being made
+> clean is asicode (today ~80% derived from Claude Code); Axon is the *how* — a
+> separately-owned language whose fresh code carries zero Anthropic IP. Every phase
+> below delivers an asicode capability, not an Axon-language feature. (A more precise
+> title would be "asicode Cleanroom via Axon.")
+>
 > **End goal:** A new, standalone product written entirely in Axon — zero Claude Code derivation.
 > **Approach:** Incremental. Phases 1–4 migrate the intelligence layer inside the existing TypeScript shell.
 > Phase 5 is a greenfield Axon-native binary that replaces the shell entirely.
