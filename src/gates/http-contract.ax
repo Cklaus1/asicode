@@ -1,0 +1,66 @@
+// http-contract.ax — falsifiable proof of the Axon cleanroom HTTP path (B1).
+//
+// The strategy doc claims `http_post` + `json_path_str` are shipped. This is
+// the asicode-side contract test that VERIFIES that claim instead of trusting
+// it: it POSTs an OpenAI-compatible /chat/completions request to whatever
+// endpoint OPENAI_BASE points at and parses the assistant message out of the
+// response. It is deliberately provider-agnostic — NO Anthropic hardcode —
+// because the whole point of B1 is that the new IP must not depend on a single
+// vendor's egress (which `ai_complete` does).
+//
+// Env:
+//   OPENAI_BASE   base URL, e.g. http://127.0.0.1:18306/v1   (required)
+//   OPENAI_MODEL  model id (default "test-model")
+//   PROMPT        user message (default "ping")
+//
+// Output:
+//   stdout "HTTP-CONTRACT OK: <assistant content>" and exit 0 on success
+//   stderr "HTTP-CONTRACT FAIL: <reason>" and exit 1 on any failure
+//
+// Run:  OPENAI_BASE=http://127.0.0.1:18306/v1 axon run src/gates/http-contract.ax
+
+fn env_or(key: str, fallback: str) -> str {
+    match env_var(key) {
+        Ok(v) => if str_len(v) > 0 { v } else { fallback }
+        Err(_) => fallback
+    }
+}
+
+fn main() -> i64 {
+    let base = match env_var("OPENAI_BASE") {
+        Ok(v) => v
+        Err(_) => ""
+    }
+    if str_len(base) == 0 {
+        eprintln("HTTP-CONTRACT FAIL: OPENAI_BASE not set")
+        return 1
+    }
+
+    let model  = env_or("OPENAI_MODEL", "test-model")
+    let prompt = env_or("PROMPT", "ping")
+
+    let url = "{base}/chat/completions"
+    let headers = "Content-Type: application/json"
+    // {{ }} are literal braces in Axon format strings.
+    let body = "{{\"model\":\"{model}\",\"messages\":[{{\"role\":\"user\",\"content\":\"{prompt}\"}}]}}"
+
+    match http_post(url, headers, body) {
+        Err(e) => {
+            eprintln("HTTP-CONTRACT FAIL: http_post error — {e}")
+            1
+        }
+        Ok(resp) => {
+            // OpenAI-compatible shape: choices[0].message.content
+            match json_path_str(resp, "choices.0.message.content") {
+                Ok(content) => {
+                    println("HTTP-CONTRACT OK: {content}")
+                    0
+                }
+                Err(e) => {
+                    eprintln("HTTP-CONTRACT FAIL: response missing choices.0.message.content — {e}")
+                    1
+                }
+            }
+        }
+    }
+}
