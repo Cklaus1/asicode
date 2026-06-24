@@ -1,0 +1,123 @@
+// brief-gate.ax — validates an agent brief before it enters the ledger workflow.
+//
+// A "brief" is a JSON object with required fields: goal, constraints, metric.
+// Returns 0 (PASS) or 1 (FAIL) — usable as a deploy gate or subagent check.
+//
+// Run:  axon run examples/goals/brief-gate.ax
+//       BRIEF='{"goal":"...","constraints":"...","metric":"..."}' axon run ...
+
+fn check_field(json: str, key: str) -> Result<str, str> {
+    match json_get_str(json, key) {
+        Ok(v) => {
+            if str_len(v) < 5 {
+                Err("field '{key}' is too short (< 5 chars)")
+            } else {
+                Ok(v)
+            }
+        }
+        Err(e) => Err("missing or invalid field '{key}': {e}")
+    }
+}
+
+fn gate_brief(brief_json: str) -> i64 {
+    match json_parse(brief_json) {
+        Err(e) => {
+            eprintln("BRIEF-GATE FAIL: invalid JSON — {e}")
+            1
+        }
+        Ok(_) => {
+            let goal_r        = check_field(brief_json, "goal")
+            let constraints_r = check_field(brief_json, "constraints")
+            let metric_r      = check_field(brief_json, "metric")
+
+            let goal_ok = match goal_r        { Ok(_) => 1  Err(_) => 0 }
+            let con_ok  = match constraints_r { Ok(_) => 1  Err(_) => 0 }
+            let met_ok  = match metric_r      { Ok(_) => 1  Err(_) => 0 }
+
+            if goal_ok == 0 {
+                let msg = match goal_r { Ok(v) => v  Err(e) => e }
+                eprintln("BRIEF-GATE FAIL: {msg}")
+                1
+            } else if con_ok == 0 {
+                let msg = match constraints_r { Ok(v) => v  Err(e) => e }
+                eprintln("BRIEF-GATE FAIL: {msg}")
+                1
+            } else if met_ok == 0 {
+                let msg = match metric_r { Ok(v) => v  Err(e) => e }
+                eprintln("BRIEF-GATE FAIL: {msg}")
+                1
+            } else {
+                let goal   = match goal_r   { Ok(v) => v  Err(e) => e }
+                let metric = match metric_r { Ok(v) => v  Err(e) => e }
+                println("BRIEF-GATE PASS")
+                println("  goal:   {goal}")
+                println("  metric: {metric}")
+                0
+            }
+        }
+    }
+}
+
+// Build a JSON object string from key=value pairs.
+// Uses chr(34)='"', chr(123)='{', chr(125)='}' to avoid interpolation ambiguity.
+fn make_brief(goal: str, constraints: str, metric: str) -> str {
+    let q = chr(34)
+    let ob = chr(123)
+    let cb = chr(125)
+    let colon = ": "
+    let comma = ", "
+    let k_goal = axon_concat(q, axon_concat("goal", q))
+    let k_con  = axon_concat(q, axon_concat("constraints", q))
+    let k_met  = axon_concat(q, axon_concat("metric", q))
+    axon_concat(ob, axon_concat(
+        axon_concat(k_goal, axon_concat(colon, json_stringify(goal))),
+        axon_concat(comma,
+            axon_concat(
+                axon_concat(k_con, axon_concat(colon, json_stringify(constraints))),
+                axon_concat(comma,
+                    axon_concat(k_met, axon_concat(colon, axon_concat(json_stringify(metric), cb)))
+                )
+            )
+        )
+    ))
+}
+
+fn main() -> i64 {
+    println("=== Axon Brief Gate ===")
+    println("")
+
+    // Check for BRIEF env var first (subagent usage)
+    let brief_from_env = match env_var("BRIEF") {
+        Ok(v) => v
+        Err(_) => ""
+    }
+
+    if str_len(brief_from_env) > 0 {
+        println("-- brief from BRIEF env var --")
+        let r = gate_brief(brief_from_env)
+        r
+    } else {
+        // Demo mode: test valid and invalid briefs
+        let valid_brief = make_brief(
+            "maximize provenance ledger recall above 0.75",
+            "must not ingest PII without scrubbing first",
+            "recall@200 commits >= 0.75"
+        )
+        println("-- valid brief --")
+        let r1 = gate_brief(valid_brief)
+        println("")
+
+        let invalid_brief = make_brief("ok", "yes", "num")
+        println("-- invalid brief (all fields too short) --")
+        let r2 = gate_brief(invalid_brief)
+        println("")
+
+        if r1 == 0 && r2 == 1 {
+            println("Gate logic: CORRECT")
+            0
+        } else {
+            println("Gate logic: WRONG (r1={to_str(r1)}, r2={to_str(r2)})")
+            1
+        }
+    }
+}

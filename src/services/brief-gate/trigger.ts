@@ -18,6 +18,8 @@ import { asicodeEnv } from '../../utils/envCompat.js'
 import { updateBrief } from '../instrumentation/client'
 import { createCachedProvider } from '../trigger-shared/cachedProvider'
 import { evaluateBrief, type A16Result } from './evaluator'
+import { isStructuredBrief, runAxonBriefStructCheckAsync } from './axon-adapter'
+import { recordBriefCalibration } from './calibration'
 
 // ─── Opt-in ──────────────────────────────────────────────────────────
 
@@ -52,6 +54,16 @@ export function evaluateBriefOnSubmit(input: BriefGateInput): void {
   if (!provider) return
   void (async () => {
     try {
+      // Axon structural pre-check: async (won't block the loop), no LLM.
+      // Observe-only — never blocks. Result feeds the calibration corpus.
+      const axon = isStructuredBrief(input.briefText)
+        ? await runAxonBriefStructCheckAsync(input.briefText)
+        : null
+      if (axon?.ran) {
+        // eslint-disable-next-line no-console
+        console.info(`[axon-brief-gate] struct-check ${axon.pass ? 'PASS' : 'FAIL'} (${axon.durationMs}ms): ${axon.reason}`)
+      }
+
       const result = await evaluateBrief({
         briefText: input.briefText,
         provider,
@@ -61,6 +73,7 @@ export function evaluateBriefOnSubmit(input: BriefGateInput): void {
         console.warn(`[asicode brief-gate] eval failed (${result.error.kind}) for ${input.briefId}`)
         return
       }
+      recordAxonCalibration(input, axon, result.result.decision)
       persistEvaluation(input.briefId, result.result)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -75,13 +88,44 @@ export async function evaluateBriefOnSubmitAwait(input: BriefGateInput): Promise
   if (!isBriefGateEnabled()) return null
   const provider = getProvider()
   if (!provider) return null
+
+  // Axon structural pre-check (async, observe-only).
+  const axon = isStructuredBrief(input.briefText)
+    ? await runAxonBriefStructCheckAsync(input.briefText)
+    : null
+  if (axon?.ran) {
+    // eslint-disable-next-line no-console
+    console.info(`[axon-brief-gate] struct-check ${axon.pass ? 'PASS' : 'FAIL'} (${axon.durationMs}ms): ${axon.reason}`)
+  }
+
   const result = await evaluateBrief({
     briefText: input.briefText,
     provider,
   })
   if (!result.ok) return null
+  recordAxonCalibration(input, axon, result.result.decision)
   persistEvaluation(input.briefId, result.result)
   return result.result
+}
+
+/**
+ * Pair the Axon gate verdict with the TypeScript A16 decision into the
+ * calibration corpus (Phase 1.5). Only records structured briefs the Axon
+ * gate actually evaluated. Best-effort — recordBriefCalibration never throws.
+ */
+function recordAxonCalibration(
+  input: BriefGateInput,
+  axon: { ran: boolean; pass?: boolean; reason?: string; durationMs?: number } | null,
+  decision: A16Result['decision'],
+): void {
+  if (!axon) return // free-form brief — Axon gate didn't apply
+  recordBriefCalibration({
+    briefId: input.briefId,
+    briefText: input.briefText,
+    traceId: input.briefId,
+    axon,
+    tsDecision: decision,
+  })
 }
 
 function persistEvaluation(briefId: string, r: A16Result): void {
